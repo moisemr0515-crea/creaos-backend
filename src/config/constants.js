@@ -1,0 +1,168 @@
+// ─── ROLES DEL SISTEMA ────────────────────────────────────────────────────────
+const ROLES = {
+  SUPER_ADMIN: 'superadmin',
+  OWNER: 'owner',
+  ADMIN: 'admin',
+  MANAGER: 'manager',
+  SALES: 'sales',
+  SUPPORT: 'support',
+  VIEWER: 'viewer',
+};
+
+// ─── PERMISOS POR MÓDULO ──────────────────────────────────────────────────────
+const PERMISSIONS = {
+  // Usuarios
+  USERS_READ: 'users:read',
+  USERS_CREATE: 'users:create',
+  USERS_UPDATE: 'users:update',
+  USERS_DELETE: 'users:delete',
+
+  // Negocios
+  BUSINESSES_READ: 'businesses:read',
+  BUSINESSES_UPDATE: 'businesses:update',
+  BUSINESSES_SETTINGS: 'businesses:settings',
+
+  // Leads
+  LEADS_READ: 'leads:read',
+  LEADS_CREATE: 'leads:create',
+  LEADS_UPDATE: 'leads:update',
+  LEADS_DELETE: 'leads:delete',
+  LEADS_OWN: 'leads:own', // solo sus propios leads
+
+  // Pipeline
+  PIPELINE_READ: 'pipeline:read',
+  PIPELINE_UPDATE: 'pipeline:update',
+
+  // Mensajes
+  MESSAGES_READ: 'messages:read',
+  MESSAGES_CREATE: 'messages:create',
+
+  // Configuración
+  SETTINGS_READ: 'settings:read',
+  SETTINGS_UPDATE: 'settings:update',
+
+  // Reportes
+  REPORTS_READ: 'reports:read',
+
+  // Roles
+  ROLES_READ: 'roles:read',
+  ROLES_MANAGE: 'roles:manage',
+};
+
+// Permisos agrupados por rol del sistema
+const ROLE_PERMISSIONS = {
+  [ROLES.SUPER_ADMIN]: Object.values(PERMISSIONS),
+
+  [ROLES.OWNER]: [
+    PERMISSIONS.USERS_READ,
+    PERMISSIONS.USERS_CREATE,
+    PERMISSIONS.USERS_UPDATE,
+    PERMISSIONS.USERS_DELETE,
+    PERMISSIONS.BUSINESSES_READ,
+    PERMISSIONS.BUSINESSES_UPDATE,
+    PERMISSIONS.BUSINESSES_SETTINGS,
+    PERMISSIONS.LEADS_READ,
+    PERMISSIONS.LEADS_CREATE,
+    PERMISSIONS.LEADS_UPDATE,
+    PERMISSIONS.LEADS_DELETE,
+    PERMISSIONS.PIPELINE_READ,
+    PERMISSIONS.PIPELINE_UPDATE,
+    PERMISSIONS.MESSAGES_READ,
+    PERMISSIONS.MESSAGES_CREATE,
+    PERMISSIONS.SETTINGS_READ,
+    PERMISSIONS.SETTINGS_UPDATE,
+    PERMISSIONS.REPORTS_READ,
+    PERMISSIONS.ROLES_READ,
+    PERMISSIONS.ROLES_MANAGE,
+  ],
+
+  [ROLES.ADMIN]: [
+    PERMISSIONS.USERS_READ,
+    PERMISSIONS.USERS_CREATE,
+    PERMISSIONS.USERS_UPDATE,
+    PERMISSIONS.BUSINESSES_READ,
+    PERMISSIONS.BUSINESSES_UPDATE,
+    PERMISSIONS.LEADS_READ,
+    PERMISSIONS.LEADS_CREATE,
+    PERMISSIONS.LEADS_UPDATE,
+    PERMISSIONS.LEADS_DELETE,
+    PERMISSIONS.PIPELINE_READ,
+    PERMISSIONS.PIPELINE_UPDATE,
+    PERMISSIONS.MESSAGES_READ,
+    PERMISSIONS.MESSAGES_CREATE,
+    PERMISSIONS.SETTINGS_READ,
+    PERMISSIONS.SETTINGS_UPDATE,
+    PERMISSIONS.REPORTS_READ,
+    PERMISSIONS.ROLES_READ,
+  ],
+
+  [ROLES.MANAGER]: [
+    PERMISSIONS.USERS_READ,
+    PERMISSIONS.LEADS_READ,
+    PERMISSIONS.LEADS_CREATE,
+    PERMISSIONS.LEADS_UPDATE,
+    PERMISSIONS.LEADS_DELETE,
+    PERMISSIONS.PIPELINE_READ,
+    PERMISSIONS.PIPELINE_UPDATE,
+    PERMISSIONS.MESSAGES_READ,
+    PERMISSIONS.MESSAGES_CREATE,
+    PERMISSIONS.REPORTS_READ,
+  ],
+
+  [ROLES.SALES]: [
+    PERMISSIONS.LEADS_READ,
+    PERMISSIONS.LEADS_CREATE,
+    PERMISSIONS.LEADS_UPDATE,
+    PERMISSIONS.LEADS_OWN,
+    PERMISSIONS.PIPELINE_READ,
+    PERMISSIONS.MESSAGES_READ,
+    PERMISSIONS.MESSAGES_CREATE,
+  ],
+
+  [ROLES.SUPPORT]: [
+    PERMISSIONS.LEADS_READ,
+    PERMISSIONS.MESSAGES_READ,
+    PERMISSIONS.MESSAGES_CREATE,
+  ],
+
+  [ROLES.VIEWER]: [
+    PERMISSIONS.LEADS_READ,
+    PERMISSIONS.PIPELINE_READ,
+    PERMISSIONS.REPORTS_READ,
+  ],
+};
+
+// Planes de suscripción
+const PLANS = {
+  TRIAL: 'trial',
+  STARTER: 'starter',
+  PRO: 'pro',
+  ENTERPRISE: 'enterprise',
+};
+
+const PLAN_STATUS = {
+  ACTIVE: 'active',
+  TRIAL: 'trial',
+  EXPIRED: 'expired',
+  CANCELLED: 'cancelled',
+};
+
+// Duración del trial en días
+const TRIAL_DAYS = 14;
+
+// Prefijos de Redis
+const REDIS_KEYS = {
+  REFRESH_TOKEN: (userId, jti) => `rt:${userId}:${jti}`,
+  RESET_TOKEN: (token) => `reset:${token}`,
+  LOGIN_ATTEMPTS: (ip) => `login_attempts:${ip}`,
+};
+
+module.exports = {
+  ROLES,
+  PERMISSIONS,
+  ROLE_PERMISSIONS,
+  PLANS,
+  PLAN_STATUS,
+  TRIAL_DAYS,
+  REDIS_KEYS,
+};
