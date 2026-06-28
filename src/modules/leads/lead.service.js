@@ -2,6 +2,7 @@ const Lead = require('./lead.model');
 const Pipeline = require('../pipeline/pipeline.model');
 const User = require('../users/user.model');
 const { AppError } = require('../../middleware/error.middleware');
+const { triggerAutomations } = require('../automations/automation.engine');
 
 const crearLead = async (businessId, actor, data) => {
   const { note, ...leadData } = data;
@@ -47,6 +48,10 @@ const crearLead = async (businessId, actor, data) => {
   }
 
   await lead.save();
+
+  // Trigger asíncrono — no bloquea la respuesta HTTP
+  triggerAutomations('lead_created', lead).catch(() => {});
+
   return lead;
 };
 
@@ -158,6 +163,9 @@ const actualizarLead = async (businessId, leadId, actor, data) => {
   });
 
   await lead.save();
+
+  triggerAutomations('lead_assigned', lead, { assignedTo: data.assignedTo }).catch(() => {});
+
   return lead;
 };
 
@@ -209,6 +217,9 @@ const cambiarEtapa = async (businessId, leadId, actor, stage, reason) => {
   });
 
   await lead.save();
+
+  triggerAutomations('lead_stage_changed', lead, { from: etapaAnterior, to: stage }).catch(() => {});
+
   return lead;
 };
 
@@ -230,6 +241,9 @@ const asignarLead = async (businessId, leadId, actor, assignedToId) => {
   });
 
   await lead.save();
+
+  triggerAutomations('lead_assigned', lead, { assignedToId, assignedToName: assignedUser.name }).catch(() => {});
+
   return lead;
 };
 
