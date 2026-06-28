@@ -13,6 +13,7 @@ const businessRoutes = require('./modules/businesses/business.routes');
 const leadRoutes     = require('./modules/leads/lead.routes');
 const pipelineRoutes = require('./modules/pipeline/pipeline.routes');
 const importRoutes   = require('./modules/imports/import.routes');
+const aiRoutes       = require('./modules/ai/ai.routes');
 
 const app = express();
 
@@ -83,9 +84,10 @@ app.get('/health', (req, res) => {
 app.use('/api/v1/auth',      authRoutes);
 app.use('/api/v1/users',     userRoutes);
 app.use('/api/v1/businesses', businessRoutes);
-app.use('/api/v1/leads',     leadRoutes);
-app.use('/api/v1/pipeline',  pipelineRoutes);
-app.use('/api/v1/imports',   importRoutes);
+app.use('/api/v1/leads',              leadRoutes);
+app.use('/api/v1/pipeline',           pipelineRoutes);
+app.use('/api/v1/imports',            importRoutes);
+app.use('/api/v1/ai/conversations',   aiRoutes);
 
 // ─── RUTA NO ENCONTRADA ───────────────────────────────────────────────────────
 app.use('*', (req, res) => {

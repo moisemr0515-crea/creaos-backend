@@ -53,4 +53,10 @@ module.exports = {
 
   // Seguridad
   BCRYPT_SALT_ROUNDS: parseInt(process.env.BCRYPT_SALT_ROUNDS, 10) || 12,
+
+  // OpenAI
+  OPENAI_API_KEY:  process.env.OPENAI_API_KEY,
+  OPENAI_MODEL:    process.env.OPENAI_MODEL || 'gpt-4o',
+  AI_MAX_TOKENS:   parseInt(process.env.AI_MAX_TOKENS, 10) || 1000,
+  AI_TEMPERATURE:  parseFloat(process.env.AI_TEMPERATURE) || 0.7,
 };
