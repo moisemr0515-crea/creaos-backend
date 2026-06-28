@@ -211,10 +211,43 @@ async function processTikTokLead(payload, config) {
   return results;
 }
 
+// ─── WhatsApp message processing ─────────────────────────────────────────────
+
+async function processWhatsAppMessage({ phoneNumberId, from, name, text, msgId }) {
+  const config = await WebhookConfig.findOne({
+    'pageId': phoneNumberId,
+    platform: 'meta',
+    isActive: true,
+  });
+  if (!config) return;
+
+  let lead = await Lead.findOne({ business: config.business, phone: from, isDeleted: false });
+
+  if (!lead) {
+    lead = await Lead.create({
+      business:    config.business,
+      name:        name || from,
+      phone:       from,
+      source:      'whatsapp',
+      temperature: config.defaults?.temperature || 'warm',
+      tags:        ['whatsapp'],
+      whatsappId:  from,
+      activity: [{ type: 'created', description: `Mensaje WhatsApp recibido: ${text.slice(0, 100)}` }],
+    });
+  } else {
+    lead.activity.push({ type: 'contacted', description: `WhatsApp: ${text.slice(0, 100)}` });
+    lead.lastContactedAt = new Date();
+    await lead.save();
+  }
+
+  return lead;
+}
+
 module.exports = {
   verifyMetaSignature,
   verifyTikTokSignature,
   fetchMetaLead,
   processMetaLead,
   processTikTokLead,
+  processWhatsAppMessage,
 };

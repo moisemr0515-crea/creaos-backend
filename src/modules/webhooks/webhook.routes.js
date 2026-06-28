@@ -7,11 +7,13 @@ const { checkPermission } = require('../../middleware/rbac.middleware');
 
 const router = Router();
 
-// ─── Public routes (no auth) — called by Meta / TikTok platforms ─────────────
-router.get('/meta',    controller.metaVerify);
-router.post('/meta',   controller.metaWebhook);
-router.get('/tiktok',  controller.tiktokVerify);
-router.post('/tiktok', controller.tiktokWebhook);
+// ─── Public routes (no auth) — called by Meta / TikTok / WhatsApp platforms ──
+router.get('/meta',       controller.metaVerify);
+router.post('/meta',      controller.metaWebhook);
+router.get('/tiktok',     controller.tiktokVerify);
+router.post('/tiktok',    controller.tiktokWebhook);
+router.get('/whatsapp',   controller.whatsappVerify);
+router.post('/whatsapp',  controller.whatsappWebhook);
 
 // ─── Public routes — payment providers ───────────────────────────────────────
 router.post('/stripe',       subController.stripeWebhook);

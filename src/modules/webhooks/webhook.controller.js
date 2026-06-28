@@ -3,6 +3,7 @@ const WebhookConfig = require('./webhookConfig.model');
 const webhookService = require('./webhook.service');
 const { AppError } = require('../../middleware/error.middleware');
 const { respuestaExito } = require('../../utils/response');
+const { WHATSAPP_VERIFY_TOKEN } = require('../../config/env');
 
 // ─── Public: Meta webhook verification (GET) ─────────────────────────────────
 
@@ -87,6 +88,59 @@ const tiktokWebhook = async (req, res, next) => {
     await webhookService.processTikTokLead(data, config).catch((err) =>
       console.error('[webhook] TikTok processLead error:', err.message)
     );
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─── Public: WhatsApp Business API verification (GET) ────────────────────────
+// Meta envía: hub.mode=subscribe, hub.verify_token=TOKEN, hub.challenge=RETO
+
+const whatsappVerify = (req, res) => {
+  const { 'hub.mode': mode, 'hub.verify_token': token, 'hub.challenge': challenge } = req.query;
+
+  if (mode !== 'subscribe') {
+    return res.status(400).send('Bad Request: hub.mode must be subscribe');
+  }
+
+  const expectedToken = WHATSAPP_VERIFY_TOKEN;
+  if (!expectedToken || token !== expectedToken) {
+    return res.status(403).send('Forbidden: verify_token inválido');
+  }
+
+  return res.status(200).send(challenge);
+};
+
+// ─── Public: WhatsApp Business API messages (POST) ───────────────────────────
+
+const whatsappWebhook = async (req, res, next) => {
+  try {
+    // ACK inmediato — Meta requiere respuesta < 5s
+    res.status(200).json({ received: true });
+
+    const { object, entry = [] } = req.body;
+    if (object !== 'whatsapp_business_account') return;
+
+    for (const ent of entry) {
+      for (const change of ent.changes || []) {
+        if (change.field !== 'messages') continue;
+
+        const { metadata, messages = [], contacts = [] } = change.value || {};
+        const phoneNumberId = metadata?.phone_number_id;
+
+        for (const msg of messages) {
+          if (msg.type !== 'text') continue;
+
+          const from    = msg.from;
+          const text    = msg.text?.body || '';
+          const contact = contacts.find((c) => c.wa_id === from);
+          const name    = contact?.profile?.name || from;
+
+          webhookService.processWhatsAppMessage({ phoneNumberId, from, name, text, msgId: msg.id })
+            .catch((err) => console.error('[webhook] WhatsApp processMessage error:', err.message));
+        }
+      }
+    }
   } catch (err) {
     next(err);
   }
@@ -211,6 +265,8 @@ module.exports = {
   metaWebhook,
   tiktokVerify,
   tiktokWebhook,
+  whatsappVerify,
+  whatsappWebhook,
   createConfig,
   listConfigs,
   getConfig,

@@ -78,4 +78,9 @@ module.exports = {
 
   // App
   APP_URL: process.env.APP_URL || 'http://localhost:3001',
+
+  // WhatsApp Business API (Meta)
+  WHATSAPP_VERIFY_TOKEN: process.env.WHATSAPP_VERIFY_TOKEN || '',
+  WHATSAPP_TOKEN:        process.env.WHATSAPP_TOKEN || '',
+  WHATSAPP_PHONE_ID:     process.env.WHATSAPP_PHONE_ID || '',
 };

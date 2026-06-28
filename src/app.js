@@ -21,6 +21,9 @@ const adminRoutes        = require('./modules/admin/admin.routes');
 
 const app = express();
 
+// Railway / proxies reversos — necesario para que req.ip y rate-limit usen la IP real
+app.set('trust proxy', 1);
+
 // ─── SEGURIDAD: HEADERS HTTP ──────────────────────────────────────────────────
 app.use(helmet());
 
