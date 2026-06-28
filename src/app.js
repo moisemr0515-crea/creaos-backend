@@ -14,6 +14,7 @@ const leadRoutes     = require('./modules/leads/lead.routes');
 const pipelineRoutes = require('./modules/pipeline/pipeline.routes');
 const importRoutes   = require('./modules/imports/import.routes');
 const aiRoutes       = require('./modules/ai/ai.routes');
+const webhookRoutes  = require('./modules/webhooks/webhook.routes');
 
 const app = express();
 
@@ -47,7 +48,13 @@ app.use(
 );
 
 // ─── PARSEO DEL BODY ──────────────────────────────────────────────────────────
-app.use(express.json({ limit: '10kb' }));     // JSON máximo 10kb (previene ataques)
+// Captura rawBody para verificación de firmas HMAC de webhooks (Meta, TikTok)
+app.use(
+  express.json({
+    limit: '10kb',
+    verify: (req, _res, buf) => { req.rawBody = buf; },
+  })
+);
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 
 // ─── RATE LIMIT GLOBAL ────────────────────────────────────────────────────────
@@ -88,6 +95,7 @@ app.use('/api/v1/leads',              leadRoutes);
 app.use('/api/v1/pipeline',           pipelineRoutes);
 app.use('/api/v1/imports',            importRoutes);
 app.use('/api/v1/ai/conversations',   aiRoutes);
+app.use('/api/v1/webhooks',           webhookRoutes);
 
 // ─── RUTA NO ENCONTRADA ───────────────────────────────────────────────────────
 app.use('*', (req, res) => {

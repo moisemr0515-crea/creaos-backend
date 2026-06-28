@@ -59,4 +59,11 @@ module.exports = {
   OPENAI_MODEL:    process.env.OPENAI_MODEL || 'gpt-4o',
   AI_MAX_TOKENS:   parseInt(process.env.AI_MAX_TOKENS, 10) || 1000,
   AI_TEMPERATURE:  parseFloat(process.env.AI_TEMPERATURE) || 0.7,
+
+  // Meta Ads
+  META_APP_SECRET:          process.env.META_APP_SECRET,
+  META_GRAPH_API_VERSION:   process.env.META_GRAPH_API_VERSION || 'v19.0',
+
+  // TikTok Ads
+  TIKTOK_APP_SECRET: process.env.TIKTOK_APP_SECRET,
 };
