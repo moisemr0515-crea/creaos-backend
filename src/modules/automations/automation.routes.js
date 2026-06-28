@@ -18,6 +18,7 @@ router.patch('/:automationId',       checkPermission('leads:update'), controller
 router.delete('/:automationId',      checkPermission('leads:delete'), controller.remove);
 router.patch('/:automationId/toggle',checkPermission('leads:update'), controller.toggle);
 router.get('/:automationId/logs',    checkPermission('leads:read'),   controller.getLogs);
-router.post('/:automationId/test',   checkPermission('leads:update'), controller.test);
+router.post('/:automationId/test',    checkPermission('leads:update'), controller.test);
+router.post('/:automationId/execute', checkPermission('leads:update'), controller.test); // alias semántico
 
 module.exports = router;

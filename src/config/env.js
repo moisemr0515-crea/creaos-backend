@@ -66,4 +66,16 @@ module.exports = {
 
   // TikTok Ads
   TIKTOK_APP_SECRET: process.env.TIKTOK_APP_SECRET,
+
+  // Stripe
+  STRIPE_SECRET_KEY:     process.env.STRIPE_SECRET_KEY,
+  STRIPE_PUBLIC_KEY:     process.env.STRIPE_PUBLIC_KEY,
+  STRIPE_WEBHOOK_SECRET: process.env.STRIPE_WEBHOOK_SECRET,
+
+  // Mercado Pago
+  MP_ACCESS_TOKEN: process.env.MP_ACCESS_TOKEN,
+  MP_PUBLIC_KEY:   process.env.MP_PUBLIC_KEY,
+
+  // App
+  APP_URL: process.env.APP_URL || 'http://localhost:3001',
 };

@@ -1,5 +1,6 @@
 const { Router } = require('express');
 const controller = require('./webhook.controller');
+const subController = require('../subscriptions/subscription.controller');
 const { authenticate } = require('../../middleware/auth.middleware');
 const { injectTenant } = require('../../middleware/tenant.middleware');
 const { checkPermission } = require('../../middleware/rbac.middleware');
@@ -11,6 +12,10 @@ router.get('/meta',    controller.metaVerify);
 router.post('/meta',   controller.metaWebhook);
 router.get('/tiktok',  controller.tiktokVerify);
 router.post('/tiktok', controller.tiktokWebhook);
+
+// ─── Public routes — payment providers ───────────────────────────────────────
+router.post('/stripe',       subController.stripeWebhook);
+router.post('/mercadopago',  subController.mercadopagoWebhook);
 
 // ─── Protected routes — manage webhook configs ────────────────────────────────
 router.use(authenticate, injectTenant);
