@@ -1,4 +1,5 @@
 const Stripe       = require('stripe');
+const { MercadoPagoConfig, PreApproval } = require('mercadopago');
 const Subscription = require('./subscription.model');
 const Plan         = require('./plan.model');
 const Business     = require('../businesses/business.model');
@@ -15,20 +16,18 @@ let stripe;
 const getStripe = () => {
   if (!stripe) {
     if (!STRIPE_SECRET_KEY) throw new AppError('Stripe no configurado', 503);
-    stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: '2023-10-16' });
+    stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: '2026-06-24.dahlia' });
   }
   return stripe;
 };
 
-let mpClient, PreApproval;
+let mpClient;
 const getMP = () => {
   if (!mpClient) {
     if (!MP_ACCESS_TOKEN) throw new AppError('Mercado Pago no configurado', 503);
-    const mp = require('mercadopago');
-    mpClient   = new mp.MercadoPagoConfig({ accessToken: MP_ACCESS_TOKEN });
-    PreApproval = mp.PreApproval;
+    mpClient = new MercadoPagoConfig({ accessToken: MP_ACCESS_TOKEN });
   }
-  return { mpClient, PreApproval };
+  return mpClient;
 };
 
 // ─── 1. getPlans ─────────────────────────────────────────────────────────────
@@ -143,7 +142,7 @@ const createStripeSubscription = async (businessId, planName, paymentMethodId) =
 // ─── 5. createMercadoPagoSubscription ────────────────────────────────────────
 
 const createMercadoPagoSubscription = async (businessId, planName, payerEmail) => {
-  const { mpClient: client, PreApproval: PA } = getMP();
+  const client = getMP();
   const plan = await Plan.findOne({ name: planName, isActive: true });
   if (!plan) throw new AppError('Plan no encontrado', 404);
   if (planName === 'starter') throw new AppError('El plan starter es gratuito', 400);
@@ -151,7 +150,7 @@ const createMercadoPagoSubscription = async (businessId, planName, payerEmail) =
   const amount        = plan.price_ars || plan.price * 1000; // fallback: convert USD to ARS x1000
   const callbackUrl   = `${APP_URL}/api/v1/subscriptions/mp/callback`;
 
-  const preApproval   = new PA(client);
+  const preApproval   = new PreApproval(client);
   const result        = await preApproval.create({
     body: {
       reason:         `CREA OS ${plan.displayName} - Mensual`,
@@ -284,9 +283,9 @@ const handleMercadoPagoWebhook = async (data) => {
   if (type !== 'preapproval' || !notification?.id) return;
 
   try {
-    const { mpClient: client, PreApproval: PA } = getMP();
-    const pa    = new PA(client);
-    const mpSub = await pa.get({ id: notification.id });
+    const client = getMP();
+    const pa     = new PreApproval(client);
+    const mpSub  = await pa.get({ id: notification.id });
 
     const businessId = mpSub.metadata?.businessId;
     const planId     = mpSub.metadata?.planId;
@@ -334,8 +333,8 @@ const cancelSubscription = async (businessId, atPeriodEnd = true) => {
     }
     await s.subscriptions.cancel(sub.stripeSubscriptionId);
   } else if (sub.provider === 'mercadopago' && sub.mpSubscriptionId) {
-    const { mpClient: client, PreApproval: PA } = getMP();
-    const pa = new PA(client);
+    const client = getMP();
+    const pa     = new PreApproval(client);
     await pa.update({ id: sub.mpSubscriptionId, body: { status: 'cancelled' } });
   }
 
@@ -362,13 +361,27 @@ const checkLeadLimit = async (businessId) => {
   return { allowed, current: sub.leadsUsedThisMonth, limit };
 };
 
-// ─── Increment lead usage ─────────────────────────────────────────────────────
+// ─── 10. incrementLeadCount ───────────────────────────────────────────────────
 
-const incrementLeadUsage = async (businessId) => {
-  await Subscription.findOneAndUpdate(
-    { business: businessId },
-    { $inc: { leadsUsedThisMonth: 1 } }
-  );
+const incrementLeadCount = async (businessId) => {
+  const sub = await Subscription.findOne({ business: businessId });
+  if (!sub) return;
+
+  const now              = new Date();
+  const resetAt          = sub.leadsResetAt ? new Date(sub.leadsResetAt) : new Date(0);
+  const startOfThisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  if (resetAt < startOfThisMonth) {
+    // Nuevo mes — reinicia el contador y cuenta este lead como el primero
+    await Subscription.findByIdAndUpdate(sub._id, {
+      leadsUsedThisMonth: 1,
+      leadsResetAt:       now,
+    });
+  } else {
+    await Subscription.findByIdAndUpdate(sub._id, {
+      $inc: { leadsUsedThisMonth: 1 },
+    });
+  }
 };
 
 module.exports = {
@@ -381,5 +394,5 @@ module.exports = {
   handleMercadoPagoWebhook,
   cancelSubscription,
   checkLeadLimit,
-  incrementLeadUsage,
+  incrementLeadCount,
 };
