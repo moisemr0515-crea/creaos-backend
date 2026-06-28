@@ -17,6 +17,7 @@ const aiRoutes       = require('./modules/ai/ai.routes');
 const webhookRoutes      = require('./modules/webhooks/webhook.routes');
 const automationRoutes   = require('./modules/automations/automation.routes');
 const subscriptionRoutes = require('./modules/subscriptions/subscription.routes');
+const adminRoutes        = require('./modules/admin/admin.routes');
 
 const app = express();
 
@@ -100,6 +101,7 @@ app.use('/api/v1/ai/conversations',   aiRoutes);
 app.use('/api/v1/webhooks',           webhookRoutes);
 app.use('/api/v1/automations',        automationRoutes);
 app.use('/api/v1/subscriptions',      subscriptionRoutes);
+app.use('/api/v1/admin',              adminRoutes);
 
 // ─── RUTA NO ENCONTRADA ───────────────────────────────────────────────────────
 app.use('*', (req, res) => {
