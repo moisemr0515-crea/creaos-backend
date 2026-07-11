@@ -6,7 +6,7 @@ const { MONGODB_URI, GUPSHUP_APP_NAME } = require('../src/config/env');
 const WebhookConfig = require('../src/modules/webhooks/webhookConfig.model');
 const logger = require('../src/utils/logger');
 
-const BUSINESS_ID = '6a40bea469dd20b2f8b405a3'; // CRM Business
+const BUSINESS_ID = '6a3a028d8f0b137e53a05b82'; // CREA OS (crea-os)
 
 const seed = async () => {
   await mongoose.connect(MONGODB_URI);
