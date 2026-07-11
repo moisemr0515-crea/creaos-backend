@@ -1,7 +1,7 @@
 const express = require('express');
 const helmet = require('helmet');
 const cors = require('cors');
-const { FRONTEND_URL, NODE_ENV } = require('./config/env');
+const { FRONTEND_URL, ALLOWED_ORIGINS, NODE_ENV } = require('./config/env');
 const { rateLimitGeneral } = require('./middleware/rateLimit.middleware');
 const { errorHandler } = require('./middleware/error.middleware');
 const logger = require('./utils/logger');
@@ -34,14 +34,13 @@ app.use(
       // Permitir requests sin origin (Postman, apps móviles)
       if (!origin) return callback(null, true);
 
-      const origenesPermitidos = [
-        FRONTEND_URL,
-        'http://localhost:5173',
-        'http://localhost:3000',
-        'https://hoppscotch.io',
-      ];
+      // Localhost siempre permitido en desarrollo (cualquier puerto)
+      const esLocalhostDev =
+        NODE_ENV !== 'production' && /^https?:\/\/localhost(:\d+)?$/.test(origin);
 
-      if (origenesPermitidos.includes(origin)) {
+      const origenesPermitidos = [FRONTEND_URL, ...ALLOWED_ORIGINS];
+
+      if (esLocalhostDev || origenesPermitidos.includes(origin)) {
         callback(null, true);
       } else {
         callback(new Error(`CORS: Origen no permitido → ${origin}`));
