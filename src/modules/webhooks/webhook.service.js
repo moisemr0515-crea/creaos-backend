@@ -4,6 +4,7 @@ const WebhookConfig = require('./webhookConfig.model');
 const Conversation = require('../ai/conversation.model');
 const Business = require('../businesses/business.model');
 const aiService = require('../ai/ai.service');
+const logger = require('../../utils/logger');
 const {
   META_APP_SECRET,
   META_GRAPH_API_VERSION,
@@ -322,6 +323,13 @@ async function findGupshupConfig(body) {
 }
 
 async function sendWhatsAppMessage(to, message) {
+  logger.info('[gupshup] enviando mensaje via Gupshup API', {
+    to,
+    hasApiKey: Boolean(GUPSHUP_API_KEY),
+    source: GUPSHUP_PHONE_NUMBER,
+    appName: GUPSHUP_APP_NAME,
+  });
+
   const body = new URLSearchParams({
     channel: 'whatsapp',
     source: GUPSHUP_PHONE_NUMBER,
@@ -340,18 +348,29 @@ async function sendWhatsAppMessage(to, message) {
   });
 
   if (!response.ok) {
-    const err = await response.text().catch(() => '');
-    throw new Error(`Gupshup API error: ${response.status} ${err}`);
+    const errText = await response.text().catch(() => '');
+    logger.error('[gupshup] Gupshup API respondió error', { status: response.status, body: errText });
+    throw new Error(`Gupshup API error: ${response.status} ${errText}`);
   }
 
-  return response.json();
+  const json = await response.json();
+  logger.info('[gupshup] mensaje enviado a Gupshup exitosamente', { to, gupshupResponse: json });
+  return json;
 }
 
 async function processGupshupMessage({ phone, text, name }, businessId) {
-  if (!phone || !text) return;
+  logger.info('[gupshup] processGupshupMessage: inicio', { phone, textPreview: text?.slice(0, 50), businessId });
+
+  if (!phone || !text) {
+    logger.warn('[gupshup] processGupshupMessage: phone o text vacío, se descarta', { phone, text });
+    return;
+  }
 
   const business = await Business.findById(businessId);
-  if (!business) return;
+  if (!business) {
+    logger.warn('[gupshup] processGupshupMessage: business no encontrado', { businessId });
+    return;
+  }
 
   let lead = await Lead.findOne({ business: businessId, phone, isDeleted: false });
 
@@ -370,6 +389,7 @@ async function processGupshupMessage({ phone, text, name }, businessId) {
     lead.lastContactedAt = new Date();
     await lead.save();
   }
+  logger.info('[gupshup] lead listo', { leadId: lead._id.toString() });
 
   let conversation = await Conversation.findOne({
     business: businessId,
@@ -387,11 +407,24 @@ async function processGupshupMessage({ phone, text, name }, businessId) {
       aiEnabled: true,
     });
   }
+  logger.info('[gupshup] conversación lista', {
+    conversationId: conversation._id.toString(),
+    aiEnabled: conversation.aiEnabled,
+  });
 
-  if (!conversation.aiEnabled) return { lead, conversation };
+  if (!conversation.aiEnabled) {
+    logger.info('[gupshup] IA deshabilitada para esta conversación, no se responde', {
+      conversationId: conversation._id.toString(),
+    });
+    return { lead, conversation };
+  }
 
+  logger.info('[gupshup] llamando a aiService.chat', { conversationId: conversation._id.toString() });
   const { reply } = await aiService.chat(conversation._id, text, business, lead);
+  logger.info('[gupshup] respuesta de IA recibida', { replyPreview: reply?.slice(0, 50) });
+
   await sendWhatsAppMessage(phone, reply);
+  logger.info('[gupshup] processGupshupMessage: completado', { leadId: lead._id.toString() });
 
   return { lead, conversation };
 }

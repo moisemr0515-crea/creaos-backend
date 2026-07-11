@@ -179,7 +179,7 @@ const gupshupWebhook = async (req, res, next) => {
 
     for (const msg of messages) {
       webhookService.processGupshupMessage(msg, config.business).catch((err) =>
-        logger.error('[webhook] Gupshup processMessage error:', err)
+        logger.error('[webhook] Gupshup processMessage error:', { message: err.message, stack: err.stack })
       );
     }
   } catch (err) {
