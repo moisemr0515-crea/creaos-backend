@@ -4,10 +4,10 @@ const { v4: uuidv4 } = require('uuid');
 const webhookConfigSchema = new mongoose.Schema(
   {
     business:    { type: mongoose.Schema.Types.ObjectId, ref: 'Business', required: true, index: true },
-    platform:    { type: String, enum: ['meta', 'tiktok'], required: true },
+    platform:    { type: String, enum: ['meta', 'tiktok', 'gupshup'], required: true },
     verifyToken: { type: String, default: () => uuidv4() },
     accessToken: String,   // Page Access Token (Meta) / TikTok API key
-    pageId:      String,   // Meta: Facebook Page ID
+    pageId:      String,   // Meta: Facebook Page ID / Gupshup: App Name
     adAccountId: String,   // Meta Ad Account ID / TikTok Advertiser ID
     formIds:     [String], // Filtrar formularios específicos (vacío = todos)
     defaults: {

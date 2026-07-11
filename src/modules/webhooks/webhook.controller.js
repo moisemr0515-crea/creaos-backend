@@ -146,6 +146,37 @@ const whatsappWebhook = async (req, res, next) => {
   }
 };
 
+// ─── Public: Gupshup webhook verification (GET) ──────────────────────────────
+
+const gupshupVerify = (req, res) => {
+  return res.status(200).send('OK');
+};
+
+// ─── Public: Gupshup webhook payload (POST) ──────────────────────────────────
+
+const gupshupWebhook = async (req, res, next) => {
+  try {
+    // ACK inmediato — procesamos en background
+    res.status(200).json({ received: true });
+
+    const payload = req.body;
+    if (payload?.type !== 'message') return;
+
+    const config = await WebhookConfig.findOne({
+      platform: 'gupshup',
+      pageId: payload.app,
+      isActive: true,
+    });
+    if (!config) return;
+
+    webhookService.processGupshupMessage(payload, config.business).catch((err) =>
+      console.error('[webhook] Gupshup processMessage error:', err.message)
+    );
+  } catch (err) {
+    next(err);
+  }
+};
+
 // ─── Protected: Manage webhook configs ───────────────────────────────────────
 
 const createConfig = async (req, res, next) => {
@@ -267,6 +298,8 @@ module.exports = {
   tiktokWebhook,
   whatsappVerify,
   whatsappWebhook,
+  gupshupVerify,
+  gupshupWebhook,
   createConfig,
   listConfigs,
   getConfig,

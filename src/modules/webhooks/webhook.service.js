@@ -1,7 +1,17 @@
 const crypto = require('crypto');
 const Lead = require('../leads/lead.model');
 const WebhookConfig = require('./webhookConfig.model');
-const { META_APP_SECRET, META_GRAPH_API_VERSION, TIKTOK_APP_SECRET } = require('../../config/env');
+const Conversation = require('../ai/conversation.model');
+const Business = require('../businesses/business.model');
+const aiService = require('../ai/ai.service');
+const {
+  META_APP_SECRET,
+  META_GRAPH_API_VERSION,
+  TIKTOK_APP_SECRET,
+  GUPSHUP_API_KEY,
+  GUPSHUP_APP_NAME,
+  GUPSHUP_PHONE_NUMBER,
+} = require('../../config/env');
 
 // ─── Meta signature verification ─────────────────────────────────────────────
 
@@ -243,6 +253,85 @@ async function processWhatsAppMessage({ phoneNumberId, from, name, text, msgId }
   return lead;
 }
 
+// ─── Gupshup (WhatsApp) ───────────────────────────────────────────────────────
+
+async function sendWhatsAppMessage(to, message) {
+  const body = new URLSearchParams({
+    channel: 'whatsapp',
+    source: GUPSHUP_PHONE_NUMBER,
+    destination: to,
+    message: JSON.stringify({ type: 'text', text: message }),
+    'src.name': GUPSHUP_APP_NAME,
+  });
+
+  const response = await fetch('https://api.gupshup.io/wa/api/v1/msg', {
+    method: 'POST',
+    headers: {
+      apikey: GUPSHUP_API_KEY,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: body.toString(),
+  });
+
+  if (!response.ok) {
+    const err = await response.text().catch(() => '');
+    throw new Error(`Gupshup API error: ${response.status} ${err}`);
+  }
+
+  return response.json();
+}
+
+async function processGupshupMessage(payload, businessId) {
+  const phone = payload?.payload?.sender?.phone;
+  const text = payload?.payload?.payload?.text;
+  if (!phone || !text) return;
+
+  const business = await Business.findById(businessId);
+  if (!business) return;
+
+  let lead = await Lead.findOne({ business: businessId, phone, isDeleted: false });
+
+  if (!lead) {
+    lead = await Lead.create({
+      business:   businessId,
+      name:       payload?.payload?.sender?.name || phone,
+      phone,
+      source:     'whatsapp',
+      whatsappId: phone,
+      tags:       ['whatsapp'],
+      activity: [{ type: 'created', description: `Mensaje WhatsApp recibido: ${text.slice(0, 100)}` }],
+    });
+  } else {
+    lead.activity.push({ type: 'contacted', description: `WhatsApp: ${text.slice(0, 100)}` });
+    lead.lastContactedAt = new Date();
+    await lead.save();
+  }
+
+  let conversation = await Conversation.findOne({
+    business: businessId,
+    lead:     lead._id,
+    status:   'active',
+    isDeleted: false,
+  });
+
+  if (!conversation) {
+    conversation = await Conversation.create({
+      business:  businessId,
+      lead:      lead._id,
+      channel:   'whatsapp',
+      status:    'active',
+      aiEnabled: true,
+    });
+  }
+
+  if (!conversation.aiEnabled) return { lead, conversation };
+
+  const { reply } = await aiService.chat(conversation._id, text, business, lead);
+  await sendWhatsAppMessage(phone, reply);
+
+  return { lead, conversation };
+}
+
 module.exports = {
   verifyMetaSignature,
   verifyTikTokSignature,
@@ -250,4 +339,6 @@ module.exports = {
   processMetaLead,
   processTikTokLead,
   processWhatsAppMessage,
+  sendWhatsAppMessage,
+  processGupshupMessage,
 };

@@ -83,4 +83,10 @@ module.exports = {
   WHATSAPP_VERIFY_TOKEN: process.env.WHATSAPP_VERIFY_TOKEN || '',
   WHATSAPP_TOKEN:        process.env.WHATSAPP_TOKEN || '',
   WHATSAPP_PHONE_ID:     process.env.WHATSAPP_PHONE_ID || '',
+
+  // Gupshup (WhatsApp)
+  GUPSHUP_API_KEY:      process.env.GUPSHUP_API_KEY || '',
+  GUPSHUP_APP_NAME:     process.env.GUPSHUP_APP_NAME || '',
+  GUPSHUP_PHONE_NUMBER: process.env.GUPSHUP_PHONE_NUMBER || '',
+  GUPSHUP_WABA_ID:      process.env.GUPSHUP_WABA_ID || '',
 };

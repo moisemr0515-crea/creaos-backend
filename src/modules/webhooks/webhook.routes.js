@@ -14,6 +14,8 @@ router.get('/tiktok',     controller.tiktokVerify);
 router.post('/tiktok',    controller.tiktokWebhook);
 router.get('/whatsapp',   controller.whatsappVerify);
 router.post('/whatsapp',  controller.whatsappWebhook);
+router.get('/gupshup',    controller.gupshupVerify);
+router.post('/gupshup',   controller.gupshupWebhook);
 
 // ─── Public routes — payment providers ───────────────────────────────────────
 router.post('/stripe',       subController.stripeWebhook);
