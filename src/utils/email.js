@@ -1,49 +1,38 @@
-const nodemailer = require('nodemailer');
-const { EMAIL_HOST, EMAIL_PORT, EMAIL_USER, EMAIL_PASS, EMAIL_FROM, FRONTEND_URL } = require('../config/env');
+const { Resend } = require('resend');
+const { RESEND_API_KEY, EMAIL_FROM, FRONTEND_URL } = require('../config/env');
 const logger = require('./logger');
 
-// Crear transporter reutilizable
-const crearTransporter = () => {
-  return nodemailer.createTransport({
-    host: EMAIL_HOST,
-    port: EMAIL_PORT,
-    secure: EMAIL_PORT === 465, // SSL en puerto 465, STARTTLS en 587
-    auth: {
-      user: EMAIL_USER,
-      pass: EMAIL_PASS,
-    },
-  });
-};
+const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
 
 /**
- * Envía un email genérico.
- * En desarrollo, loguea el email sin enviarlo si no hay configuración SMTP.
+ * Envía un email genérico vía Resend (API HTTPS).
+ * En desarrollo, loguea el email sin enviarlo si no hay API key configurada.
  */
 const enviarEmail = async ({ to, subject, html }) => {
-  // Si no hay configuración SMTP, solo loguear (útil en desarrollo)
-  if (!EMAIL_HOST || !EMAIL_USER) {
+  // Si no hay API key de Resend, solo loguear (útil en desarrollo)
+  if (!resend) {
     logger.warn(`[EMAIL - modo dev] Para: ${to} | Asunto: ${subject}`);
     return;
   }
 
   try {
-    const transporter = crearTransporter();
-    const info = await transporter.sendMail({
+    const { data, error } = await resend.emails.send({
       from: EMAIL_FROM,
       to,
       subject,
       html,
     });
-    logger.info(`Email enviado: ${info.messageId} → ${to}`);
+
+    if (error) {
+      logger.error(`Error enviando email a ${to}: ${error.message}`, {
+        name: error.name,
+      });
+      return;
+    }
+
+    logger.info(`Email enviado: ${data.id} → ${to}`);
   } catch (error) {
-    // TODO: revertir a solo error.message una vez resuelto el fallo de envío en producción
-    logger.error(`Error enviando email a ${to}: ${error.message}`, {
-      code: error.code,
-      responseCode: error.responseCode,
-      response: error.response,
-      command: error.command,
-      stack: error.stack,
-    });
+    logger.error(`Error enviando email a ${to}: ${error.message}`, { stack: error.stack });
     // No lanzar el error para no bloquear el flujo principal
   }
 };

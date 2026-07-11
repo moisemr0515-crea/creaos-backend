@@ -41,11 +41,8 @@ module.exports = {
   JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '15m',
   JWT_REFRESH_EXPIRES_IN: process.env.JWT_REFRESH_EXPIRES_IN || '7d',
 
-  // Email
-  EMAIL_HOST: process.env.EMAIL_HOST,
-  EMAIL_PORT: parseInt(process.env.EMAIL_PORT, 10) || 587,
-  EMAIL_USER: process.env.EMAIL_USER,
-  EMAIL_PASS: process.env.EMAIL_PASS,
+  // Email (Resend — API HTTPS, evita el bloqueo de SMTP saliente de Railway)
+  RESEND_API_KEY: process.env.RESEND_API_KEY,
   EMAIL_FROM: process.env.EMAIL_FROM || 'CREA OS <noreply@creaos.com>',
 
   // Frontend
