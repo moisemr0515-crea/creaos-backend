@@ -28,6 +28,18 @@ app.set('trust proxy', 1);
 app.use(helmet());
 
 // ─── CORS ─────────────────────────────────────────────────────────────────────
+// Sufijos de dominio de previews de Lovable (subdominio dinámico por proyecto)
+const SUFIJOS_LOVABLE = ['.lovable.app', '.lovableproject.com'];
+
+const esOrigenLovable = (origin) => {
+  try {
+    const { protocol, hostname } = new URL(origin);
+    return protocol === 'https:' && SUFIJOS_LOVABLE.some((sufijo) => hostname.endsWith(sufijo));
+  } catch {
+    return false;
+  }
+};
+
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -40,7 +52,7 @@ app.use(
 
       const origenesPermitidos = [FRONTEND_URL, ...ALLOWED_ORIGINS];
 
-      if (esLocalhostDev || origenesPermitidos.includes(origin)) {
+      if (esLocalhostDev || esOrigenLovable(origin) || origenesPermitidos.includes(origin)) {
         callback(null, true);
       } else {
         callback(new Error(`CORS: Origen no permitido → ${origin}`));
