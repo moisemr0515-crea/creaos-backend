@@ -4,6 +4,7 @@ const webhookService = require('./webhook.service');
 const { AppError } = require('../../middleware/error.middleware');
 const { respuestaExito } = require('../../utils/response');
 const { WHATSAPP_VERIFY_TOKEN } = require('../../config/env');
+const logger = require('../../utils/logger');
 
 // ─── Public: Meta webhook verification (GET) ─────────────────────────────────
 
@@ -160,18 +161,27 @@ const gupshupWebhook = async (req, res, next) => {
     res.status(200).json({ received: true });
 
     const payload = req.body;
-    if (payload?.type !== 'message') return;
+    const messages = webhookService.parseGupshupPayload(payload);
+    if (!messages.length) {
+      logger.warn('[webhook] Gupshup: payload sin mensajes de texto reconocibles', { body: payload });
+      return;
+    }
 
-    const config = await WebhookConfig.findOne({
-      platform: 'gupshup',
-      pageId: payload.app,
-      isActive: true,
-    });
-    if (!config) return;
+    const config = await webhookService.findGupshupConfig(payload);
+    if (!config) {
+      logger.warn('[webhook] Gupshup: no hay WebhookConfig activo que matchee este payload', {
+        app: payload.app,
+        gsAppId: payload.gs_app_id,
+        wabaId: payload.entry?.[0]?.id,
+      });
+      return;
+    }
 
-    webhookService.processGupshupMessage(payload, config.business).catch((err) =>
-      console.error('[webhook] Gupshup processMessage error:', err.message)
-    );
+    for (const msg of messages) {
+      webhookService.processGupshupMessage(msg, config.business).catch((err) =>
+        logger.error('[webhook] Gupshup processMessage error:', err)
+      );
+    }
   } catch (err) {
     next(err);
   }

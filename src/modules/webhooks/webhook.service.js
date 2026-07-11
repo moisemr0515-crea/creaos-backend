@@ -254,6 +254,72 @@ async function processWhatsAppMessage({ phoneNumberId, from, name, text, msgId }
 }
 
 // ─── Gupshup (WhatsApp) ───────────────────────────────────────────────────────
+// Gupshup manda dos formatos posibles según cómo esté suscrita la app:
+//  - "legacy": { type: "message", app, payload: { sender: { phone, name }, payload: { text } } }
+//  - "v3" (passthrough Meta): { object: "whatsapp_business_account", gs_app_id, entry: [{ id, changes: [{ field: "messages", value: { metadata, contacts, messages } }] }] }
+
+function parseGupshupPayload(body) {
+  if (body?.object === 'whatsapp_business_account' && Array.isArray(body.entry)) {
+    const results = [];
+    for (const entry of body.entry) {
+      for (const change of entry.changes || []) {
+        if (change.field !== 'messages') continue;
+        const { messages = [], contacts = [] } = change.value || {};
+        for (const msg of messages) {
+          if (msg.type !== 'text') continue;
+          const from = msg.from;
+          const contact = contacts.find((c) => c.wa_id === from);
+          results.push({
+            phone: from,
+            text: msg.text?.body || '',
+            name: contact?.profile?.name || from,
+            msgId: msg.id,
+          });
+        }
+      }
+    }
+    return results;
+  }
+
+  if (body?.type === 'message') {
+    const phone = body.payload?.sender?.phone;
+    const text = body.payload?.payload?.text;
+    if (!phone || !text) return [];
+    return [{
+      phone,
+      text,
+      name: body.payload?.sender?.name || phone,
+      msgId: body.payload?.id,
+    }];
+  }
+
+  return [];
+}
+
+function extractGupshupAppIdentifiers(body) {
+  if (body?.object === 'whatsapp_business_account' && Array.isArray(body.entry)) {
+    const entry = body.entry[0];
+    return {
+      format: 'v3',
+      gsAppId: body.gs_app_id,
+      wabaId: entry?.id,
+      phoneNumberId: entry?.changes?.[0]?.value?.metadata?.phone_number_id,
+    };
+  }
+  return { format: 'legacy', appName: body?.app };
+}
+
+async function findGupshupConfig(body) {
+  const ids = extractGupshupAppIdentifiers(body);
+  const candidates = [ids.appName, ids.gsAppId, ids.wabaId, ids.phoneNumberId].filter(Boolean);
+  if (!candidates.length) return null;
+
+  return WebhookConfig.findOne({
+    platform: 'gupshup',
+    pageId: { $in: candidates },
+    isActive: true,
+  });
+}
 
 async function sendWhatsAppMessage(to, message) {
   const body = new URLSearchParams({
@@ -281,9 +347,7 @@ async function sendWhatsAppMessage(to, message) {
   return response.json();
 }
 
-async function processGupshupMessage(payload, businessId) {
-  const phone = payload?.payload?.sender?.phone;
-  const text = payload?.payload?.payload?.text;
+async function processGupshupMessage({ phone, text, name }, businessId) {
   if (!phone || !text) return;
 
   const business = await Business.findById(businessId);
@@ -294,7 +358,7 @@ async function processGupshupMessage(payload, businessId) {
   if (!lead) {
     lead = await Lead.create({
       business:   businessId,
-      name:       payload?.payload?.sender?.name || phone,
+      name:       name || phone,
       phone,
       source:     'whatsapp',
       whatsappId: phone,
@@ -340,5 +404,7 @@ module.exports = {
   processTikTokLead,
   processWhatsAppMessage,
   sendWhatsAppMessage,
+  parseGupshupPayload,
+  findGupshupConfig,
   processGupshupMessage,
 };
