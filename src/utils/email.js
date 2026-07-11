@@ -36,7 +36,14 @@ const enviarEmail = async ({ to, subject, html }) => {
     });
     logger.info(`Email enviado: ${info.messageId} → ${to}`);
   } catch (error) {
-    logger.error(`Error enviando email a ${to}:`, error.message);
+    // TODO: revertir a solo error.message una vez resuelto el fallo de envío en producción
+    logger.error(`Error enviando email a ${to}: ${error.message}`, {
+      code: error.code,
+      responseCode: error.responseCode,
+      response: error.response,
+      command: error.command,
+      stack: error.stack,
+    });
     // No lanzar el error para no bloquear el flujo principal
   }
 };
