@@ -135,11 +135,18 @@ const subirPdf = async (businessId, file) => {
     await parser.destroy();
   }
 
+  // pdf-parse inserta separadores de página ("-- 1 of 3 --") que no aportan
+  // nada al prompt de la IA y solo restan espacio útil del texto truncado
+  const textoLimpio = texto
+    .replace(/--\s*\d+\s*of\s*\d+\s*--/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
   const negocio = await Business.findByIdAndUpdate(
     businessId,
     {
       pdfUrl: resultado.secure_url,
-      pdfExtractedText: texto.slice(0, MAX_PDF_TEXT_LENGTH),
+      pdfExtractedText: textoLimpio.slice(0, MAX_PDF_TEXT_LENGTH),
       pdfUploadedAt: new Date(),
     },
     { new: true, runValidators: true }
