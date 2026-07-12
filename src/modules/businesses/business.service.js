@@ -1,10 +1,47 @@
+const OpenAI = require('openai');
 const { PDFParse } = require('pdf-parse');
 const Business = require('./business.model');
 const { AppError } = require('../../middleware/error.middleware');
 const { subirBuffer, eliminarPorUrl } = require('../../utils/cloudinary');
 const logger = require('../../utils/logger');
+const { OPENAI_API_KEY, OPENAI_MODEL } = require('../../config/env');
+
+const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 const MAX_PDF_TEXT_LENGTH = 5000;
+const MAX_PDF_SUMMARY_LENGTH = 800;
+
+/**
+ * Resume el texto del PDF a lo esencial para un agente de ventas
+ * (se genera una sola vez al subir el PDF, no en cada mensaje de la IA).
+ * Si falla (rate limit, error de API, etc.), cae a un truncado simple
+ * del texto original para no bloquear la subida del archivo.
+ */
+const generarResumenPdf = async (textoCompleto) => {
+  try {
+    const completion = await openai.chat.completions.create({
+      model: OPENAI_MODEL,
+      messages: [
+        {
+          role: 'system',
+          content:
+            'Resume el siguiente documento de un negocio en máximo 4 oraciones, ' +
+            'enfocándote en qué vende, sus diferenciadores, y datos útiles para ' +
+            'que un agente de ventas por WhatsApp lo use en conversaciones con leads ' +
+            '(precios, garantías, políticas, etc). No inventes información que no esté en el texto.',
+        },
+        { role: 'user', content: textoCompleto },
+      ],
+      max_tokens: 300,
+      temperature: 0.3,
+    });
+
+    return completion.choices[0].message.content.slice(0, MAX_PDF_SUMMARY_LENGTH);
+  } catch (error) {
+    logger.warn(`No se pudo generar el resumen del PDF con IA, se usa truncado simple: ${error.message}`);
+    return textoCompleto.slice(0, MAX_PDF_SUMMARY_LENGTH);
+  }
+};
 
 /**
  * Obtiene el negocio actual del usuario autenticado.
@@ -154,11 +191,14 @@ const subirPdf = async (businessId, file) => {
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 
+  const resumen = await generarResumenPdf(textoLimpio);
+
   const negocio = await Business.findByIdAndUpdate(
     businessId,
     {
       pdfUrl: resultado.secure_url,
       pdfExtractedText: textoLimpio.slice(0, MAX_PDF_TEXT_LENGTH),
+      pdfSummary: resumen,
       pdfUploadedAt: new Date(),
     },
     { new: true, runValidators: true }

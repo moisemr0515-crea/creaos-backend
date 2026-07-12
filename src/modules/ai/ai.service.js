@@ -10,7 +10,10 @@ const buildSystemPrompt = (business, lead) => {
   const infoNegocio = [
     business.productDescription && `- Qué vende: ${business.productDescription}`,
     business.targetCustomer && `- Cliente ideal: ${business.targetCustomer}`,
-    business.pdfExtractedText && `- Información adicional del negocio (extraída de su documento):\n${business.pdfExtractedText}`,
+    // Se usa el resumen (barato en tokens) en vez del texto completo del PDF;
+    // pdfExtractedText queda como fallback para PDFs subidos antes de tener resumen
+    (business.pdfSummary || business.pdfExtractedText) &&
+      `- Información adicional del negocio (de su documento):\n${business.pdfSummary || business.pdfExtractedText}`,
   ].filter(Boolean).join('\n');
 
   const bloqueInstruccionesDueno = business.aiInstructions

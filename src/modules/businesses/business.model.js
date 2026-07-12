@@ -40,6 +40,14 @@ const businessSchema = new mongoose.Schema(
       maxlength: 5000,
       default: null,
     },
+    // Resumen del PDF (generado una sola vez al subirlo) — esto es lo que
+    // realmente se inyecta en cada mensaje del prompt de la IA, para no
+    // pagar tokens del texto completo en cada turno de la conversación
+    pdfSummary: {
+      type: String,
+      maxlength: 800,
+      default: null,
+    },
     pdfUploadedAt: {
       type: Date,
       default: null,
