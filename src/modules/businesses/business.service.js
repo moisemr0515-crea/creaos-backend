@@ -1,7 +1,8 @@
 const { PDFParse } = require('pdf-parse');
 const Business = require('./business.model');
 const { AppError } = require('../../middleware/error.middleware');
-const { subirBuffer } = require('../../utils/cloudinary');
+const { subirBuffer, eliminarPorUrl } = require('../../utils/cloudinary');
+const logger = require('../../utils/logger');
 
 const MAX_PDF_TEXT_LENGTH = 5000;
 
@@ -69,6 +70,9 @@ const actualizarSettings = async (businessId, { timezone, language, notification
  * Sube el logo del negocio a Cloudinary y actualiza el negocio.
  */
 const subirLogo = async (businessId, file) => {
+  const negocioAnterior = await Business.findById(businessId);
+  if (!negocioAnterior) throw new AppError('Negocio no encontrado', 404);
+
   const resultado = await subirBuffer(file.buffer, {
     folder: `creaos/businesses/${businessId}/logo`,
     resource_type: 'image',
@@ -81,7 +85,8 @@ const subirLogo = async (businessId, file) => {
     { new: true, runValidators: true }
   ).populate('createdBy', 'name email');
 
-  if (!negocio) throw new AppError('Negocio no encontrado', 404);
+  // Borrado best-effort del logo anterior — no debe bloquear la respuesta
+  await eliminarPorUrl(negocioAnterior.logo, logger);
 
   return negocio;
 };
@@ -91,6 +96,9 @@ const subirLogo = async (businessId, file) => {
  */
 const subirFotos = async (businessId, files) => {
   if (files.length > 2) throw new AppError('Máximo 2 fotos de producto', 400);
+
+  const negocioAnterior = await Business.findById(businessId);
+  if (!negocioAnterior) throw new AppError('Negocio no encontrado', 404);
 
   const urls = await Promise.all(
     files.map((file) =>
@@ -107,7 +115,8 @@ const subirFotos = async (businessId, files) => {
     { new: true, runValidators: true }
   ).populate('createdBy', 'name email');
 
-  if (!negocio) throw new AppError('Negocio no encontrado', 404);
+  // Borrado best-effort de las fotos anteriores — no debe bloquear la respuesta
+  await Promise.all(negocioAnterior.photos.map((url) => eliminarPorUrl(url, logger)));
 
   return negocio;
 };
@@ -117,6 +126,9 @@ const subirFotos = async (businessId, files) => {
  * (truncado) para usarlo en el prompt de la IA de ventas.
  */
 const subirPdf = async (businessId, file) => {
+  const negocioAnterior = await Business.findById(businessId);
+  if (!negocioAnterior) throw new AppError('Negocio no encontrado', 404);
+
   const resultado = await subirBuffer(file.buffer, {
     folder: `creaos/businesses/${businessId}/pdf`,
     resource_type: 'raw',
@@ -152,7 +164,8 @@ const subirPdf = async (businessId, file) => {
     { new: true, runValidators: true }
   ).populate('createdBy', 'name email');
 
-  if (!negocio) throw new AppError('Negocio no encontrado', 404);
+  // Borrado best-effort del PDF anterior — no debe bloquear la respuesta
+  await eliminarPorUrl(negocioAnterior.pdfUrl, logger);
 
   return negocio;
 };
