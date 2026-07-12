@@ -53,6 +53,12 @@ const businessSchema = new mongoose.Schema(
       trim: true,
       default: null,
     },
+    // Onboarding: número de WhatsApp del negocio (distinto de `phone`, uso comercial)
+    whatsappNumber: {
+      type: String,
+      trim: true,
+      default: null,
+    },
     // Onboarding: qué vende el negocio
     productDescription: {
       type: String,
