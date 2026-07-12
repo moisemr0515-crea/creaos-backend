@@ -1,9 +1,10 @@
 const { v4: uuidv4 } = require('uuid');
 const WebhookConfig = require('./webhookConfig.model');
 const webhookService = require('./webhook.service');
+const metaOauthService = require('./metaOauth.service');
 const { AppError } = require('../../middleware/error.middleware');
 const { respuestaExito } = require('../../utils/response');
-const { WHATSAPP_VERIFY_TOKEN } = require('../../config/env');
+const { WHATSAPP_VERIFY_TOKEN, FRONTEND_URL } = require('../../config/env');
 const logger = require('../../utils/logger');
 
 // ─── Public: Meta webhook verification (GET) ─────────────────────────────────
@@ -91,6 +92,39 @@ const tiktokWebhook = async (req, res, next) => {
     );
   } catch (err) {
     next(err);
+  }
+};
+
+// ─── Protected: Meta OAuth — inicia el flujo de "Conectar con Facebook" ──────
+
+const metaOauthConnect = async (req, res, next) => {
+  try {
+    const url = await metaOauthService.getAuthUrl(req.businessId);
+    return respuestaExito(res, {
+      message: 'URL de autorización de Meta generada',
+      data: { url },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─── Public: Meta OAuth — callback al que Facebook redirige tras autorizar ───
+
+const metaOauthCallback = async (req, res) => {
+  const { code, state, error: fbError, error_reason: fbReason } = req.query;
+
+  try {
+    if (fbError) throw new Error(fbReason || 'user_denied');
+    if (!code || !state) throw new Error('missing_params');
+
+    await metaOauthService.handleCallback({ code, state });
+    return res.redirect(`${FRONTEND_URL}/settings/integrations?meta=success`);
+  } catch (err) {
+    logger.warn('[webhook] Meta OAuth callback error', { message: err.message });
+    return res.redirect(
+      `${FRONTEND_URL}/settings/integrations?meta=error&reason=${encodeURIComponent(err.message || 'unknown')}`
+    );
   }
 };
 
@@ -304,6 +338,8 @@ const testWebhook = async (req, res, next) => {
 module.exports = {
   metaVerify,
   metaWebhook,
+  metaOauthConnect,
+  metaOauthCallback,
   tiktokVerify,
   tiktokWebhook,
   whatsappVerify,

@@ -7,6 +7,7 @@ const webhookConfigSchema = new mongoose.Schema(
     platform:    { type: String, enum: ['meta', 'tiktok', 'gupshup'], required: true },
     verifyToken: { type: String, default: () => uuidv4() },
     accessToken: String,   // Page Access Token (Meta) / TikTok API key
+    accessTokenExpiresAt: { type: Date, default: null }, // token de larga duración (Meta OAuth, ~60 días); sin refresh automático aún
     pageId:      String,   // Meta: Facebook Page ID / Gupshup: App Name
     adAccountId: String,   // Meta Ad Account ID / TikTok Advertiser ID
     formIds:     [String], // Filtrar formularios específicos (vacío = todos)

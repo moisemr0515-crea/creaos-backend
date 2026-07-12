@@ -174,6 +174,7 @@ const REDIS_KEYS = {
   REFRESH_TOKEN: (userId, jti) => `rt:${userId}:${jti}`,
   RESET_TOKEN: (token) => `reset:${token}`,
   LOGIN_ATTEMPTS: (ip) => `login_attempts:${ip}`,
+  OAUTH_STATE: (state) => `oauth_state:meta:${state}`,
 };
 
 module.exports = {

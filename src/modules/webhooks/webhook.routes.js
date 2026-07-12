@@ -10,6 +10,7 @@ const router = Router();
 // ─── Public routes (no auth) — called by Meta / TikTok / WhatsApp platforms ──
 router.get('/meta',       controller.metaVerify);
 router.post('/meta',      controller.metaWebhook);
+router.get('/meta/oauth/callback', controller.metaOauthCallback);
 router.get('/tiktok',     controller.tiktokVerify);
 router.post('/tiktok',    controller.tiktokWebhook);
 router.get('/whatsapp',   controller.whatsappVerify);
@@ -23,6 +24,8 @@ router.post('/mercadopago',  subController.mercadopagoWebhook);
 
 // ─── Protected routes — manage webhook configs ────────────────────────────────
 router.use(authenticate, injectTenant);
+
+router.get('/meta/oauth/connect',    checkPermission('businesses:settings'), controller.metaOauthConnect);
 
 router.post('/configs',              checkPermission('leads:create'), controller.createConfig);
 router.get('/configs',               checkPermission('leads:read'),   controller.listConfigs);

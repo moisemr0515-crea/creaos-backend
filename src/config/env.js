@@ -69,6 +69,7 @@ module.exports = {
   AI_TEMPERATURE:  parseFloat(process.env.AI_TEMPERATURE) || 0.7,
 
   // Meta Ads
+  META_APP_ID:              process.env.META_APP_ID,
   META_APP_SECRET:          process.env.META_APP_SECRET,
   META_GRAPH_API_VERSION:   process.env.META_GRAPH_API_VERSION || 'v19.0',
 
