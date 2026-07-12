@@ -102,6 +102,13 @@ const businessSchema = new mongoose.Schema(
       maxlength: 300,
       default: null,
     },
+    // Instrucciones libres del dueño para el comportamiento de la IA de ventas
+    aiInstructions: {
+      type: String,
+      trim: true,
+      maxlength: 1500,
+      default: null,
+    },
     plan: {
       type: String,
       enum: Object.values(PLANS),

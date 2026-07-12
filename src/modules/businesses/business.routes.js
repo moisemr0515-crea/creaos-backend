@@ -52,6 +52,7 @@ router.put('/current',
     body('productDescription').optional().trim().isLength({ max: 500 }).withMessage('Descripción de producto muy larga'),
     body('averageTicket').optional().isFloat({ min: 0 }).withMessage('Ticket promedio debe ser un número >= 0'),
     body('targetCustomer').optional().trim().isLength({ max: 300 }).withMessage('Descripción de cliente objetivo muy larga'),
+    body('aiInstructions').optional().trim().isLength({ max: 1500 }).withMessage('Instrucciones para la IA muy largas (máx 1500 caracteres)'),
   ],
   validate,
   controller.updateNegocioActual

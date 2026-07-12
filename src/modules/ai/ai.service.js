@@ -7,10 +7,20 @@ const { AppError } = require('../../middleware/error.middleware');
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 const buildSystemPrompt = (business, lead) => {
+  const infoNegocio = [
+    business.productDescription && `- Qué vende: ${business.productDescription}`,
+    business.targetCustomer && `- Cliente ideal: ${business.targetCustomer}`,
+    business.pdfExtractedText && `- Información adicional del negocio (extraída de su documento):\n${business.pdfExtractedText}`,
+  ].filter(Boolean).join('\n');
+
+  const bloqueInstruccionesDueno = business.aiInstructions
+    ? `\nINSTRUCCIONES ESPECÍFICAS DEL DUEÑO DEL NEGOCIO (síguelas estrictamente, tienen prioridad sobre las instrucciones generales de abajo):\n${business.aiInstructions}\n`
+    : '';
+
   return `Eres Alex, un agente de ventas profesional y empático de ${business.name}.
-
+${infoNegocio ? `\nINFORMACIÓN DEL NEGOCIO:\n${infoNegocio}\n` : ''}
 Tu objetivo es calificar al lead y guiarlo hacia una venta de manera natural y conversacional.
-
+${bloqueInstruccionesDueno}
 INFORMACIÓN DEL LEAD:
 - Nombre: ${lead.name}
 - Empresa: ${lead.company || 'No especificada'}

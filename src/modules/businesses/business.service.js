@@ -21,7 +21,7 @@ const obtenerNegocioActual = async (businessId) => {
  * Actualiza datos principales del negocio (nombre, logo, industria, etc.).
  */
 const actualizarNegocio = async (businessId, datos) => {
-  const camposPermitidos = ['name', 'logo', 'industry', 'country', 'currency', 'phone', 'email', 'website', 'whatsappNumber', 'productDescription', 'averageTicket', 'targetCustomer'];
+  const camposPermitidos = ['name', 'logo', 'industry', 'country', 'currency', 'phone', 'email', 'website', 'whatsappNumber', 'productDescription', 'averageTicket', 'targetCustomer', 'aiInstructions'];
   const actualizacion = {};
 
   camposPermitidos.forEach((campo) => {
