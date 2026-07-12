@@ -53,6 +53,26 @@ const businessSchema = new mongoose.Schema(
       trim: true,
       default: null,
     },
+    // Onboarding: qué vende el negocio
+    productDescription: {
+      type: String,
+      trim: true,
+      maxlength: 500,
+      default: null,
+    },
+    // Onboarding: ticket promedio de venta (en la moneda de `currency`)
+    averageTicket: {
+      type: Number,
+      min: 0,
+      default: null,
+    },
+    // Onboarding: descripción del cliente ideal/objetivo
+    targetCustomer: {
+      type: String,
+      trim: true,
+      maxlength: 300,
+      default: null,
+    },
     plan: {
       type: String,
       enum: Object.values(PLANS),
