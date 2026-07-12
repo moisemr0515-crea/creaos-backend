@@ -1,12 +1,35 @@
 const { Router } = require('express');
+const multer = require('multer');
 const { body } = require('express-validator');
 const controller = require('./business.controller');
 const { authenticate } = require('../../middleware/auth.middleware');
 const { injectTenant } = require('../../middleware/tenant.middleware');
 const { checkPermission } = require('../../middleware/rbac.middleware');
 const { validate } = require('../../middleware/validate.middleware');
+const { AppError } = require('../../middleware/error.middleware');
 
 const router = Router();
+
+const uploadImagen = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
+  fileFilter: (_req, file, cb) => {
+    const mimeOk = ['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype);
+    if (mimeOk) cb(null, true);
+    else cb(new AppError('Tipo de imagen no permitido. Use JPG, PNG o WEBP', 400));
+  },
+});
+
+const uploadPdf = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
+  fileFilter: (_req, file, cb) => {
+    const extOk = /\.pdf$/i.test(file.originalname);
+    const mimeOk = file.mimetype === 'application/pdf';
+    if (extOk || mimeOk) cb(null, true);
+    else cb(new AppError('Solo se permiten archivos PDF', 400));
+  },
+});
 
 // Todas las rutas requieren autenticación y tenant
 router.use(authenticate, injectTenant);
@@ -32,6 +55,27 @@ router.put('/current',
   ],
   validate,
   controller.updateNegocioActual
+);
+
+// POST /api/v1/businesses/current/logo
+router.post('/current/logo',
+  checkPermission('businesses:update'),
+  uploadImagen.single('logo'),
+  controller.uploadLogo
+);
+
+// POST /api/v1/businesses/current/photos  (hasta 2 fotos de producto)
+router.post('/current/photos',
+  checkPermission('businesses:update'),
+  uploadImagen.array('photos', 2),
+  controller.uploadPhotos
+);
+
+// POST /api/v1/businesses/current/pdf  (extrae texto para la IA de ventas)
+router.post('/current/pdf',
+  checkPermission('businesses:update'),
+  uploadPdf.single('pdf'),
+  controller.uploadPdf
 );
 
 // PUT /api/v1/businesses/settings

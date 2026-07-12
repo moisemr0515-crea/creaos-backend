@@ -48,6 +48,11 @@ module.exports = {
   // Frontend
   FRONTEND_URL: process.env.FRONTEND_URL || 'http://localhost:5173',
 
+  // Cloudinary (logo, fotos de producto, PDF informativo)
+  CLOUDINARY_CLOUD_NAME: process.env.CLOUDINARY_CLOUD_NAME,
+  CLOUDINARY_API_KEY: process.env.CLOUDINARY_API_KEY,
+  CLOUDINARY_API_SECRET: process.env.CLOUDINARY_API_SECRET,
+
   // CORS — lista de orígenes permitidos separados por coma
   ALLOWED_ORIGINS: (process.env.ALLOWED_ORIGINS || '')
     .split(',')

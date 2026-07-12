@@ -21,6 +21,29 @@ const businessSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    // Hasta 2 fotos de producto (Cloudinary)
+    photos: {
+      type: [String],
+      default: [],
+      validate: {
+        validator: (arr) => arr.length <= 2,
+        message: 'Máximo 2 fotos de producto',
+      },
+    },
+    // PDF informativo del negocio, usado para entrenar a la IA de ventas
+    pdfUrl: {
+      type: String,
+      default: null,
+    },
+    pdfExtractedText: {
+      type: String,
+      maxlength: 5000,
+      default: null,
+    },
+    pdfUploadedAt: {
+      type: Date,
+      default: null,
+    },
     industry: {
       type: String,
       trim: true,
