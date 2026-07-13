@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const { getRedis } = require('../../config/redis');
 const { REDIS_KEYS } = require('../../config/constants');
 const { AppError } = require('../../middleware/error.middleware');
+const logger = require('../../utils/logger');
 const WebhookConfig = require('./webhookConfig.model');
 const {
   META_APP_ID,
@@ -102,6 +103,21 @@ const subscribePageToLeadgen = async (pageId, pageAccessToken) => {
   return json;
 };
 
+// Contraparte de subscribePageToLeadgen — deja de recibir leads de esta Página.
+// No revoca el login de Facebook del usuario (para eso se necesitaría el user token,
+// que no persistimos): solo desuscribe la app de la Página, con el page access token que sí guardamos.
+const unsubscribePageFromLeadgen = async (pageId, pageAccessToken) => {
+  const url = `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${pageId}/subscribed_apps` +
+    `?access_token=${pageAccessToken}`;
+
+  const res = await fetch(url, { method: 'DELETE' });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || json.success !== true) {
+    throw new AppError(json.error?.message || 'unsubscribe_failed', 400);
+  }
+  return json;
+};
+
 // ─── Orquestación completa usada por el callback ─────────────────────────────
 
 const handleCallback = async ({ code, state }) => {
@@ -141,4 +157,44 @@ const handleCallback = async ({ code, state }) => {
   return config;
 };
 
-module.exports = { getAuthUrl, handleCallback };
+// ─── Desconectar la integración ───────────────────────────────────────────────
+
+const disconnect = async (businessId, actorUserId) => {
+  const config = await WebhookConfig.findOne({ business: businessId, platform: 'meta' });
+  if (!config || !config.isActive) {
+    throw new AppError('No hay una integración de Meta conectada para este negocio', 404);
+  }
+
+  // Best-effort: revocar la suscripción del lado de Meta. Si falla (token ya
+  // expirado, Página eliminada, etc.) igual limpiamos los datos locales.
+  if (config.pageId && config.accessToken) {
+    try {
+      await unsubscribePageFromLeadgen(config.pageId, config.accessToken);
+    } catch (err) {
+      logger.warn('[metaOauth] No se pudo desuscribir la Página en Meta; se limpian los datos locales de todas formas', {
+        businessId: businessId.toString(),
+        pageId: config.pageId,
+        message: err.message,
+      });
+    }
+  }
+
+  const pageName = config.pageName;
+
+  config.accessToken = undefined;
+  config.pageId = undefined;
+  config.pageName = undefined;
+  config.accessTokenExpiresAt = null;
+  config.isActive = false;
+  await config.save();
+
+  logger.info('[metaOauth] Integración de Meta desconectada', {
+    businessId: businessId.toString(),
+    userId: actorUserId?.toString(),
+    pageName,
+  });
+
+  return { disconnected: true, pageName };
+};
+
+module.exports = { getAuthUrl, handleCallback, disconnect };

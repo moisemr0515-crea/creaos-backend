@@ -26,6 +26,7 @@ router.post('/mercadopago',  subController.mercadopagoWebhook);
 router.use(authenticate, injectTenant);
 
 router.get('/meta/oauth/connect',    checkPermission('businesses:settings'), controller.metaOauthConnect);
+router.post('/meta/oauth/disconnect', checkPermission('businesses:settings'), controller.metaOauthDisconnect);
 
 router.post('/configs',              checkPermission('leads:create'), controller.createConfig);
 router.get('/configs',               checkPermission('leads:read'),   controller.listConfigs);

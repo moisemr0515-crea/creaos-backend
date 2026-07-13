@@ -109,6 +109,20 @@ const metaOauthConnect = async (req, res, next) => {
   }
 };
 
+// ─── Protected: Meta OAuth — desconectar la integración ──────────────────────
+
+const metaOauthDisconnect = async (req, res, next) => {
+  try {
+    const result = await metaOauthService.disconnect(req.businessId, req.user?._id);
+    return respuestaExito(res, {
+      message: 'Integración de Meta desconectada correctamente',
+      data: result,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 // ─── Public: Meta OAuth — callback al que Facebook redirige tras autorizar ───
 
 const metaOauthCallback = async (req, res) => {
@@ -349,6 +363,7 @@ module.exports = {
   metaVerify,
   metaWebhook,
   metaOauthConnect,
+  metaOauthDisconnect,
   metaOauthCallback,
   tiktokVerify,
   tiktokWebhook,
