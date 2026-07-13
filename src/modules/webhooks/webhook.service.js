@@ -12,10 +12,11 @@ const {
   GUPSHUP_API_KEY,
   GUPSHUP_APP_NAME,
   GUPSHUP_PHONE_NUMBER,
-  GUPSHUP_WEBHOOK_USER,
-  GUPSHUP_WEBHOOK_PASS,
+  GUPSHUP_WEBHOOK_TOKEN,
   NODE_ENV,
 } = require('../../config/env');
+
+const GUPSHUP_WEBHOOK_HEADER = 'x-gupshup-webhook-token';
 
 // ─── Meta signature verification (también usada por WhatsApp Cloud API) ──────
 
@@ -34,18 +35,20 @@ function verifyMetaSignature(rawBody, signature, secret = META_APP_SECRET) {
   }
 }
 
-// ─── Gupshup Basic Auth verification ─────────────────────────────────────────
-// Requiere elegir "Basic Authentication" en el panel de Gupshup (Webhook config)
-// y configurar las mismas credenciales en GUPSHUP_WEBHOOK_USER / GUPSHUP_WEBHOOK_PASS.
+// ─── Gupshup custom-header token verification ────────────────────────────────
+// Gupshup no ofrece HMAC ni Basic Auth — su panel (Webhook config → Custom Header)
+// solo permite definir un par header/valor libre que reenvía en cada request.
+// Configurar ahí el header "X-Gupshup-Webhook-Token" con el mismo valor que GUPSHUP_WEBHOOK_TOKEN.
 
-function verifyGupshupAuth(authorizationHeader) {
-  if (NODE_ENV !== 'production' && !GUPSHUP_WEBHOOK_USER) return true;
-  if (!GUPSHUP_WEBHOOK_USER || !GUPSHUP_WEBHOOK_PASS) return false;
-  if (!authorizationHeader?.startsWith('Basic ')) return false;
+function verifyGupshupAuth(headers) {
+  if (NODE_ENV !== 'production' && !GUPSHUP_WEBHOOK_TOKEN) return true;
+  if (!GUPSHUP_WEBHOOK_TOKEN) return false;
 
-  const expected = 'Basic ' + Buffer.from(`${GUPSHUP_WEBHOOK_USER}:${GUPSHUP_WEBHOOK_PASS}`).toString('base64');
+  const received = headers?.[GUPSHUP_WEBHOOK_HEADER] || '';
+  if (!received) return false;
+
   try {
-    return crypto.timingSafeEqual(Buffer.from(authorizationHeader), Buffer.from(expected));
+    return crypto.timingSafeEqual(Buffer.from(received), Buffer.from(GUPSHUP_WEBHOOK_TOKEN));
   } catch {
     return false;
   }

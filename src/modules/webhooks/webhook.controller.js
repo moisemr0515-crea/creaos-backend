@@ -197,7 +197,7 @@ const gupshupVerify = (req, res) => {
 
 const gupshupWebhook = async (req, res, next) => {
   try {
-    if (!webhookService.verifyGupshupAuth(req.headers['authorization'])) {
+    if (!webhookService.verifyGupshupAuth(req.headers)) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 

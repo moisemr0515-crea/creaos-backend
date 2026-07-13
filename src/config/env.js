@@ -102,7 +102,7 @@ module.exports = {
   GUPSHUP_APP_NAME:     process.env.GUPSHUP_APP_NAME || '',
   GUPSHUP_PHONE_NUMBER: process.env.GUPSHUP_PHONE_NUMBER || '',
   GUPSHUP_WABA_ID:      process.env.GUPSHUP_WABA_ID || '',
-  // Credenciales HTTP Basic Auth configuradas del lado de Gupshup (panel → Webhook → Basic Authentication)
-  GUPSHUP_WEBHOOK_USER: process.env.GUPSHUP_WEBHOOK_USER || '',
-  GUPSHUP_WEBHOOK_PASS: process.env.GUPSHUP_WEBHOOK_PASS || '',
+  // Valor secreto configurado en el panel de Gupshup (Webhook → Custom Header) bajo el nombre
+  // X-Gupshup-Webhook-Token — Gupshup no ofrece Basic Auth, solo un header personalizado libre.
+  GUPSHUP_WEBHOOK_TOKEN: process.env.GUPSHUP_WEBHOOK_TOKEN || '',
 };
