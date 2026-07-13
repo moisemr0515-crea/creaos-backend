@@ -12,21 +12,40 @@ const {
   GUPSHUP_API_KEY,
   GUPSHUP_APP_NAME,
   GUPSHUP_PHONE_NUMBER,
+  GUPSHUP_WEBHOOK_USER,
+  GUPSHUP_WEBHOOK_PASS,
   NODE_ENV,
 } = require('../../config/env');
 
-// ─── Meta signature verification ─────────────────────────────────────────────
+// ─── Meta signature verification (también usada por WhatsApp Cloud API) ──────
 
-function verifyMetaSignature(rawBody, signature) {
-  if (NODE_ENV !== 'production' && !META_APP_SECRET) return true;
-  if (!META_APP_SECRET || !rawBody || !signature) return false;
+function verifyMetaSignature(rawBody, signature, secret = META_APP_SECRET) {
+  if (NODE_ENV !== 'production' && !secret) return true;
+  if (!secret || !rawBody || !signature) return false;
 
   const expected = 'sha256=' + crypto
-    .createHmac('sha256', META_APP_SECRET)
+    .createHmac('sha256', secret)
     .update(rawBody)
     .digest('hex');
   try {
     return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+  } catch {
+    return false;
+  }
+}
+
+// ─── Gupshup Basic Auth verification ─────────────────────────────────────────
+// Requiere elegir "Basic Authentication" en el panel de Gupshup (Webhook config)
+// y configurar las mismas credenciales en GUPSHUP_WEBHOOK_USER / GUPSHUP_WEBHOOK_PASS.
+
+function verifyGupshupAuth(authorizationHeader) {
+  if (NODE_ENV !== 'production' && !GUPSHUP_WEBHOOK_USER) return true;
+  if (!GUPSHUP_WEBHOOK_USER || !GUPSHUP_WEBHOOK_PASS) return false;
+  if (!authorizationHeader?.startsWith('Basic ')) return false;
+
+  const expected = 'Basic ' + Buffer.from(`${GUPSHUP_WEBHOOK_USER}:${GUPSHUP_WEBHOOK_PASS}`).toString('base64');
+  try {
+    return crypto.timingSafeEqual(Buffer.from(authorizationHeader), Buffer.from(expected));
   } catch {
     return false;
   }
@@ -437,6 +456,7 @@ async function processGupshupMessage({ phone, text, name }, businessId) {
 module.exports = {
   verifyMetaSignature,
   verifyTikTokSignature,
+  verifyGupshupAuth,
   fetchMetaLead,
   processMetaLead,
   processTikTokLead,

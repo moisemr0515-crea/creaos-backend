@@ -93,10 +93,16 @@ module.exports = {
   WHATSAPP_VERIFY_TOKEN: process.env.WHATSAPP_VERIFY_TOKEN || '',
   WHATSAPP_TOKEN:        process.env.WHATSAPP_TOKEN || '',
   WHATSAPP_PHONE_ID:     process.env.WHATSAPP_PHONE_ID || '',
+  // App secret de la Meta App bajo la que está registrado el número de WhatsApp (para x-hub-signature-256).
+  // Si el WhatsApp Business Account vive en la misma Meta App que Facebook Lead Ads, puede quedar vacío y se usa META_APP_SECRET.
+  WHATSAPP_APP_SECRET:   process.env.WHATSAPP_APP_SECRET || '',
 
   // Gupshup (WhatsApp)
   GUPSHUP_API_KEY:      process.env.GUPSHUP_API_KEY || '',
   GUPSHUP_APP_NAME:     process.env.GUPSHUP_APP_NAME || '',
   GUPSHUP_PHONE_NUMBER: process.env.GUPSHUP_PHONE_NUMBER || '',
   GUPSHUP_WABA_ID:      process.env.GUPSHUP_WABA_ID || '',
+  // Credenciales HTTP Basic Auth configuradas del lado de Gupshup (panel → Webhook → Basic Authentication)
+  GUPSHUP_WEBHOOK_USER: process.env.GUPSHUP_WEBHOOK_USER || '',
+  GUPSHUP_WEBHOOK_PASS: process.env.GUPSHUP_WEBHOOK_PASS || '',
 };

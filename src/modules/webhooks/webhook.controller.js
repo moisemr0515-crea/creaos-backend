@@ -4,7 +4,7 @@ const webhookService = require('./webhook.service');
 const metaOauthService = require('./metaOauth.service');
 const { AppError } = require('../../middleware/error.middleware');
 const { respuestaExito } = require('../../utils/response');
-const { WHATSAPP_VERIFY_TOKEN, FRONTEND_URL } = require('../../config/env');
+const { WHATSAPP_VERIFY_TOKEN, WHATSAPP_APP_SECRET, META_APP_SECRET, FRONTEND_URL } = require('../../config/env');
 const logger = require('../../utils/logger');
 
 // ─── Public: Meta webhook verification (GET) ─────────────────────────────────
@@ -150,6 +150,12 @@ const whatsappVerify = (req, res) => {
 
 const whatsappWebhook = async (req, res, next) => {
   try {
+    const signature = req.headers['x-hub-signature-256'] || '';
+
+    if (!webhookService.verifyMetaSignature(req.rawBody, signature, WHATSAPP_APP_SECRET || META_APP_SECRET)) {
+      return res.status(401).json({ error: 'Invalid signature' });
+    }
+
     // ACK inmediato — Meta requiere respuesta < 5s
     res.status(200).json({ received: true });
 
@@ -191,6 +197,10 @@ const gupshupVerify = (req, res) => {
 
 const gupshupWebhook = async (req, res, next) => {
   try {
+    if (!webhookService.verifyGupshupAuth(req.headers['authorization'])) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
     // ACK inmediato — procesamos en background
     res.status(200).json({ received: true });
 
