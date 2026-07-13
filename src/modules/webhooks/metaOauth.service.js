@@ -82,7 +82,8 @@ const exchangeForLongLivedToken = async (shortLivedToken) => {
 };
 
 const fetchUserPages = async (longLivedUserToken) => {
-  const url = `https://graph.facebook.com/${META_GRAPH_API_VERSION}/me/accounts?access_token=${longLivedUserToken}`;
+  const url = `https://graph.facebook.com/${META_GRAPH_API_VERSION}/me/accounts` +
+    `?fields=id,name,access_token&access_token=${longLivedUserToken}`;
   const res = await fetch(url);
   const json = await res.json().catch(() => ({}));
   if (!res.ok) throw new AppError(json.error?.message || 'fetch_pages_failed', 400);
@@ -129,6 +130,7 @@ const handleCallback = async ({ code, state }) => {
       $set: {
         accessToken: page.access_token,
         pageId: page.id,
+        pageName: page.name,
         accessTokenExpiresAt,
         isActive: true,
       },
