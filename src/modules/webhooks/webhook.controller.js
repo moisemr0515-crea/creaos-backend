@@ -30,7 +30,7 @@ const metaWebhook = async (req, res, next) => {
     const signature = req.headers['x-hub-signature-256'] || '';
     const rawBody = req.rawBody;
 
-    if (rawBody && !webhookService.verifyMetaSignature(rawBody, signature)) {
+    if (!webhookService.verifyMetaSignature(rawBody, signature)) {
       return res.status(401).json({ error: 'Invalid signature' });
     }
 
@@ -75,7 +75,7 @@ const tiktokWebhook = async (req, res, next) => {
     const signature = req.headers['sign'] || '';
     const rawBody   = req.rawBody;
 
-    if (rawBody && !webhookService.verifyTikTokSignature(rawBody, timestamp, nonce, signature)) {
+    if (!webhookService.verifyTikTokSignature(rawBody, timestamp, nonce, signature)) {
       return res.status(401).json({ code: 40001, message: 'Invalid signature' });
     }
 

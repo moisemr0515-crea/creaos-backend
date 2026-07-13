@@ -12,12 +12,15 @@ const {
   GUPSHUP_API_KEY,
   GUPSHUP_APP_NAME,
   GUPSHUP_PHONE_NUMBER,
+  NODE_ENV,
 } = require('../../config/env');
 
 // ─── Meta signature verification ─────────────────────────────────────────────
 
 function verifyMetaSignature(rawBody, signature) {
-  if (!META_APP_SECRET) return true; // skip if not configured
+  if (NODE_ENV !== 'production' && !META_APP_SECRET) return true;
+  if (!META_APP_SECRET || !rawBody || !signature) return false;
+
   const expected = 'sha256=' + crypto
     .createHmac('sha256', META_APP_SECRET)
     .update(rawBody)
@@ -32,7 +35,9 @@ function verifyMetaSignature(rawBody, signature) {
 // ─── TikTok signature verification ───────────────────────────────────────────
 
 function verifyTikTokSignature(rawBody, timestamp, nonce, signature) {
-  if (!TIKTOK_APP_SECRET) return true;
+  if (NODE_ENV !== 'production' && !TIKTOK_APP_SECRET) return true;
+  if (!TIKTOK_APP_SECRET || !rawBody || !signature) return false;
+
   const str = [TIKTOK_APP_SECRET, timestamp, nonce, rawBody].sort().join('');
   const expected = crypto.createHash('sha256').update(str).digest('hex');
   try {
