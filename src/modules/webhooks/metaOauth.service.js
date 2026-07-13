@@ -10,7 +10,7 @@ const {
   APP_URL,
 } = require('../../config/env');
 
-const STATE_TTL_SECONDS = 10 * 60; // 10 minutos
+const STATE_TTL_SECONDS = 30 * 60; // 30 minutos — el diálogo de Facebook (login + selección de negocio/página + permisos) puede tardar más de 10
 const REDIRECT_URI = `${APP_URL}/api/v1/webhooks/meta/oauth/callback`;
 const SCOPES = ['pages_show_list', 'leads_retrieval'].join(',');
 
