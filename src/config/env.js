@@ -82,8 +82,9 @@ module.exports = {
   STRIPE_WEBHOOK_SECRET: process.env.STRIPE_WEBHOOK_SECRET,
 
   // Mercado Pago
-  MP_ACCESS_TOKEN: process.env.MP_ACCESS_TOKEN,
-  MP_PUBLIC_KEY:   process.env.MP_PUBLIC_KEY,
+  MP_ACCESS_TOKEN:    process.env.MP_ACCESS_TOKEN,
+  MP_PUBLIC_KEY:      process.env.MP_PUBLIC_KEY,
+  MP_WEBHOOK_SECRET:  process.env.MP_WEBHOOK_SECRET,
 
   // App
   APP_URL: process.env.APP_URL || 'http://localhost:3001',

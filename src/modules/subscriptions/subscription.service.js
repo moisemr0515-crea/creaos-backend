@@ -1,3 +1,4 @@
+const crypto        = require('crypto');
 const Stripe       = require('stripe');
 const { MercadoPagoConfig, PreApproval } = require('mercadopago');
 const Subscription = require('./subscription.model');
@@ -7,7 +8,7 @@ const User         = require('../users/user.model');
 const { AppError } = require('../../middleware/error.middleware');
 const {
   STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET,
-  MP_ACCESS_TOKEN, APP_URL, FRONTEND_URL, NODE_ENV,
+  MP_ACCESS_TOKEN, MP_WEBHOOK_SECRET, APP_URL, FRONTEND_URL, NODE_ENV,
 } = require('../../config/env');
 
 // ─── Lazy-init clients ────────────────────────────────────────────────────────
@@ -276,7 +277,30 @@ const handleStripeWebhook = async (rawBody, signature) => {
   return { received: true, type: event.type };
 };
 
-// ─── 7. handleMercadoPagoWebhook ─────────────────────────────────────────────
+// ─── 7. verifyMercadoPagoSignature ───────────────────────────────────────────
+// Doc: https://www.mercadopago.com.ar/developers/es/docs/your-integrations/notifications/webhooks#editor_5
+
+const verifyMercadoPagoSignature = (dataId, requestId, signatureHeader) => {
+  if (NODE_ENV !== 'production' && !MP_WEBHOOK_SECRET) return true;
+  if (!MP_WEBHOOK_SECRET || !signatureHeader || !dataId) return false;
+
+  const parts = Object.fromEntries(
+    signatureHeader.split(',').map((p) => p.trim().split('=').map((s) => s.trim()))
+  );
+  const { ts, v1 } = parts;
+  if (!ts || !v1) return false;
+
+  const manifest = `id:${String(dataId).toLowerCase()};request-id:${requestId || ''};ts:${ts};`;
+  const expected = crypto.createHmac('sha256', MP_WEBHOOK_SECRET).update(manifest).digest('hex');
+
+  try {
+    return crypto.timingSafeEqual(Buffer.from(v1), Buffer.from(expected));
+  } catch {
+    return false;
+  }
+};
+
+// ─── 8. handleMercadoPagoWebhook ─────────────────────────────────────────────
 
 const handleMercadoPagoWebhook = async (data) => {
   const { type, data: notification } = data;
@@ -391,6 +415,7 @@ module.exports = {
   createStripeSubscription,
   createMercadoPagoSubscription,
   handleStripeWebhook,
+  verifyMercadoPagoSignature,
   handleMercadoPagoWebhook,
   cancelSubscription,
   checkLeadLimit,

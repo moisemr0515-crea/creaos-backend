@@ -78,6 +78,14 @@ const stripeWebhook = async (req, res, next) => {
 
 const mercadopagoWebhook = async (req, res, next) => {
   try {
+    const signature = req.headers['x-signature'] || '';
+    const requestId  = req.headers['x-request-id'] || '';
+    const dataId     = req.query['data.id'] || req.body?.data?.id || '';
+
+    if (!service.verifyMercadoPagoSignature(dataId, requestId, signature)) {
+      return res.status(401).json({ error: 'Invalid signature' });
+    }
+
     res.status(200).json({ received: true });
     await service.handleMercadoPagoWebhook(req.body).catch(e =>
       console.error('[mp webhook]', e.message)
