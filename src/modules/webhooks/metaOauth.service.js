@@ -12,7 +12,7 @@ const {
 
 const STATE_TTL_SECONDS = 10 * 60; // 10 minutos
 const REDIRECT_URI = `${APP_URL}/api/v1/webhooks/meta/oauth/callback`;
-const SCOPES = ['pages_show_list', 'pages_manage_metadata', 'leads_retrieval'].join(',');
+const SCOPES = ['pages_show_list', 'leads_retrieval'].join(',');
 
 // ─── State (CSRF) vía Redis — mismo patrón que refresh tokens en auth.service.js ──
 
