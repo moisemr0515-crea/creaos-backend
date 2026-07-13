@@ -7,7 +7,7 @@ const User         = require('../users/user.model');
 const { AppError } = require('../../middleware/error.middleware');
 const {
   STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET,
-  MP_ACCESS_TOKEN, APP_URL, FRONTEND_URL,
+  MP_ACCESS_TOKEN, APP_URL, FRONTEND_URL, NODE_ENV,
 } = require('../../config/env');
 
 // ─── Lazy-init clients ────────────────────────────────────────────────────────
@@ -190,7 +190,7 @@ const handleStripeWebhook = async (rawBody, signature) => {
   const s = getStripe();
   let event;
 
-  if (!STRIPE_WEBHOOK_SECRET || STRIPE_WEBHOOK_SECRET === 'whsec_placeholder') {
+  if (NODE_ENV !== 'production' && (!STRIPE_WEBHOOK_SECRET || STRIPE_WEBHOOK_SECRET === 'whsec_placeholder')) {
     event = JSON.parse(rawBody.toString());
   } else {
     event = s.webhooks.constructEvent(rawBody, signature, STRIPE_WEBHOOK_SECRET);
