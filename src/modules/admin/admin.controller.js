@@ -31,7 +31,8 @@ const getBusinessDashboard = async (req, res, next) => {
 
 const getRevenue = async (req, res, next) => {
   try {
-    const stats = await dashboardService.getRevenueStats();
+    const { period, historyMonths } = req.query;
+    const stats = await dashboardService.getRevenueStats({ period, historyMonths });
     respuestaExito(res, { message: 'Estadísticas de ingresos', data: stats });
   } catch (err) { next(err); }
 };
@@ -43,6 +44,36 @@ const getActivityFeed = async (req, res, next) => {
     const limit    = parseInt(req.query.limit, 10) || 20;
     const feed     = await dashboardService.getActivityFeed(businessId, limit);
     respuestaExito(res, { message: 'Feed de actividad', data: feed });
+  } catch (err) { next(err); }
+};
+
+// ─── Dashboard global — Super Admin "Centro de Control" ──────────────────────
+
+const getGlobalUsersStats = async (req, res, next) => {
+  try {
+    const stats = await dashboardService.getGlobalUsersStats();
+    respuestaExito(res, { message: 'Estadísticas globales de usuarios', data: stats });
+  } catch (err) { next(err); }
+};
+
+const getGlobalBusinessesStats = async (req, res, next) => {
+  try {
+    const stats = await dashboardService.getGlobalBusinessesStats();
+    respuestaExito(res, { message: 'Estadísticas globales de negocios', data: stats });
+  } catch (err) { next(err); }
+};
+
+const getGlobalUsersTimeseries = async (req, res, next) => {
+  try {
+    const series = await dashboardService.getUsersTimeseries(req.query.range);
+    respuestaExito(res, { message: 'Serie de usuarios nuevos', data: series });
+  } catch (err) { next(err); }
+};
+
+const getGlobalAICostTimeseries = async (req, res, next) => {
+  try {
+    const series = await dashboardService.getAICostTimeseries(req.query.range);
+    respuestaExito(res, { message: 'Serie de costo de IA', data: series });
   } catch (err) { next(err); }
 };
 
@@ -464,6 +495,11 @@ module.exports = {
   getBusinessDashboard,
   getRevenue,
   getActivityFeed,
+  // Dashboard global (Super Admin)
+  getGlobalUsersStats,
+  getGlobalBusinessesStats,
+  getGlobalUsersTimeseries,
+  getGlobalAICostTimeseries,
   // Businesses
   listBusinesses,
   getBusiness,

@@ -18,6 +18,12 @@ router.patch('/businesses/:id/suspend',  checkRole(ROLES.SUPER_ADMIN), ctrl.susp
 router.patch('/businesses/:id/activate', checkRole(ROLES.SUPER_ADMIN), ctrl.activateBusiness);
 router.get('/users',                     checkRole(ROLES.SUPER_ADMIN), ctrl.listUsers);
 
+// ─── SuperAdmin: dashboard global "Centro de Control" ────────────────────────
+router.get('/global/users/stats',        checkRole(ROLES.SUPER_ADMIN), ctrl.getGlobalUsersStats);
+router.get('/global/businesses/stats',   checkRole(ROLES.SUPER_ADMIN), ctrl.getGlobalBusinessesStats);
+router.get('/global/users/timeseries',   checkRole(ROLES.SUPER_ADMIN), ctrl.getGlobalUsersTimeseries);
+router.get('/global/ai/cost-timeseries', checkRole(ROLES.SUPER_ADMIN), ctrl.getGlobalAICostTimeseries);
+
 // ─── Owner / Admin: su propio negocio ────────────────────────────────────────
 // IMPORTANTE: rutas con segmento fijo antes de rutas con parámetros (:id, :userId)
 router.get('/dashboard/:businessId',    checkPermission('admin:read'),  ctrl.getBusinessDashboard);

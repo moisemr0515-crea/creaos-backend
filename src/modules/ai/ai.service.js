@@ -65,13 +65,19 @@ const chat = async (conversationId, userMessage, business, lead) => {
   });
 
   const reply = completion.choices[0].message.content;
-  const tokensUsed = completion.usage?.total_tokens || 0;
+  const promptTokens = completion.usage?.prompt_tokens || 0;
+  const completionTokens = completion.usage?.completion_tokens || 0;
+  const tokensUsed = completion.usage?.total_tokens || (promptTokens + completionTokens);
 
   conversation.messages.push({
     role: 'assistant',
     content: reply,
     timestamp: new Date(),
     tokens: tokensUsed,
+    // Desglose prompt/completion para costo exacto (ver config/aiPricing.js).
+    // Mensajes anteriores a este cambio no lo tienen — el cálculo de costo cae
+    // a una tarifa combinada estimada para esos casos.
+    metadata: { promptTokens, completionTokens, model: OPENAI_MODEL },
   });
   conversation.totalTokensUsed += tokensUsed;
   await conversation.save();

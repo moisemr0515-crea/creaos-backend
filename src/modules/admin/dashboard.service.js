@@ -6,6 +6,11 @@ const Conversation = require('../ai/conversation.model');
 const Automation   = require('../automations/automation.model');
 const Subscription = require('../subscriptions/subscription.model');
 const Plan         = require('../subscriptions/plan.model');
+const { OPENAI_MODEL } = require('../../config/env');
+const { getPricing, getBlendedRate } = require('../../config/aiPricing');
+
+const toCountMap = (arr) =>
+  arr.reduce((acc, { _id, count }) => ({ ...acc, [_id || 'unknown']: count }), {});
 
 // ─── Helpers de rango de fechas ──────────────────────────────────────────────
 
@@ -18,6 +23,7 @@ const startOf = (unit) => {
     return new Date(now.getFullYear(), now.getMonth(), diff);
   }
   if (unit === 'month') return new Date(now.getFullYear(), now.getMonth(), 1);
+  if (unit === 'year')  return new Date(now.getFullYear(), 0, 1);
   return new Date(0);
 };
 
@@ -163,17 +169,45 @@ const getBusinessStats = async (businessId) => {
 
 // ─── 3. getRevenueStats ───────────────────────────────────────────────────────
 
-const getRevenueStats = async () => {
-  const monthStart = startOf('month');
+// Reconstruye el MRR de los últimos N cierres de mes a partir de createdAt/canceledAt.
+// Aproximación: asume que una suscripción generó ingreso todo el tiempo entre su
+// creación y su cancelación (no hay historial de cambios de plan/pausas guardado).
+const getMrrHistory = async (monthsBack) => {
+  const allSubs = await Subscription.find({}, 'createdAt canceledAt planName plan').populate('plan', 'price');
+  const now = new Date();
+  const history = [];
 
-  const [plans, allSubs, newThisMonth, canceledThisMonth, subsByProvider] = await Promise.all([
+  for (let i = monthsBack - 1; i >= 0; i--) {
+    const monthEnd = new Date(now.getFullYear(), now.getMonth() - i + 1, 0, 23, 59, 59, 999);
+    const period = `${monthEnd.getFullYear()}-${String(monthEnd.getMonth() + 1).padStart(2, '0')}`;
+
+    const mrr = allSubs.reduce((sum, sub) => {
+      const existedByMonthEnd = sub.createdAt <= monthEnd;
+      const notYetCanceled    = !sub.canceledAt || sub.canceledAt > monthEnd;
+      return existedByMonthEnd && notYetCanceled ? sum + (sub.plan?.price || 0) : sum;
+    }, 0);
+
+    history.push({ period, mrr: parseFloat(mrr.toFixed(2)) });
+  }
+
+  return history;
+};
+
+const getRevenueStats = async ({ period = 'month', historyMonths = 6 } = {}) => {
+  const monthStart = startOf('month');
+  const periodStart = period === 'year' ? startOf('year') : monthStart;
+
+  const [plans, allSubs, newThisMonth, canceledThisMonth, newInPeriod, canceledInPeriod, subsByProvider, history] = await Promise.all([
     Plan.find({ isActive: true }),
     Subscription.find({ status: { $in: ['active', 'trialing'] } }).populate('plan', 'price name'),
     Subscription.countDocuments({ createdAt: { $gte: monthStart } }),
     Subscription.countDocuments({ status: 'canceled', canceledAt: { $gte: monthStart } }),
+    Subscription.countDocuments({ createdAt: { $gte: periodStart } }),
+    Subscription.countDocuments({ status: 'canceled', canceledAt: { $gte: periodStart } }),
     Subscription.aggregate([
       { $group: { _id: '$provider', count: { $sum: 1 } } },
     ]),
+    getMrrHistory(Math.min(parseInt(historyMonths, 10) || 6, 24)),
   ]);
 
   const totalActive = await Subscription.countDocuments({ status: { $in: ['active', 'trialing'] } });
@@ -204,6 +238,13 @@ const getRevenueStats = async () => {
       churnRate,
       byProvider:      providerMap,
     },
+    // Agregado según ?period= (default 'month'), sin afectar los campos de arriba
+    period: {
+      type:               period === 'year' ? 'year' : 'month',
+      newSubscriptions:      newInPeriod,
+      canceledSubscriptions: canceledInPeriod,
+    },
+    history, // serie mensual de MRR reconstruida, últimos `historyMonths` meses
   };
 };
 
@@ -267,4 +308,132 @@ const getActivityFeed = async (businessId, limit = 20) => {
     .slice(0, cap);
 };
 
-module.exports = { getGlobalStats, getBusinessStats, getRevenueStats, getActivityFeed };
+// ─── 5. getGlobalUsersStats ───────────────────────────────────────────────────
+
+const getGlobalUsersStats = async () => {
+  const [total, active, byRoleAgg, byCountryAgg] = await Promise.all([
+    User.countDocuments(),
+    User.countDocuments({ isActive: true }),
+    User.aggregate([
+      { $lookup: { from: 'roles', localField: 'role', foreignField: '_id', as: 'roleDoc' } },
+      { $unwind: '$roleDoc' },
+      { $group: { _id: '$roleDoc.slug', count: { $sum: 1 } } },
+    ]),
+    // "País" = país del negocio al que pertenece el usuario (User no tiene country propio)
+    User.aggregate([
+      { $lookup: { from: 'businesses', localField: 'business', foreignField: '_id', as: 'businessDoc' } },
+      { $unwind: '$businessDoc' },
+      { $group: { _id: '$businessDoc.country', count: { $sum: 1 } } },
+    ]),
+  ]);
+
+  return {
+    total,
+    active,
+    byRole:    toCountMap(byRoleAgg),
+    byCountry: toCountMap(byCountryAgg),
+  };
+};
+
+// ─── 6. getGlobalBusinessesStats ──────────────────────────────────────────────
+
+const getGlobalBusinessesStats = async () => {
+  const [total, active, byCountryAgg, byPlanAgg] = await Promise.all([
+    Business.countDocuments(),
+    Business.countDocuments({ isActive: true }),
+    Business.aggregate([{ $group: { _id: '$country', count: { $sum: 1 } } }]),
+    Business.aggregate([{ $group: { _id: '$plan', count: { $sum: 1 } } }]),
+  ]);
+
+  return {
+    total,
+    active,
+    byCountry: toCountMap(byCountryAgg),
+    byPlan:    toCountMap(byPlanAgg),
+  };
+};
+
+// ─── 7. getUsersTimeseries ─────────────────────────────────────────────────────
+
+const getUsersTimeseries = async (range = '12m') => {
+  const months = Math.min(parseInt(range, 10) || 12, 36);
+  const since  = new Date();
+  since.setMonth(since.getMonth() - (months - 1));
+  since.setDate(1);
+  since.setHours(0, 0, 0, 0);
+
+  const rows = await User.aggregate([
+    { $match: { createdAt: { $gte: since } } },
+    {
+      $group: {
+        _id:   { year: { $year: '$createdAt' }, month: { $month: '$createdAt' } },
+        count: { $sum: 1 },
+      },
+    },
+    { $sort: { '_id.year': 1, '_id.month': 1 } },
+  ]);
+
+  return rows.map(({ _id, count }) => ({
+    period:   `${_id.year}-${String(_id.month).padStart(2, '0')}`,
+    newUsers: count,
+  }));
+};
+
+// ─── 8. getAICostTimeseries ────────────────────────────────────────────────────
+// Costo exacto para mensajes con metadata.promptTokens/completionTokens (desde el
+// fix que empezó a guardarlos); tarifa combinada estimada para mensajes previos.
+
+const getAICostTimeseries = async (range = '14d') => {
+  const days  = Math.min(parseInt(range, 10) || 14, 90);
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+  const rows = await Conversation.aggregate([
+    { $unwind: '$messages' },
+    { $match: { 'messages.role': 'assistant', 'messages.timestamp': { $gte: since } } },
+    {
+      $project: {
+        day:              { $dateToString: { format: '%Y-%m-%d', date: '$messages.timestamp' } },
+        tokens:           { $ifNull: ['$messages.tokens', 0] },
+        promptTokens:     '$messages.metadata.promptTokens',
+        completionTokens: '$messages.metadata.completionTokens',
+      },
+    },
+    {
+      $group: {
+        _id:              '$day',
+        totalTokens:      { $sum: '$tokens' },
+        promptTokens:     { $sum: { $ifNull: ['$promptTokens', 0] } },
+        completionTokens: { $sum: { $ifNull: ['$completionTokens', 0] } },
+        // Tokens de días/mensajes SIN desglose guardado → van a tarifa combinada
+        estimatedTokens:  { $sum: { $cond: [{ $eq: [{ $ifNull: ['$promptTokens', null] }, null] }, '$tokens', 0] } },
+      },
+    },
+    { $sort: { _id: 1 } },
+  ]);
+
+  const { input: inputRate, output: outputRate } = getPricing(OPENAI_MODEL);
+  const blendedRate = getBlendedRate(OPENAI_MODEL);
+
+  return rows.map((r) => {
+    const exactCost = (r.promptTokens / 1_000_000) * inputRate + (r.completionTokens / 1_000_000) * outputRate;
+    const estimatedCost = (r.estimatedTokens / 1_000_000) * blendedRate;
+
+    return {
+      date:              r._id,
+      totalTokens:       r.totalTokens,
+      estimatedCostUSD:  parseFloat((exactCost + estimatedCost).toFixed(4)),
+      hasExactBreakdown: r.estimatedTokens === 0,
+    };
+  });
+};
+
+module.exports = {
+  getGlobalStats,
+  getBusinessStats,
+  getRevenueStats,
+  getActivityFeed,
+  getGlobalUsersStats,
+  getGlobalBusinessesStats,
+  getUsersTimeseries,
+  getAICostTimeseries,
+};
