@@ -117,3 +117,4 @@ module.exports = mongoose.model('Lead', leadSchema);
 module.exports.TEMPERATURES = TEMPERATURES;
 module.exports.SOURCES = SOURCES;
 module.exports.PIPELINE_STAGES = PIPELINE_STAGES;
+module.exports.STAGE_LABELS = STAGE_LABELS;

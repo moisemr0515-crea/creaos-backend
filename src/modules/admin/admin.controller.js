@@ -77,6 +77,39 @@ const getGlobalAICostTimeseries = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+// ─── Leads global (SuperAdmin) ─────────────────────────────────────────────────
+
+const getGlobalLeads = async (req, res, next) => {
+  try {
+    const { view, businessId, stage, channel, dateFrom, dateTo, search } = req.query;
+    const filters = { businessId, stage, channel, dateFrom, dateTo, search };
+
+    if (view === 'funnel') {
+      const funnel = await dashboardService.getGlobalLeadsFunnel(filters);
+      return respuestaExito(res, { message: 'Funnel global de leads', data: funnel });
+    }
+
+    const page  = parseInt(req.query.page, 10)  || 1;
+    const limit = parseInt(req.query.limit, 10) || 20;
+    const { items, total } = await dashboardService.getGlobalLeadsList(filters, { page, limit });
+
+    respuestaExito(res, {
+      message: 'Leads globales',
+      data:    items,
+      meta:    buildMeta({ page, limit, total }),
+    });
+  } catch (err) { next(err); }
+};
+
+// ─── WhatsApp global (SuperAdmin) ──────────────────────────────────────────────
+
+const getGlobalWhatsappConnections = async (req, res, next) => {
+  try {
+    const connections = await dashboardService.getGlobalWhatsappConnections();
+    respuestaExito(res, { message: 'Conexiones de WhatsApp (global)', data: connections });
+  } catch (err) { next(err); }
+};
+
 // ─── Businesses (SuperAdmin) ──────────────────────────────────────────────────
 
 const listBusinesses = async (req, res, next) => {
@@ -500,6 +533,10 @@ module.exports = {
   getGlobalBusinessesStats,
   getGlobalUsersTimeseries,
   getGlobalAICostTimeseries,
+  // Leads global (Super Admin)
+  getGlobalLeads,
+  // WhatsApp global (Super Admin)
+  getGlobalWhatsappConnections,
   // Businesses
   listBusinesses,
   getBusiness,

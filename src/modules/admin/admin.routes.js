@@ -24,6 +24,10 @@ router.get('/global/businesses/stats',   checkRole(ROLES.SUPER_ADMIN), ctrl.getG
 router.get('/global/users/timeseries',   checkRole(ROLES.SUPER_ADMIN), ctrl.getGlobalUsersTimeseries);
 router.get('/global/ai/cost-timeseries', checkRole(ROLES.SUPER_ADMIN), ctrl.getGlobalAICostTimeseries);
 
+// ─── SuperAdmin: leads y WhatsApp global ──────────────────────────────────────
+router.get('/leads/global',              checkRole(ROLES.SUPER_ADMIN), ctrl.getGlobalLeads);
+router.get('/whatsapp/connections',      checkRole(ROLES.SUPER_ADMIN), ctrl.getGlobalWhatsappConnections);
+
 // ─── Owner / Admin: su propio negocio ────────────────────────────────────────
 // IMPORTANTE: rutas con segmento fijo antes de rutas con parámetros (:id, :userId)
 router.get('/dashboard/:businessId',    checkPermission('admin:read'),  ctrl.getBusinessDashboard);

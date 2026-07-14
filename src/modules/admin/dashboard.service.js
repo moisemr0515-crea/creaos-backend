@@ -1,11 +1,13 @@
 const mongoose = require('mongoose');
-const Business     = require('../businesses/business.model');
-const User         = require('../users/user.model');
-const Lead         = require('../leads/lead.model');
-const Conversation = require('../ai/conversation.model');
-const Automation   = require('../automations/automation.model');
-const Subscription = require('../subscriptions/subscription.model');
-const Plan         = require('../subscriptions/plan.model');
+const Business           = require('../businesses/business.model');
+const User               = require('../users/user.model');
+const Lead               = require('../leads/lead.model');
+const Conversation       = require('../ai/conversation.model');
+const Automation         = require('../automations/automation.model');
+const Subscription       = require('../subscriptions/subscription.model');
+const Plan               = require('../subscriptions/plan.model');
+const WhatsAppConnection = require('../whatsapp/whatsappConnection.model');
+const { PIPELINE_STAGES, STAGE_LABELS } = Lead;
 const { OPENAI_MODEL } = require('../../config/env');
 const { getPricing, getBlendedRate } = require('../../config/aiPricing');
 
@@ -427,6 +429,109 @@ const getAICostTimeseries = async (range = '14d') => {
   });
 };
 
+// ─── 9. getGlobalLeads (list | funnel) ────────────────────────────────────────
+
+const buildGlobalLeadsFilter = ({ businessId, stage, channel, dateFrom, dateTo, search } = {}) => {
+  const filter = { isDeleted: false };
+
+  if (businessId) filter.business = businessId;
+  if (stage) filter.pipelineStage = stage;
+  if (channel) filter.source = channel; // Lead no tiene campo `channel`; se mapea a `source`
+
+  if (dateFrom || dateTo) {
+    filter.createdAt = {};
+    if (dateFrom) filter.createdAt.$gte = new Date(dateFrom);
+    if (dateTo) filter.createdAt.$lte = new Date(dateTo);
+  }
+
+  if (search) {
+    const regex = { $regex: search.trim(), $options: 'i' };
+    filter.$or = [{ name: regex }, { email: regex }, { phone: regex }, { company: regex }];
+  }
+
+  return filter;
+};
+
+const getGlobalLeadsFunnel = async (filters) => {
+  const filter = buildGlobalLeadsFilter(filters);
+
+  const rows = await Lead.aggregate([
+    { $match: filter },
+    { $group: { _id: '$pipelineStage', count: { $sum: 1 } } },
+  ]);
+  const countByStage = toCountMap(rows);
+
+  return PIPELINE_STAGES.map((stage) => ({
+    stage,
+    label: STAGE_LABELS[stage] || stage,
+    count: countByStage[stage] || 0,
+  }));
+};
+
+const getGlobalLeadsList = async (filters, { page = 1, limit = 20 } = {}) => {
+  const skip   = (page - 1) * limit;
+  const filter = buildGlobalLeadsFilter(filters);
+
+  const [leads, total] = await Promise.all([
+    Lead.find(filter)
+      .populate('business', 'name')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit),
+    Lead.countDocuments(filter),
+  ]);
+
+  const items = leads.map((lead) => {
+    const obj = lead.toObject({ virtuals: true });
+    obj.businessName = lead.business?.name || null;
+    obj.business      = lead.business?._id || lead.business;
+    return obj;
+  });
+
+  return { items, total };
+};
+
+// ─── 10. getGlobalWhatsappConnections ─────────────────────────────────────────
+// NOTA: la integración de WhatsApp es 100% simulada (isSimulated: true, v1.1).
+// No existe todavía un registro de webhooks recibidos por conexión (eso vendrá
+// con la integración real vía Gupshup Partner API, v1.2 / ticket #264467), por
+// lo que `status` es el valor guardado en WhatsAppConnection y
+// `lastWebhookReceivedAt` se devuelve como null hasta que esa data exista.
+
+const getGlobalWhatsappConnections = async () => {
+  const connections = await WhatsAppConnection.find({})
+    .populate('business', 'name')
+    .sort({ createdAt: -1 });
+
+  const businessIds = connections.map((c) => c.business?._id).filter(Boolean);
+  const subscriptions = await Subscription.find(
+    { business: { $in: businessIds } },
+    'business planName leadsUsedThisMonth'
+  );
+  const subByBusiness = subscriptions.reduce(
+    (acc, sub) => ({ ...acc, [sub.business.toString()]: sub }),
+    {}
+  );
+
+  return connections.map((conn) => {
+    const sub = conn.business ? subByBusiness[conn.business._id.toString()] : null;
+
+    return {
+      connectionId: conn._id,
+      businessId:   conn.business?._id || null,
+      businessName: conn.business?.name || null,
+      whatsappNumber: conn.phoneNumber,
+      wabaId:       conn.wabaId,
+      status:       conn.status,
+      connectedAt:  conn.connectedAt,
+      lastWebhookReceivedAt: null,
+      isSimulated:  conn.isSimulated,
+      plan:               sub?.planName || null,
+      leadsUsedThisMonth: sub?.leadsUsedThisMonth ?? null,
+    };
+  });
+};
+
 module.exports = {
   getGlobalStats,
   getBusinessStats,
@@ -436,4 +541,7 @@ module.exports = {
   getGlobalBusinessesStats,
   getUsersTimeseries,
   getAICostTimeseries,
+  getGlobalLeadsFunnel,
+  getGlobalLeadsList,
+  getGlobalWhatsappConnections,
 };
