@@ -54,6 +54,9 @@ const obtenerNegocioActual = async (businessId) => {
   return negocio;
 };
 
+// Campos del wizard de onboarding — cuando los 4 quedan llenos, se marca onboardingCompleted
+const CAMPOS_ONBOARDING = ['productDescription', 'averageTicket', 'targetCustomer', 'whatsappNumber'];
+
 /**
  * Actualiza datos principales del negocio (nombre, logo, industria, etc.).
  */
@@ -64,6 +67,17 @@ const actualizarNegocio = async (businessId, datos) => {
   camposPermitidos.forEach((campo) => {
     if (datos[campo] !== undefined) actualizacion[campo] = datos[campo];
   });
+
+  const negocioActual = await Business.findById(businessId).select(`onboardingCompleted ${CAMPOS_ONBOARDING.join(' ')}`);
+  if (!negocioActual) throw new AppError('Negocio no encontrado', 404);
+
+  if (!negocioActual.onboardingCompleted) {
+    const quedanTodosLosCamposLlenos = CAMPOS_ONBOARDING.every((campo) => {
+      const valor = actualizacion[campo] !== undefined ? actualizacion[campo] : negocioActual[campo];
+      return valor !== null && valor !== undefined && valor !== '';
+    });
+    if (quedanTodosLosCamposLlenos) actualizacion.onboardingCompleted = true;
+  }
 
   const negocio = await Business.findByIdAndUpdate(businessId, actualizacion, {
     new: true,

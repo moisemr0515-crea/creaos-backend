@@ -48,7 +48,13 @@ router.put('/current',
     body('country').optional().trim().isLength({ min: 2, max: 3 }).withMessage('País inválido'),
     body('currency').optional().trim().isLength({ min: 3, max: 3 }).withMessage('Moneda inválida (ISO 4217)'),
     body('industry').optional().trim().isLength({ max: 100 }).withMessage('Industria muy larga'),
-    body('whatsappNumber').optional().trim().isMobilePhone('any').withMessage('Número de WhatsApp inválido'),
+    body('whatsappNumber')
+      .optional()
+      .trim()
+      // isMobilePhone('any') rechaza números que combinan "+" con espacios (ej. "+51 987 654 321"),
+      // un formato común de inputs de teléfono internacional — se normaliza y valida con regex E.164 en su lugar.
+      .customSanitizer((valor) => (valor ? valor.replace(/[\s\-()]/g, '') : valor))
+      .matches(/^\+?[1-9]\d{7,14}$/).withMessage('Número de WhatsApp inválido. Usa formato internacional, ej. +51987654321'),
     body('productDescription').optional().trim().isLength({ max: 500 }).withMessage('Descripción de producto muy larga'),
     body('averageTicket').optional().isFloat({ min: 0 }).withMessage('Ticket promedio debe ser un número >= 0'),
     body('targetCustomer').optional().trim().isLength({ max: 300 }).withMessage('Descripción de cliente objetivo muy larga'),

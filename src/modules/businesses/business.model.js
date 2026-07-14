@@ -110,6 +110,12 @@ const businessSchema = new mongoose.Schema(
       maxlength: 300,
       default: null,
     },
+    // Se marca true automáticamente cuando quedan llenos productDescription,
+    // averageTicket, targetCustomer y whatsappNumber (ver actualizarNegocio en business.service.js)
+    onboardingCompleted: {
+      type: Boolean,
+      default: false,
+    },
     // Instrucciones libres del dueño para el comportamiento de la IA de ventas
     aiInstructions: {
       type: String,
