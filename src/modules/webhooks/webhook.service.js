@@ -41,6 +41,13 @@ function verifyMetaSignature(rawBody, signature, secret = META_APP_SECRET) {
 // Configurar ahí el header "X-Gupshup-Webhook-Token" con el mismo valor que GUPSHUP_WEBHOOK_TOKEN.
 
 function verifyGupshupAuth(headers) {
+  // TEMPORAL — diagnóstico del 401 en producción (quitar una vez confirmada la causa).
+  logger.info('[gupshup][debug] headers recibidos en el webhook', {
+    todosLosHeaders:      Object.keys(headers || {}),
+    headerEsperadoExiste: GUPSHUP_WEBHOOK_HEADER in (headers || {}),
+    headerEsperadoValor:  headers?.[GUPSHUP_WEBHOOK_HEADER] ?? null,
+  });
+
   if (NODE_ENV !== 'production' && !GUPSHUP_WEBHOOK_TOKEN) return true;
   if (!GUPSHUP_WEBHOOK_TOKEN) return false;
 
