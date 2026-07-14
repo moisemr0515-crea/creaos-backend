@@ -12,7 +12,7 @@ const { ROLES } = require('../../config/constants');
 const obtenerMiPerfil = async (userId) => {
   const usuario = await User.findById(userId)
     .populate('role', 'slug name permissions')
-    .populate('business', 'name slug logo plan planStatus');
+    .populate('business', 'name slug logo plan planStatus onboardingCompleted');
 
   if (!usuario) throw new AppError('Usuario no encontrado', 404);
 
