@@ -5,6 +5,7 @@ const notificationService = require('./notification.service');
 const Business = require('../businesses/business.model');
 const User     = require('../users/user.model');
 const Role     = require('../roles/role.model');
+const OrganizationSettings = require('../organization/organizationSettings.model');
 const { AppError }    = require('../../middleware/error.middleware');
 const { respuestaExito, buildMeta } = require('../../utils/response');
 const { hashPassword, generateToken } = require('../../utils/crypto');
@@ -107,6 +108,61 @@ const getGlobalWhatsappConnections = async (req, res, next) => {
   try {
     const connections = await dashboardService.getGlobalWhatsappConnections();
     respuestaExito(res, { message: 'Conexiones de WhatsApp (global)', data: connections });
+  } catch (err) { next(err); }
+};
+
+// ─── Organization Settings (SuperAdmin) ────────────────────────────────────────
+// Configuración global de la plataforma (identidad legal y de marca), no por-negocio.
+
+const RUC_REGEX   = /^\d{11}$/;
+const EMAIL_REGEX = /^\S+@\S+\.\S+$/;
+
+const DEFAULT_ORGANIZATION_SETTINGS = {
+  legalName:    'Myrel Company S.A.C.',
+  ruc:          '20613091409',
+  brandName:    'CREA OS',
+  supportEmail: 'soporte@creaosapp.com',
+  domain:       'creaosapp.com',
+};
+
+const getOrCreateOrganizationSettings = async () => {
+  let settings = await OrganizationSettings.findOne();
+  if (!settings) {
+    settings = await OrganizationSettings.create(DEFAULT_ORGANIZATION_SETTINGS);
+  }
+  return settings;
+};
+
+const getOrganizationSettings = async (req, res, next) => {
+  try {
+    const settings = await getOrCreateOrganizationSettings();
+    respuestaExito(res, { message: 'Configuración de la organización', data: settings });
+  } catch (err) { next(err); }
+};
+
+const updateOrganizationSettings = async (req, res, next) => {
+  try {
+    const allowed = ['legalName', 'ruc', 'brandName', 'supportEmail', 'domain'];
+    const updates = {};
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) updates[key] = req.body[key];
+    }
+
+    if (updates.ruc !== undefined && !RUC_REGEX.test(updates.ruc)) {
+      throw new AppError('ruc debe tener exactamente 11 dígitos numéricos', 400);
+    }
+    if (updates.supportEmail !== undefined && !EMAIL_REGEX.test(updates.supportEmail)) {
+      throw new AppError('supportEmail no tiene un formato de email válido', 400);
+    }
+
+    await getOrCreateOrganizationSettings();
+    const settings = await OrganizationSettings.findOneAndUpdate(
+      {},
+      { $set: updates },
+      { new: true, runValidators: true }
+    );
+
+    respuestaExito(res, { message: 'Configuración de la organización actualizada', data: settings });
   } catch (err) { next(err); }
 };
 
@@ -537,6 +593,9 @@ module.exports = {
   getGlobalLeads,
   // WhatsApp global (Super Admin)
   getGlobalWhatsappConnections,
+  // Organization Settings (Super Admin)
+  getOrganizationSettings,
+  updateOrganizationSettings,
   // Businesses
   listBusinesses,
   getBusiness,
