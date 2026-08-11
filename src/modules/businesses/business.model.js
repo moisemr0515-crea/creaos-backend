@@ -123,6 +123,17 @@ const businessSchema = new mongoose.Schema(
       maxlength: 1500,
       default: null,
     },
+    // Toggle "Activar ventas automáticas con IA" — a nivel de negocio (NO de
+    // usuario: un mismo usuario puede administrar varios negocios, y cada uno
+    // necesita su propio estado independiente). Fail-closed: default false,
+    // así que un negocio nuevo o uno preexistente sin este campo seteado en
+    // Mongo se comporta como IA automática apagada hasta que el dueño la
+    // active explícitamente. Reemplaza a User.global_ai_auto_enabled (que se
+    // mantiene por ahora sin usarse, hasta que el frontend migre — ver PR).
+    aiSalesEnabled: {
+      type: Boolean,
+      default: false,
+    },
     plan: {
       type: String,
       enum: Object.values(PLANS),
