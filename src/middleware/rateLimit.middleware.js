@@ -62,9 +62,31 @@ const rateLimitRegister = rateLimit({
   },
 });
 
+/**
+ * Rate limit para POST /missions/regenerate (llama a GPT-4o, cuesta dinero).
+ * 5 regeneraciones por NEGOCIO cada hora — a diferencia de los limiters de
+ * arriba (por IP), este se scopea por `req.businessId` porque el objetivo es
+ * evitar abuso de la API de OpenAI por negocio, sin importar cuántos
+ * usuarios distintos del mismo negocio lo disparen. Requiere que
+ * `authenticate` + `injectTenant` ya hayan corrido antes (para tener
+ * req.businessId disponible), igual que los demás middlewares de esta ruta.
+ */
+const rateLimitMissionRegenerate = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hora
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.businessId?.toString() || req.ip,
+  message: {
+    success: false,
+    message: 'Demasiadas regeneraciones de Misión del Día. Intenta de nuevo más tarde (máximo 5 por hora).',
+  },
+});
+
 module.exports = {
   rateLimitGeneral,
   rateLimitLogin,
   rateLimitForgotPassword,
   rateLimitRegister,
+  rateLimitMissionRegenerate,
 };
