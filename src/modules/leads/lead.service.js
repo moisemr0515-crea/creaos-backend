@@ -1,5 +1,6 @@
 const Lead = require('./lead.model');
 const Pipeline = require('../pipeline/pipeline.model');
+const { obtenerPipelineEfectivo, validarStageEnPipeline } = require('../pipeline/pipeline.service');
 const User = require('../users/user.model');
 const { AppError } = require('../../middleware/error.middleware');
 const { triggerAutomations } = require('../automations/automation.engine');
@@ -12,11 +13,17 @@ const crearLead = async (businessId, actor, data) => {
     pipeline = await Pipeline.createDefault(businessId, actor._id);
   }
 
-  const stage = leadData.pipelineStage || 'new';
+  // Si no viene stage explícito, se usa el primer stage del pipeline (por
+  // `order`) en vez de asumir que existe una key 'new' — el pipeline del
+  // negocio puede tener stages 100% personalizados.
+  const primerStage = [...pipeline.stages].sort((a, b) => a.order - b.order)[0];
+  const stage = leadData.pipelineStage || primerStage?.key || 'new';
+  validarStageEnPipeline(pipeline, stage);
   const stageConfig = pipeline.stages.find((s) => s.key === stage);
 
   const lead = new Lead({
     ...leadData,
+    pipelineStage: stage,
     business: businessId,
     pipeline: pipeline._id,
     stageChangedAt: new Date(),
@@ -144,6 +151,11 @@ const actualizarLead = async (businessId, leadId, actor, data) => {
   const lead = await Lead.findOne({ _id: leadId, business: businessId, isDeleted: false });
   if (!lead) throw new AppError('Lead no encontrado', 404);
 
+  if (data.pipelineStage !== undefined) {
+    const pipeline = await obtenerPipelineEfectivo(businessId, lead.pipeline);
+    validarStageEnPipeline(pipeline, data.pipelineStage);
+  }
+
   if (data.assignedTo !== undefined) {
     if (data.assignedTo) {
       const assignedUser = await User.findOne({ _id: data.assignedTo, business: businessId, isActive: true });
@@ -196,17 +208,18 @@ const cambiarEtapa = async (businessId, leadId, actor, stage, reason) => {
   const lead = await Lead.findOne({ _id: leadId, business: businessId, isDeleted: false });
   if (!lead) throw new AppError('Lead no encontrado', 404);
 
+  // Tenant-aware: se valida contra los stages reales del pipeline de ESTE
+  // negocio (el propio del lead, o el default del negocio si no tiene uno
+  // asignado), no contra un enum fijo — ver pipeline.service.js.
+  const pipeline = await obtenerPipelineEfectivo(businessId, lead.pipeline);
+  validarStageEnPipeline(pipeline, stage);
+
   const etapaAnterior = lead.pipelineStage;
   lead.pipelineStage = stage;
   lead.stageChangedAt = new Date();
 
-  if (lead.pipeline) {
-    const pipeline = await Pipeline.findById(lead.pipeline);
-    if (pipeline) {
-      const stageConfig = pipeline.stages.find((s) => s.key === stage);
-      if (stageConfig) lead.closeProbability = stageConfig.defaultProbability;
-    }
-  }
+  const stageConfig = pipeline.stages.find((s) => s.key === stage);
+  if (stageConfig) lead.closeProbability = stageConfig.defaultProbability;
 
   lead.activity.push({
     type: 'stage_changed',
@@ -277,6 +290,13 @@ const accionMasiva = async (businessId, actor, { leadIds, action, assignedTo, st
           await lead.save();
           break;
         case 'change_stage': {
+          // Cada lead puede pertenecer a un pipeline distinto (o no tener uno
+          // asignado), así que se valida individualmente y tenant-aware —
+          // un lead con stage inválido para SU pipeline cae en el catch de
+          // abajo y se reporta en `errores` sin abortar el resto del batch.
+          const pipeline = await obtenerPipelineEfectivo(businessId, lead.pipeline);
+          validarStageEnPipeline(pipeline, stage);
+
           const etapaAnterior = lead.pipelineStage;
           lead.pipelineStage = stage;
           lead.stageChangedAt = new Date();

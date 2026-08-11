@@ -2,8 +2,19 @@ const mongoose = require('mongoose');
 
 const TEMPERATURES = ['cold', 'warm', 'hot'];
 const SOURCES = ['manual', 'facebook', 'instagram', 'tiktok', 'whatsapp', 'referral', 'website', 'csv_import', 'other'];
-const PIPELINE_STAGES = ['new', 'contacted', 'interested', 'proposal', 'negotiation', 'won', 'lost'];
 const ACTIVITY_TYPES = ['created', 'updated', 'stage_changed', 'assigned', 'note_added', 'imported', 'contacted'];
+
+// NOTA: `pipelineStage` ya NO tiene un enum fijo aquí — cada negocio puede
+// personalizar completamente los stages de su Pipeline (ver pipeline.model.js),
+// así que la validación real de qué valores son válidos se hace de forma
+// dinámica contra el Pipeline del negocio (pipeline.service#validarStageEnPipeline),
+// no contra una lista hardcodeada.
+//
+// PIPELINE_STAGES/STAGE_LABELS de abajo se mantienen SOLO como referencia para
+// el breakdown fijo del dashboard global de Super Admin (admin/dashboard.service.js),
+// que agrega leads de TODOS los negocios y necesita un eje de comparación común.
+// NO deben usarse para validar/aceptar o rechazar el pipelineStage de un lead.
+const PIPELINE_STAGES = ['new', 'contacted', 'interested', 'proposal', 'negotiation', 'won', 'lost'];
 
 const STAGE_LABELS = {
   new: 'Nuevo',
@@ -62,7 +73,7 @@ const leadSchema = new mongoose.Schema(
     temperature: { type: String, enum: TEMPERATURES, default: 'cold' },
     source: { type: String, enum: SOURCES, default: 'manual' },
     tags: [{ type: String, trim: true }],
-    pipelineStage: { type: String, enum: PIPELINE_STAGES, default: 'new' },
+    pipelineStage: { type: String, trim: true, default: 'new' },
     pipeline: { type: mongoose.Schema.Types.ObjectId, ref: 'Pipeline' },
     stageChangedAt: Date,
     potentialValue: { type: Number, min: 0, default: 0 },
@@ -116,5 +127,6 @@ leadSchema.statics.findActive = function (businessId, filter = {}) {
 module.exports = mongoose.model('Lead', leadSchema);
 module.exports.TEMPERATURES = TEMPERATURES;
 module.exports.SOURCES = SOURCES;
+// Ver nota arriba: solo para el dashboard global de Super Admin, no para validación.
 module.exports.PIPELINE_STAGES = PIPELINE_STAGES;
 module.exports.STAGE_LABELS = STAGE_LABELS;
