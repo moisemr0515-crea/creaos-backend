@@ -2,9 +2,15 @@ const Joi = require('joi');
 
 const TEMPERATURES = ['cold', 'warm', 'hot'];
 const SOURCES = ['manual', 'facebook', 'instagram', 'tiktok', 'whatsapp', 'referral', 'website', 'csv_import', 'other'];
-const STAGES = ['new', 'contacted', 'interested', 'proposal', 'negotiation', 'won', 'lost'];
 
 const objectId = Joi.string().hex().length(24);
+
+// `stage`/`pipelineStage` YA NO se validan contra un enum fijo aquí: cada
+// negocio configura sus propios stages en su Pipeline (stages personalizables,
+// ver pipeline.model.js). Joi solo verifica el tipo/formato básico; la
+// pertenencia real al pipeline del negocio se valida de forma dinámica y
+// tenant-aware en el service (pipeline.service#validarStageEnPipeline).
+const stageValue = Joi.string().trim().min(1).max(50);
 
 const createLeadSchema = Joi.object({
   name:              Joi.string().max(200).required(),
@@ -15,7 +21,7 @@ const createLeadSchema = Joi.object({
   temperature:       Joi.string().valid(...TEMPERATURES),
   source:            Joi.string().valid(...SOURCES),
   tags:              Joi.array().items(Joi.string().trim()),
-  pipelineStage:     Joi.string().valid(...STAGES),
+  pipelineStage:     stageValue,
   potentialValue:    Joi.number().min(0),
   currency:          Joi.string().length(3).uppercase(),
   assignedTo:        objectId.optional(),
@@ -40,7 +46,7 @@ const updateLeadSchema = Joi.object({
   temperature:       Joi.string().valid(...TEMPERATURES),
   source:            Joi.string().valid(...SOURCES),
   tags:              Joi.array().items(Joi.string().trim()),
-  pipelineStage:     Joi.string().valid(...STAGES),
+  pipelineStage:     stageValue,
   potentialValue:    Joi.number().min(0),
   currency:          Joi.string().length(3).uppercase(),
   assignedTo:        objectId.optional().allow(null),
@@ -54,7 +60,7 @@ const addNoteSchema = Joi.object({
 });
 
 const changeStageSchema = Joi.object({
-  stage:  Joi.string().valid(...STAGES).required(),
+  stage:  stageValue.required(),
   reason: Joi.string().optional().allow('', null),
 });
 
@@ -66,11 +72,11 @@ const listLeadsSchema = Joi.object({
   page:    Joi.number().integer().min(1).default(1),
   limit:   Joi.number().integer().min(1).max(100).default(20),
   search:  Joi.string().max(200).optional().allow(''),
+  // Filtro de lectura: no se restringe a un enum fijo (cada negocio tiene sus
+  // propios stages) — un valor que no exista en ningún pipeline simplemente
+  // no matchea nada, no hay necesidad de fail-closed en un filtro de lectura.
   stage: Joi.alternatives()
-    .try(
-      Joi.string().valid(...STAGES),
-      Joi.array().items(Joi.string().valid(...STAGES))
-    )
+    .try(stageValue, Joi.array().items(stageValue))
     .optional(),
   temperature: Joi.alternatives()
     .try(
@@ -107,7 +113,7 @@ const bulkActionSchema = Joi.object({
   }),
   stage: Joi.when('action', {
     is:        Joi.valid('change_stage'),
-    then:      Joi.string().valid(...STAGES).required(),
+    then:      stageValue.required(),
     otherwise: Joi.forbidden(),
   }),
   tag: Joi.when('action', {
@@ -127,5 +133,4 @@ module.exports = {
   bulkActionSchema,
   TEMPERATURES,
   SOURCES,
-  STAGES,
 };

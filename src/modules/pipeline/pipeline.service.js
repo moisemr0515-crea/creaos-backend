@@ -10,6 +10,36 @@ const obtenerOCrearDefault = async (businessId, userId) => {
   return pipeline;
 };
 
+/**
+ * Resuelve el pipeline "efectivo" a usar para validar un stage: el indicado por
+ * `pipelineId` si existe y pertenece al negocio, o si no (lead sin pipeline
+ * asignado, o pipeline borrado), el pipeline default del negocio — creándolo
+ * si el negocio todavía no tiene uno (mismo fallback que ya usa crearLead()).
+ */
+const obtenerPipelineEfectivo = async (businessId, pipelineId) => {
+  if (pipelineId) {
+    const pipeline = await Pipeline.findOne({ _id: pipelineId, business: businessId, isActive: true });
+    if (pipeline) return pipeline;
+  }
+  return obtenerOCrearDefault(businessId);
+};
+
+/**
+ * Valida (fail-closed) que `stage` exista entre los stages configurados en el
+ * pipeline dado. Tenant-aware porque `pipeline` ya viene acotado al negocio
+ * (ver obtenerPipelineEfectivo). Lanza AppError 400 listando los stages reales
+ * del negocio, para que el error sea accionable en vez de un enum genérico.
+ */
+const validarStageEnPipeline = (pipeline, stage) => {
+  const stagesValidos = pipeline.stages.map((s) => s.key);
+  if (!stagesValidos.includes(stage)) {
+    throw new AppError(
+      `"stage" debe ser uno de los valores configurados en el pipeline de este negocio: [${stagesValidos.join(', ')}]`,
+      400
+    );
+  }
+};
+
 const listarPipelines = async (businessId) => {
   return Pipeline.find({ business: businessId, isActive: true }).sort({ isDefault: -1, createdAt: 1 });
 };
@@ -96,6 +126,8 @@ const obtenerTablero = async (businessId, pipelineId) => {
 
 module.exports = {
   obtenerOCrearDefault,
+  obtenerPipelineEfectivo,
+  validarStageEnPipeline,
   listarPipelines,
   obtenerPipeline,
   crearPipeline,
