@@ -4,8 +4,40 @@ const { runAutomation } = require('./automation.engine');
 const Lead          = require('../leads/lead.model');
 const subscriptionService = require('../subscriptions/subscription.service');
 const { AppError }  = require('../../middleware/error.middleware');
+const logger        = require('../../utils/logger');
 
 // ─── Límite de plan (automatizaciones ACTIVAS simultáneas) ───────────────────
+
+// Evita inundar los logs si muchos negocios pegan al mismo tiempo antes de
+// que alguien corra el seed — se avisa una vez por plan, no por request.
+const planesSinSeedAvisados = new Set();
+
+/**
+ * Resuelve `maxActiveAutomations` del plan, distinguiendo dos casos que de
+ * otro modo serían indistinguibles: "el plan explícitamente da 0" (Starter,
+ * comportamiento esperado) vs. "el campo no existe en el Plan porque nadie
+ * corrió `npm run seed:plans` después de este cambio" (bug operativo). En el
+ * segundo caso cae igual a 0 (fail-closed: nunca se activa de más por un
+ * seed faltante), pero deja un logger.error bien ruidoso para que se note en
+ * vez de comportarse indistinguible de un Starter legítimo.
+ */
+const resolverLimitePlan = (sub) => {
+  const limite = sub.plan?.limits?.maxActiveAutomations;
+
+  if (limite === undefined) {
+    const planName = sub.planName || sub.plan?.name || '?';
+    if (!planesSinSeedAvisados.has(planName)) {
+      planesSinSeedAvisados.add(planName);
+      logger.error(
+        `[automations] Plan "${planName}" no tiene "limits.maxActiveAutomations" seteado — ` +
+        `¿falta correr "npm run seed:plans"? Cayendo a 0 (fail-closed) hasta que se corra.`
+      );
+    }
+    return 0;
+  }
+
+  return limite;
+};
 
 /**
  * Verifica (fail-closed) que activar una automatización no exceda
@@ -16,7 +48,7 @@ const { AppError }  = require('../../middleware/error.middleware');
  */
 const verificarLimiteAutomatizaciones = async (businessId, excludeAutomationId = null) => {
   const sub = await subscriptionService.getCurrentSubscription(businessId);
-  const limite = sub.plan?.limits?.maxActiveAutomations ?? 0;
+  const limite = resolverLimitePlan(sub);
 
   if (limite === -1) return { limite, activas: null };
 
@@ -244,7 +276,7 @@ const obtenerEstadoAutomatizaciones = async (businessId, userId) => {
   await asegurarAutomatizacionesSemilla(businessId, userId);
 
   const sub = await subscriptionService.getCurrentSubscription(businessId);
-  const limite = sub.plan?.limits?.maxActiveAutomations ?? 0;
+  const limite = resolverLimitePlan(sub);
   const activas = await Automation.countDocuments({ business: businessId, isActive: true, isDeleted: false });
 
   return {
