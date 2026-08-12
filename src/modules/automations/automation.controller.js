@@ -14,12 +14,19 @@ const create = async (req, res, next) => {
 const list = async (req, res, next) => {
   try {
     const filters                = await validateQuery(listAutomationsSchema, req.query);
-    const { automations, total } = await service.listAutomations(req.businessId, filters);
+    const { automations, total } = await service.listAutomations(req.businessId, filters, req.user._id);
     return respuestaExito(res, {
       message: 'Automatizaciones obtenidas exitosamente',
       data:    { automations },
       meta:    buildMeta({ page: filters.page, limit: filters.limit, total }),
     });
+  } catch (err) { next(err); }
+};
+
+const status = async (req, res, next) => {
+  try {
+    const estado = await service.obtenerEstadoAutomatizaciones(req.businessId, req.user._id);
+    return respuestaExito(res, { message: 'Estado de automatizaciones obtenido', data: estado });
   } catch (err) { next(err); }
 };
 
@@ -79,4 +86,4 @@ const test = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-module.exports = { create, list, get, update, remove, toggle, getLogs, test };
+module.exports = { create, list, status, get, update, remove, toggle, getLogs, test };

@@ -15,6 +15,11 @@ const planSchema = new mongoose.Schema(
       leadsPerMonth:      { type: Number, default: 5 },
       aiEnabled:          { type: Boolean, default: false },
       automationsEnabled: { type: Boolean, default: false },
+      // Máximo de automatizaciones ACTIVAS simultáneas (no de automatizaciones
+      // creadas/guardadas) permitidas por el plan. Se valida en
+      // automation.service#verificarLimiteAutomatizaciones antes de dejar
+      // pasar cualquier cambio que deje una automatización en isActive:true.
+      maxActiveAutomations: { type: Number, default: 0 },
       whatsappEnabled:    { type: Boolean, default: false },
       multiUser:          { type: Boolean, default: false },
       maxUsers:           { type: Number, default: 1 },
