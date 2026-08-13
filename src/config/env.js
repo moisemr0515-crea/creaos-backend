@@ -104,5 +104,5 @@ module.exports = {
   GUPSHUP_WABA_ID:      process.env.GUPSHUP_WABA_ID || '',
   // Valor secreto configurado en el panel de Gupshup (Webhook → Custom Header) bajo el nombre
   // X-Gupshup-Webhook-Token — Gupshup no ofrece Basic Auth, solo un header personalizado libre.
-  GUPSHUP_WEBHOOK_TOKEN: process.env.GUPSHUP_WEBHOOK_TOKEN || '',
+  GUPSHUP_WEBHOOK_HEADER: process.env.GUPSHUP_WEBHOOK_HEADER || 'x-gupshup-webhook-token', GUPSHUP_WEBHOOK_TOKEN: process.env.GUPSHUP_WEBHOOK_TOKEN || '',
 };
