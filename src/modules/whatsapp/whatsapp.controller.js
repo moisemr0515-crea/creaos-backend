@@ -2,6 +2,8 @@ const WhatsAppConnection = require('./whatsappConnection.model');
 const { AppError } = require('../../middleware/error.middleware');
 const { respuestaExito } = require('../../utils/response');
 const logger = require('../../utils/logger');
+const { estaConfigurado } = require('../webhooks/gupshup.client');
+const { GUPSHUP_PHONE_NUMBER } = require('../../config/env');
 
 // Formato E.164 básico: "+" seguido de 8 a 15 dígitos (ej. +51910265404)
 const PHONE_REGEX = /^\+[1-9]\d{7,14}$/;
@@ -89,4 +91,29 @@ const disconnectConnection = async (req, res, next) => {
   }
 };
 
-module.exports = { createConnection, listConnections, disconnectConnection };
+// ─── GET /api/v1/whatsapp/status ──────────────────────────────────────────────
+// Fix 2 del Caso 8: fuente de verdad real del canal de WhatsApp, basada en las
+// env vars de Gupshup — a propósito NO usa WhatsAppConnection (ese modelo es
+// un placeholder simulado del feature futuro de número dedicado por negocio,
+// ver whatsappConnection.model.js). Único canal compartido por ahora, así que
+// no depende de req.businessId — es el mismo resultado para cualquier negocio
+// hasta que exista v1.2 (multi-número).
+
+const getStatus = async (req, res, next) => {
+  try {
+    const connected = estaConfigurado();
+
+    return respuestaExito(res, {
+      message: 'Estado del canal de WhatsApp obtenido',
+      data: {
+        connected,
+        provider: 'gupshup',
+        phoneNumber: connected ? GUPSHUP_PHONE_NUMBER : null,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+module.exports = { createConnection, listConnections, disconnectConnection, getStatus };

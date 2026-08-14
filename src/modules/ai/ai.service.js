@@ -3,6 +3,8 @@ const { OPENAI_API_KEY, OPENAI_MODEL, AI_MAX_TOKENS, AI_TEMPERATURE } = require(
 const Conversation = require('./conversation.model');
 const Lead = require('../leads/lead.model');
 const { AppError } = require('../../middleware/error.middleware');
+const { sendWhatsAppMessage } = require('../webhooks/gupshup.client');
+const logger = require('../../utils/logger');
 
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
@@ -206,4 +208,67 @@ Responde: { "suggestions": ["respuesta1", "respuesta2", "respuesta3"] }`,
   }
 };
 
-module.exports = { buildSystemPrompt, chat, qualifyLead, generateSummary, suggestResponse };
+/**
+ * Un agente humano escribe un mensaje en el chat del CRM para mandárselo al
+ * lead — a diferencia de chat() (que recibe lo que dijo el LEAD y genera la
+ * respuesta de la IA), acá el texto ya viene decidido por una persona: se
+ * guarda tal cual y, si la conversación es por WhatsApp, se intenta despachar
+ * de verdad vía Gupshup.
+ *
+ * Fail-soft a propósito: un fallo de Gupshup (caído, número inválido, etc.)
+ * NUNCA debe perder el mensaje que el agente ya escribió — se guarda igual,
+ * marcado whatsappStatus:'failed', para que el frontend pueda mostrar el
+ * error real en vez de un falso "enviado".
+ *
+ * Al intervenir un humano, se apaga aiEnabled para esta conversación (mismo
+ * criterio que escalate()) — evita que la IA responda por encima del agente
+ * en el próximo mensaje entrante del lead.
+ */
+const sendAgentMessage = async (conversationId, text, actor) => {
+  if (!text?.trim()) throw new AppError('El mensaje no puede estar vacío', 400);
+
+  const conversation = await Conversation.findById(conversationId);
+  if (!conversation) throw new AppError('Conversación no encontrada', 404);
+
+  const lead = await Lead.findById(conversation.lead);
+
+  const mensaje = {
+    role: 'assistant',
+    content: text,
+    timestamp: new Date(),
+    sentBy: 'agent',
+    whatsappStatus: 'not_applicable',
+    whatsappError: null,
+    metadata: actor ? { agentId: actor._id, agentName: actor.name } : undefined,
+  };
+
+  const esCanalWhatsApp = conversation.channel === 'whatsapp';
+  const tieneTelefono = Boolean(lead?.phone);
+
+  if (esCanalWhatsApp && tieneTelefono) {
+    try {
+      await sendWhatsAppMessage(lead.phone, text);
+      mensaje.whatsappStatus = 'sent';
+    } catch (error) {
+      // No relanzar: el mensaje se guarda igual, solo queda marcado como fallido.
+      logger.error(`No se pudo enviar mensaje de agente por WhatsApp (conversación ${conversationId}): ${error.message}`);
+      mensaje.whatsappStatus = 'failed';
+      mensaje.whatsappError = error.message;
+    }
+  } else if (esCanalWhatsApp && !tieneTelefono) {
+    // Caso legítimo, no un bug: conversación marcada whatsapp pero el lead
+    // no tiene teléfono registrado — no hay a dónde despachar.
+    mensaje.whatsappError = 'El lead no tiene un número de teléfono registrado';
+  }
+  // Si el canal no es whatsapp (manual/web/email), whatsappStatus se queda
+  // en 'not_applicable' sin más — es una conversación legítimamente sin
+  // canal de WhatsApp, no un error.
+
+  conversation.messages.push(mensaje);
+  conversation.aiEnabled = false; // el agente toma el control manual de esta conversación
+  await conversation.save();
+
+  return conversation.messages[conversation.messages.length - 1];
+};
+
+module.exports = { buildSystemPrompt, chat, qualifyLead, generateSummary, suggestResponse, sendAgentMessage };
