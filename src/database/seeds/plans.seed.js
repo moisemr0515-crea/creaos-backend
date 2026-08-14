@@ -1,4 +1,13 @@
 require('dotenv').config();
+
+// Forzar Google DNS antes de cualquier conexión (el router bloquea consultas SRV
+// que usa mongodb+srv://) — mismo fix que ya tienen server.js y roles.seed.js;
+// a este seed se le había quedado afuera, y por eso corría bien contra un
+// MONGODB_URI local (mongodb://, sin SRV) pero fallaba con
+// "querySrv ECONNREFUSED" contra Atlas en producción (mongodb+srv://).
+const dns = require('dns');
+dns.setServers(['8.8.8.8', '1.1.1.1']);
+
 const mongoose = require('mongoose');
 const Plan     = require('../../modules/subscriptions/plan.model');
 const { MONGODB_URI, STRIPE_SECRET_KEY } = require('../../config/env');
