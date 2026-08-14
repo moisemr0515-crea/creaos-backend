@@ -7,6 +7,19 @@ const messageSchema = new mongoose.Schema(
     timestamp: { type: Date, default: Date.now },
     tokens:    Number,
     metadata:  mongoose.Schema.Types.Mixed,
+    // Quién escribió este mensaje — independiente de `role` (que sigue
+    // siendo el eje user/assistant/system que consume OpenAI como contexto
+    // de conversación). Un mensaje de agente humano queda con
+    // role:'assistant' (para que la IA lo vea como turno propio si retoma
+    // la conversación después) + sentBy:'agent', para poder distinguirlo en
+    // UI/reportes sin tocar el enum de `role`.
+    sentBy: { type: String, enum: ['ai', 'agent', 'system'], default: 'ai' },
+    // Estado del envío real por WhatsApp de ESTE mensaje puntual — no de la
+    // conversación entera, porque una misma conversación puede tener
+    // mensajes que sí intentaron salir por WhatsApp y otros que no (ej. un
+    // mensaje interno en una conversación de canal 'manual').
+    whatsappStatus: { type: String, enum: ['sent', 'failed', 'not_applicable'], default: 'not_applicable' },
+    whatsappError:  { type: String, default: null },
   },
   { _id: false }
 );

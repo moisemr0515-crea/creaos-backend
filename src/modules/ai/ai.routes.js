@@ -16,6 +16,7 @@ router.get('/',         checkPermission('leads:read'),   controller.listConversa
 // Rutas con :conversationId
 router.get('/:conversationId',               checkPermission('leads:read'),   controller.getConversation);
 router.post('/:conversationId/message',      checkPermission('leads:update'), controller.sendMessage);
+router.post('/:conversationId/agent-message', checkPermission('leads:update'), controller.sendAgentMessage);
 router.post('/:conversationId/qualify',      checkPermission('leads:update'), controller.qualifyLead);
 router.post('/:conversationId/summary',      checkPermission('leads:update'), controller.getSummary);
 router.patch('/:conversationId/toggle-ai',   checkPermission('leads:update'), controller.toggleAI);

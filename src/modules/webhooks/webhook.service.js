@@ -4,14 +4,12 @@ const WebhookConfig = require('./webhookConfig.model');
 const Conversation = require('../ai/conversation.model');
 const Business = require('../businesses/business.model');
 const aiService = require('../ai/ai.service');
+const { sendWhatsAppMessage } = require('./gupshup.client');
 const logger = require('../../utils/logger');
 const {
   META_APP_SECRET,
   META_GRAPH_API_VERSION,
   TIKTOK_APP_SECRET,
-  GUPSHUP_API_KEY,
-  GUPSHUP_APP_NAME,
-  GUPSHUP_PHONE_NUMBER,
   GUPSHUP_WEBHOOK_TOKEN,
   NODE_ENV,
 } = require('../../config/env');
@@ -349,41 +347,10 @@ async function findGupshupConfig(body) {
   });
 }
 
-async function sendWhatsAppMessage(to, message) {
-  logger.info('[gupshup] enviando mensaje via Gupshup API', {
-    to,
-    hasApiKey: Boolean(GUPSHUP_API_KEY),
-    source: GUPSHUP_PHONE_NUMBER,
-    appName: GUPSHUP_APP_NAME,
-  });
-
-  const body = new URLSearchParams({
-    channel: 'whatsapp',
-    source: GUPSHUP_PHONE_NUMBER,
-    destination: to,
-    message: JSON.stringify({ type: 'text', text: message }),
-    'src.name': GUPSHUP_APP_NAME,
-  });
-
-  const response = await fetch('https://api.gupshup.io/wa/api/v1/msg', {
-    method: 'POST',
-    headers: {
-      apikey: GUPSHUP_API_KEY,
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: body.toString(),
-  });
-
-  if (!response.ok) {
-    const errText = await response.text().catch(() => '');
-    logger.error('[gupshup] Gupshup API respondió error', { status: response.status, body: errText });
-    throw new Error(`Gupshup API error: ${response.status} ${errText}`);
-  }
-
-  const json = await response.json();
-  logger.info('[gupshup] mensaje enviado a Gupshup exitosamente', { to, gupshupResponse: json });
-  return json;
-}
+// sendWhatsAppMessage() ahora vive en gupshup.client.js (importado arriba) —
+// se movió para que ai.service.js también pueda usarla sin crear un require
+// circular (webhook.service.js → ai.service.js ya existía). Se sigue
+// re-exportando desde acá al final del archivo por compatibilidad.
 
 async function processGupshupMessage({ phone, text, name }, businessId) {
   logger.info('[gupshup] processGupshupMessage: inicio', { phone, textPreview: text?.slice(0, 50), businessId });
