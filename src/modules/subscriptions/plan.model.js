@@ -15,6 +15,16 @@ const planSchema = new mongoose.Schema(
       leadsPerMonth:      { type: Number, default: 5 },
       aiEnabled:          { type: Boolean, default: false },
       automationsEnabled: { type: Boolean, default: false },
+      // Máximo de automatizaciones ACTIVAS simultáneas (no de automatizaciones
+      // creadas/guardadas) permitidas por el plan. Se valida en
+      // automation.service#verificarLimiteAutomatizaciones antes de dejar
+      // pasar cualquier cambio que deje una automatización en isActive:true.
+      // Deliberadamente SIN `default` — si tuviera un default, Mongoose lo
+      // rellenaría al leer un Plan preexistente que nunca corrió el seed
+      // nuevo, y quedaría indistinguible de un Starter legítimo en 0. El
+      // fallback a 0 (fail-closed) vive en automation.service#resolverLimitePlan,
+      // que sí puede loguear la diferencia porque ve el `undefined` real.
+      maxActiveAutomations: { type: Number },
       whatsappEnabled:    { type: Boolean, default: false },
       multiUser:          { type: Boolean, default: false },
       maxUsers:           { type: Number, default: 1 },

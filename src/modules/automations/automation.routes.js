@@ -11,6 +11,9 @@ router.use(authenticate, injectTenant);
 // Rutas sin :automationId (antes para evitar conflictos)
 router.post('/', checkPermission('leads:create'), controller.create);
 router.get('/',  checkPermission('leads:read'),   controller.list);
+// GET /automations/status — límite del plan + activas ahora mismo, para el
+// candado/CTA del frontend. Debe ir antes de '/:automationId' para no chocar.
+router.get('/status', checkPermission('leads:read'), controller.status);
 
 // Rutas con :automationId
 router.get('/:automationId',         checkPermission('leads:read'),   controller.get);
