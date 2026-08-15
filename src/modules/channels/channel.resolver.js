@@ -19,44 +19,65 @@ const logger = require('../../utils/logger');
  */
 
 const CACHE_TTL_SECONDS = 60;
-const cacheKey = (provider, phoneNumberId) => `channel:${provider}:${phoneNumberId}`;
+const cacheKey = (provider, kind, value) => `channel:${provider}:${kind}:${value}`;
 
-/**
- * @param {{provider: string, phoneNumberId: string, wabaId?: string}} identifiers
- * @returns {Promise<import('./whatsappChannel.model')|null>}
- */
-async function resolve({ provider, phoneNumberId, wabaId }) {
-  if (!phoneNumberId) return null; // wabaId solo no alcanza hoy — el índice único real es {provider, phoneNumberId}
-
-  const key = cacheKey(provider, phoneNumberId);
-
+async function tryGetCached(key) {
   try {
     const redis = getRedis();
     const cached = await redis.get(key);
-    if (cached) return JSON.parse(cached);
+    return cached ? JSON.parse(cached) : null;
   } catch (err) {
-    // Redis no conectado o falló — no es fatal, se sigue a Mongo.
     logger.warn('[ChannelResolver] cache Redis no disponible, se resuelve directo contra Mongo', { error: err.message });
+    return null;
   }
+}
 
-  const channelDoc = await channelRepository.findByPhoneNumberId(provider, phoneNumberId);
-  if (!channelDoc) return null;
-
-  // Se devuelve siempre un objeto plano (no un documento Mongoose) — tanto
-  // en el camino de cache-hit como de cache-miss, para que quien consuma
-  // ChannelResolver.resolve() reciba siempre la misma forma, sin depender
-  // de si vino de Redis o de Mongo. Quien necesite el documento Mongoose
-  // real (ej. para llamar .save()) debe volver a buscarlo por _id.
-  const channel = channelDoc.toObject();
-
+async function trySetCached(key, channel) {
   try {
     const redis = getRedis();
     await redis.set(key, JSON.stringify(channel), 'EX', CACHE_TTL_SECONDS);
   } catch (err) {
-    // Mismo criterio: cachear es una optimización, no un requisito.
+    // Cachear es una optimización, no un requisito — no es fatal.
+  }
+}
+
+/**
+ * @param {{provider: string, phoneNumberId?: string, wabaId?: string}} identifiers
+ * @returns {Promise<import('./whatsappChannel.model')|null>}
+ */
+async function resolve({ provider, phoneNumberId, wabaId }) {
+  // phoneNumberId es el identificador primario (índice único real del
+  // modelo, {provider, phoneNumberId}). wabaId es un fallback deliberado —
+  // el formato "legacy" de Gupshup no manda phoneNumberId (§4.3 del
+  // Blueprint dice explícitamente "resolve(phoneNumberId/wabaId)"; corregido
+  // en esta sub-fase, ver nota en el PR — en 1.b el fallback quedó sin usar).
+  if (phoneNumberId) {
+    const key = cacheKey(provider, 'pnid', phoneNumberId);
+    const cached = await tryGetCached(key);
+    if (cached) return cached;
+
+    const channelDoc = await channelRepository.findByPhoneNumberId(provider, phoneNumberId);
+    if (channelDoc) {
+      const channel = channelDoc.toObject();
+      await trySetCached(key, channel);
+      return channel;
+    }
   }
 
-  return channel;
+  if (wabaId) {
+    const key = cacheKey(provider, 'waba', wabaId);
+    const cached = await tryGetCached(key);
+    if (cached) return cached;
+
+    const channelDoc = await channelRepository.findByWabaId(provider, wabaId);
+    if (channelDoc) {
+      const channel = channelDoc.toObject();
+      await trySetCached(key, channel);
+      return channel;
+    }
+  }
+
+  return null;
 }
 
 module.exports = { resolve };

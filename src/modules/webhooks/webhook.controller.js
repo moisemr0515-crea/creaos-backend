@@ -4,7 +4,8 @@ const webhookService = require('./webhook.service');
 const metaOauthService = require('./metaOauth.service');
 const { AppError } = require('../../middleware/error.middleware');
 const { respuestaExito } = require('../../utils/response');
-const { WHATSAPP_VERIFY_TOKEN, WHATSAPP_APP_SECRET, META_APP_SECRET, FRONTEND_URL } = require('../../config/env');
+const { WHATSAPP_VERIFY_TOKEN, WHATSAPP_APP_SECRET, META_APP_SECRET, FRONTEND_URL, WHATSAPP_CHANNEL_CORE_ENABLED } = require('../../config/env');
+const inboundGateway = require('../channels/inbound.gateway');
 const logger = require('../../utils/logger');
 
 // ─── Public: Meta webhook verification (GET) ─────────────────────────────────
@@ -219,6 +220,17 @@ const gupshupWebhook = async (req, res, next) => {
     res.status(200).json({ received: true });
 
     const payload = req.body;
+
+    // Feature flag temporal (Blueprint, Decisión 3, sub-fase 1.c) — default
+    // OFF. Con el flag apagado (estado actual), todo el código de abajo de
+    // este `if` es exactamente el que corre hoy, sin ninguna modificación.
+    if (WHATSAPP_CHANNEL_CORE_ENABLED) {
+      await inboundGateway.handle(payload).catch((err) =>
+        logger.error('[webhook] inboundGateway.handle error:', { message: err.message, stack: err.stack })
+      );
+      return;
+    }
+
     const messages = webhookService.parseGupshupPayload(payload);
     if (!messages.length) {
       logger.warn('[webhook] Gupshup: payload sin mensajes de texto reconocibles', { body: payload });
