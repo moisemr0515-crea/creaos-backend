@@ -113,4 +113,13 @@ module.exports = {
   // sigue siendo el único que corre. Se elimina junto con el código viejo
   // en la sub-fase 1.f, tras la ventana de validación de 14 días (1.e).
   WHATSAPP_CHANNEL_CORE_ENABLED: process.env.WHATSAPP_CHANNEL_CORE_ENABLED === 'true',
+
+  // Segundo flag, independiente del anterior (sub-fase 1.d). Con
+  // WHATSAPP_CHANNEL_CORE_ENABLED=true y este en false (default), el Inbound
+  // Gateway sigue llamando processGupshupMessage() directo, síncrono — el
+  // mismo comportamiento ya validado en la sub-fase 1.c (Etapa C). Solo con
+  // AMBOS flags en true el mensaje pasa por BullMQ/worker. Separarlo del
+  // flag de Channel Core permite un rollback de un solo paso (apagar este)
+  // sin perder la validación de 1.c.
+  WHATSAPP_QUEUE_PROCESSING_ENABLED: process.env.WHATSAPP_QUEUE_PROCESSING_ENABLED === 'true',
 };
