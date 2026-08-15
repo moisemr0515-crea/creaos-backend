@@ -3,6 +3,7 @@ const IChannelProvider = require('../channelProvider.interface');
 // para que la llamada use siempre la referencia viva del export — permite
 // mockearlo en tests sin tocar el módulo real (ver _tmp-test-fase-1b.js).
 const gupshupClient = require('../../webhooks/gupshup.client');
+const { GUPSHUP_PHONE_NUMBER } = require('../../../config/env');
 
 /**
  * GupshupProvider — primera (y única, Fase 0-3) implementación de
@@ -24,6 +25,22 @@ class GupshupProvider extends IChannelProvider {
     // porque cuando exista un número dedicado por tenant (Fase 2), el
     // cambio queda acotado a gupshup.client.js, no a este wrapper.
     return gupshupClient.sendWhatsAppMessage(to, text);
+  }
+
+  /**
+   * Estado operativo del canal — Fase 1.1 (Provider Abstraction). Envuelve
+   * gupshup.client.js#estaConfigurado() (config-presence check, sin
+   * llamada en vivo a la API de Gupshup, mismo criterio que ya usaba
+   * whatsapp.controller.js#getStatus() antes de este refactor).
+   *
+   * @param {import('../whatsappChannel.model')} _channel — no usado hoy:
+   *   estaConfigurado() sigue siendo global (env vars), no por canal — el
+   *   parámetro se acepta para cumplir el contrato, igual que sendMessage().
+   * @returns {Promise<{connected: boolean, provider: string, phoneNumber: string|null}>}
+   */
+  async getChannelStatus(_channel) {
+    const connected = gupshupClient.estaConfigurado();
+    return { connected, provider: 'gupshup', phoneNumber: connected ? GUPSHUP_PHONE_NUMBER : null };
   }
 
   /**
