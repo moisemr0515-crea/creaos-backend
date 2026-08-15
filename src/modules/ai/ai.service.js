@@ -254,7 +254,16 @@ const sendAgentMessage = async (conversationId, text, actor) => {
       // Decisión 1). Este envío NO pasa por la cola de salida — esa cola
       // (sub-fase 1.d) es solo para las respuestas automáticas de la IA.
       const channel = await channelService.getChannelForTenant(conversation.business);
-      if (!channel) throw new Error(`Ningún WhatsAppChannel activo para el tenant ${conversation.business}`);
+      if (!channel) {
+        // Antes de esta sub-fase, el envío siempre se intentaba vía el
+        // número compartido — este es un modo de fallo NUEVO para negocios
+        // sin un WhatsAppChannel activo todavía (migración de Channel Core
+        // incompleta para ese tenant). Se loguea aparte, a nivel warn, para
+        // poder detectar qué tenants están en esta situación sin esperar a
+        // que alguien reporte el mensaje "perdido" (hallazgo de code review).
+        logger.warn(`sendAgentMessage: sin WhatsAppChannel activo para el tenant ${conversation.business} (conversación ${conversationId})`);
+        throw new Error(`Ningún WhatsAppChannel activo para el tenant ${conversation.business}`);
+      }
       await channelService.sendMessage(channel._id, lead.phone, text);
       mensaje.whatsappStatus = 'sent';
     } catch (error) {

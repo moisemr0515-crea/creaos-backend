@@ -30,9 +30,25 @@ const logger = require('../../../utils/logger');
 
 const agentRuntime = new DefaultAgentRuntime();
 
+/**
+ * Devuelve null (no throw) en los mismos 2 casos borde que
+ * webhook.service.js#processGupshupMessage() trata como no-op silencioso
+ * (phone/text vacío, business no encontrado) — hallazgo de code review: la
+ * duplicación original no tenía estos guards y divergía del comportamiento
+ * ya probado del flujo síncrono (throw + reintentos + dead-letter en vez de
+ * un no-op consistente).
+ */
 async function ensureLeadAndConversation({ businessId, phone, text, name }) {
+  if (!phone || !text) {
+    logger.warn('[inboundWorker] phone o text vacío, se descarta', { businessId, phone, text });
+    return null;
+  }
+
   const business = await Business.findById(businessId);
-  if (!business) throw new Error(`Business ${businessId} no encontrado`);
+  if (!business) {
+    logger.warn('[inboundWorker] business no encontrado', { businessId });
+    return null;
+  }
 
   let lead = await Lead.findOne({ business: businessId, phone, isDeleted: false });
   if (!lead) {
@@ -64,15 +80,42 @@ async function processInboundJob(job) {
   const event = await InboundEvent.findById(inboundEventId);
   if (!event) throw new Error(`InboundEvent ${inboundEventId} no encontrado`);
 
+  // Idempotencia ante reintentos de BullMQ (hallazgo de code review): si ya
+  // existe un OutboundEvent generado a partir de este InboundEvent, un
+  // intento anterior de este mismo job ya llamó a la IA y encoló la
+  // respuesta — probablemente falló al guardar el estado final, no al
+  // generar la respuesta. No se vuelve a llamar a la IA ni se crea una
+  // segunda respuesta para el mismo mensaje entrante.
+  const existingOutbound = await OutboundEvent.findOne({ sourceInboundEvent: event._id });
+  if (existingOutbound) {
+    logger.info('[inboundWorker] ya existe una respuesta generada para este InboundEvent (reintento), no se reprocesa', { inboundEventId, outboundEventId: existingOutbound._id.toString() });
+    event.status = 'processed';
+    event.processedAt = event.processedAt || new Date();
+    await event.save();
+    return;
+  }
+
   event.status = 'processing';
   await event.save();
 
-  const { business, lead, conversation } = await ensureLeadAndConversation({
+  const result = await ensureLeadAndConversation({
     businessId: event.tenantId,
     phone: event.from,
     text: event.text,
     name: event.rawPayload?.name,
   });
+
+  if (!result) {
+    // Mismo criterio que processGupshupMessage(): phone/text vacío o
+    // business no encontrado es un no-op silencioso, no un fallo — se
+    // marca 'processed' (no 'failed'), sin reintentos ni dead-letter.
+    event.status = 'processed';
+    event.processedAt = new Date();
+    await event.save();
+    return;
+  }
+
+  const { business, lead, conversation } = result;
 
   if (!conversation.aiEnabled) {
     logger.info('[inboundWorker] IA deshabilitada para esta conversación, no se responde', { conversationId: conversation._id.toString() });
@@ -106,6 +149,7 @@ async function processInboundJob(job) {
       channel: event.channel,
       tenantId: event.tenantId,
       conversation: conversation._id,
+      sourceInboundEvent: event._id,
       to: event.from,
       text: output.reply,
       status: 'pending',

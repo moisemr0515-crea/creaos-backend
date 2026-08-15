@@ -90,7 +90,20 @@ async function handleOne(msg) {
     // Sub-fase 1.d: se encola, no se procesa acá. El InboundEvent queda en
     // 'processing' hasta que inbound.worker.js (servicio Railway separado)
     // lo marque 'processed'/'failed'.
-    await enqueueInbound(event._id);
+    try {
+      await enqueueInbound(event._id);
+    } catch (err) {
+      // Si falla el enqueue (Redis/BullMQ no disponible), el evento no debe
+      // quedar huérfano en 'processing' para siempre — se marca 'failed'
+      // acá mismo, igual que la rama síncrona de abajo. Sin esto, un
+      // reintento del mismo mensaje real de Gupshup se descartaría en
+      // silencio por el índice único de providerMessageId (E11000) sin
+      // haberse procesado nunca (hallazgo de code review).
+      event.status = 'failed';
+      event.error = err.message;
+      await event.save();
+      throw err;
+    }
     return;
   }
 

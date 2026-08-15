@@ -2,6 +2,7 @@ const { Worker } = require('bullmq');
 const { getQueueConnection, QUEUE_NAMES } = require('../../../config/queue');
 const { moveToDeadLetter } = require('../queues/deadLetter.queue');
 const OutboundEvent = require('../outboundEvent.model');
+const Conversation = require('../../ai/conversation.model');
 const channelService = require('../channel.service');
 const logger = require('../../../utils/logger');
 
@@ -19,18 +20,52 @@ const logger = require('../../../utils/logger');
 
 async function processOutboundJob(job) {
   const { outboundEventId } = job.data;
-  const event = await OutboundEvent.findById(outboundEventId);
-  if (!event) throw new Error(`OutboundEvent ${outboundEventId} no encontrado`);
 
-  event.status = 'processing';
-  await event.save();
+  // Reclamo atómico (hallazgo de code review): solo transiciona
+  // pending -> processing. Si el job ya fue reclamado por un intento
+  // anterior (reintento tras un fallo posterior al envío real, o
+  // reasignación por "stalled job" de BullMQ tras un crash/restart del
+  // worker), esto devuelve null y no se reenvía nada — cierra el hueco de
+  // envío duplicado por WhatsApp. findOneAndUpdate es atómico en Mongo, así
+  // que dos ejecuciones concurrentes nunca pueden ganar la misma carrera.
+  const event = await OutboundEvent.findOneAndUpdate(
+    { _id: outboundEventId, status: 'pending' },
+    { status: 'processing' },
+    { new: true }
+  );
+  if (!event) {
+    logger.info('[outboundWorker] OutboundEvent ya procesado/en proceso, se ignora (idempotencia)', { outboundEventId });
+    return;
+  }
 
-  const result = await channelService.sendMessage(event.channel, event.to, event.text);
+  // Repregunta aiEnabled justo antes de mandar (hallazgo de code review): la
+  // IA pudo haber generado esta respuesta antes de que un agente humano
+  // tomara el control de la conversación (sendAgentMessage() apaga
+  // aiEnabled) mientras el job esperaba en la cola — si eso pasó, no se
+  // manda una respuesta de IA por encima del agente.
+  const conversation = await Conversation.findById(event.conversation, 'aiEnabled');
+  if (conversation && !conversation.aiEnabled) {
+    event.status = 'skipped';
+    event.error = 'aiEnabled se apagó (agente humano tomó control) antes del envío';
+    await event.save();
+    logger.info('[outboundWorker] envío cancelado, agente humano tomó control', { outboundEventId });
+    return;
+  }
 
-  event.status = 'sent';
-  event.providerMessageId = result?.messageId || null;
-  event.sentAt = new Date();
-  await event.save();
+  try {
+    const result = await channelService.sendMessage(event.channel, event.to, event.text);
+    event.status = 'sent';
+    event.providerMessageId = result?.messageId || null;
+    event.sentAt = new Date();
+    await event.save();
+  } catch (err) {
+    // Mismo criterio que inbound.gateway.js: no dejar el evento huérfano en
+    // 'processing' si el envío falla.
+    event.status = 'failed';
+    event.error = err.message;
+    await event.save();
+    throw err;
+  }
 }
 
 function startOutboundWorker() {
