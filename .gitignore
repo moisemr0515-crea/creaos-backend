@@ -23,5 +23,9 @@ Thumbs.db
 uploads/
 tmp/
 
+# Backups de solo lectura (scripts/backup-whatsapp-data.js) — contienen datos
+# personales de leads, nunca se commitean.
+backups/
+
 # Claude
 .claude/
