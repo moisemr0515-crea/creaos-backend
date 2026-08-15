@@ -4,7 +4,7 @@ const WebhookConfig = require('./webhookConfig.model');
 const Conversation = require('../ai/conversation.model');
 const Business = require('../businesses/business.model');
 const aiService = require('../ai/ai.service');
-const { sendWhatsAppMessage } = require('./gupshup.client');
+const channelService = require('../channels/channel.service');
 const logger = require('../../utils/logger');
 const {
   META_APP_SECRET,
@@ -347,11 +347,6 @@ async function findGupshupConfig(body) {
   });
 }
 
-// sendWhatsAppMessage() ahora vive en gupshup.client.js (importado arriba) —
-// se movió para que ai.service.js también pueda usarla sin crear un require
-// circular (webhook.service.js → ai.service.js ya existía). Se sigue
-// re-exportando desde acá al final del archivo por compatibilidad.
-
 async function processGupshupMessage({ phone, text, name }, businessId) {
   logger.info('[gupshup] processGupshupMessage: inicio', { phone, textPreview: text?.slice(0, 50), businessId });
 
@@ -417,7 +412,20 @@ async function processGupshupMessage({ phone, text, name }, businessId) {
   const { reply } = await aiService.chat(conversation._id, text, business, lead);
   logger.info('[gupshup] respuesta de IA recibida', { replyPreview: reply?.slice(0, 50) });
 
-  await sendWhatsAppMessage(phone, reply);
+  // Fase 1.1 (Provider Abstraction): antes llamaba a gupshup.client.js
+  // directo; ahora pasa por channelService, resuelto por el WhatsAppChannel
+  // real del tenant — mismo principio que ai.service.js#sendAgentMessage()
+  // (sub-fase 1.d). Modo de fallo nuevo, mismo criterio que ese cambio: si
+  // el tenant no tiene un WhatsAppChannel activo, no se manda (antes se
+  // intentaba igual vía el número compartido) — se loguea y no se relanza,
+  // consistente con el resto de esta función (nunca lanza por datos
+  // faltantes, ver los `return` de arriba).
+  const channel = await channelService.getChannelForTenant(businessId);
+  if (!channel) {
+    logger.warn('[gupshup] sin WhatsAppChannel activo para este tenant, no se pudo enviar la respuesta', { businessId, leadId: lead._id.toString() });
+  } else {
+    await channelService.sendMessage(channel._id, phone, reply);
+  }
   logger.info('[gupshup] processGupshupMessage: completado', { leadId: lead._id.toString() });
 
   return { lead, conversation };
@@ -431,7 +439,6 @@ module.exports = {
   processMetaLead,
   processTikTokLead,
   processWhatsAppMessage,
-  sendWhatsAppMessage,
   parseGupshupPayload,
   findGupshupConfig,
   processGupshupMessage,

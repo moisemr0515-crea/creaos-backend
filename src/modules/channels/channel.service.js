@@ -34,6 +34,22 @@ async function sendMessage(channelId, to, text) {
 }
 
 /**
+ * Estado operativo de un canal — Fase 1.1 (Provider Abstraction). Mismo
+ * patrón de resolución que sendMessage(): recibe el ID, no el documento,
+ * para mantener a ChannelService como la única puerta de entrada.
+ * @param {string} channelId
+ */
+async function getChannelStatus(channelId) {
+  const channel = await channelRepository.findById(channelId);
+  if (!channel) {
+    throw new AppError(`WhatsAppChannel ${channelId} no encontrado`, 404);
+  }
+
+  const provider = getProviderFor(channel);
+  return provider.getChannelStatus(channel);
+}
+
+/**
  * @param {string} tenantId
  * @returns {Promise<Array>} canales activos del tenant
  */
@@ -46,4 +62,4 @@ function listChannels(tenantId) {
   return channelRepository.findByTenant(tenantId);
 }
 
-module.exports = { sendMessage, getChannelForTenant, listChannels };
+module.exports = { sendMessage, getChannelStatus, getChannelForTenant, listChannels };

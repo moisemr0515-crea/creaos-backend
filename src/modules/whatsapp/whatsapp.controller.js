@@ -2,8 +2,7 @@ const WhatsAppConnection = require('./whatsappConnection.model');
 const { AppError } = require('../../middleware/error.middleware');
 const { respuestaExito } = require('../../utils/response');
 const logger = require('../../utils/logger');
-const { estaConfigurado } = require('../webhooks/gupshup.client');
-const { GUPSHUP_PHONE_NUMBER } = require('../../config/env');
+const channelService = require('../channels/channel.service');
 
 // Formato E.164 básico: "+" seguido de 8 a 15 dígitos (ej. +51910265404)
 const PHONE_REGEX = /^\+[1-9]\d{7,14}$/;
@@ -92,24 +91,33 @@ const disconnectConnection = async (req, res, next) => {
 };
 
 // ─── GET /api/v1/whatsapp/status ──────────────────────────────────────────────
-// Fix 2 del Caso 8: fuente de verdad real del canal de WhatsApp, basada en las
-// env vars de Gupshup — a propósito NO usa WhatsAppConnection (ese modelo es
-// un placeholder simulado del feature futuro de número dedicado por negocio,
-// ver whatsappConnection.model.js). Único canal compartido por ahora, así que
-// no depende de req.businessId — es el mismo resultado para cualquier negocio
-// hasta que exista v1.2 (multi-número).
+// Fase 1.1 (Provider Abstraction): reemplaza la llamada directa a
+// gupshup.client.js#estaConfigurado() por channelService, resuelto por el
+// WhatsAppChannel real del tenant — ya no asume un canal compartido
+// implícito (Fix 2 del Caso 8, comportamiento anterior). CAMBIO DE
+// COMPORTAMIENTO INTENCIONAL: antes este endpoint devolvía connected:true
+// para CUALQUIER negocio con las env vars de Gupshup configuradas, sin
+// importar si ese negocio tenía o no un WhatsAppChannel propio — ahora
+// devuelve connected:false para cualquier tenant sin un WhatsAppChannel
+// activo, que es el resultado correcto según el objetivo de Fase 1 (cada
+// canal pertenece a un tenant real, ninguno hereda un canal compartido por
+// default). Confirmado y aprobado explícitamente, no es una regresión.
 
 const getStatus = async (req, res, next) => {
   try {
-    const connected = estaConfigurado();
+    const channel = await channelService.getChannelForTenant(req.businessId);
+    if (!channel) {
+      return respuestaExito(res, {
+        message: 'Estado del canal de WhatsApp obtenido',
+        data: { connected: false, provider: 'gupshup', phoneNumber: null },
+      });
+    }
+
+    const status = await channelService.getChannelStatus(channel._id);
 
     return respuestaExito(res, {
       message: 'Estado del canal de WhatsApp obtenido',
-      data: {
-        connected,
-        provider: 'gupshup',
-        phoneNumber: connected ? GUPSHUP_PHONE_NUMBER : null,
-      },
+      data: status,
     });
   } catch (err) {
     next(err);
