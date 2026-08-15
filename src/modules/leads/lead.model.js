@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { normalizeToE164 } = require('../../utils/phone');
 
 const TEMPERATURES = ['cold', 'warm', 'hot'];
 const SOURCES = ['manual', 'facebook', 'instagram', 'tiktok', 'whatsapp', 'referral', 'website', 'csv_import', 'other'];
@@ -103,6 +104,23 @@ leadSchema.index({ business: 1, temperature: 1 });
 leadSchema.index({ business: 1, isDeleted: 1 });
 leadSchema.index({ business: 1, tags: 1 });
 leadSchema.index({ name: 'text', email: 'text', phone: 'text', company: 'text' });
+// No único todavía (Blueprint §7 paso 5) — permite que las queries de "¿ya
+// existe este lead?" usen el número ya normalizado, sin bloquear escrituras
+// mientras existan duplicados históricos sin revisar (ver §7 pasos 6-7 y
+// docs/implementation/fase-0a-contencion-report.md §3.2 — los ~15 duplicados
+// de Myrel Company).
+leadSchema.index({ business: 1, phone: 1 });
+
+// Normaliza `phone` a E.164 en cada creación/edición nueva — mismo patrón que
+// el pre('save') de `slug` en business.model.js. Solo corrige el formato del
+// string hacia adelante; no toca documentos ya guardados ni fusiona nada
+// (Blueprint §7 paso 4).
+leadSchema.pre('save', function (next) {
+  if (this.isModified('phone') && this.phone) {
+    this.phone = normalizeToE164(this.phone);
+  }
+  next();
+});
 
 leadSchema.virtual('stageLabel').get(function () {
   return STAGE_LABELS[this.pipelineStage] || this.pipelineStage;
