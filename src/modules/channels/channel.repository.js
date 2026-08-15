@@ -14,6 +14,17 @@ function findByPhoneNumberId(provider, phoneNumberId) {
   return WhatsAppChannel.findOne({ provider, phoneNumberId });
 }
 
+/**
+ * Fallback cuando el payload entrante no trae phoneNumberId (ej. formato
+ * "legacy" de Gupshup, que solo manda `app`/appName, o un payload v3 con
+ * metadata.phone_number_id ausente) — se intenta por wabaId en su lugar.
+ * @returns {Promise<import('./whatsappChannel.model')|null>}
+ */
+function findByWabaId(provider, wabaId) {
+  if (!wabaId) return null;
+  return WhatsAppChannel.findOne({ provider, wabaId });
+}
+
 function findByTenant(tenantId) {
   return WhatsAppChannel.find({ tenantId });
 }
@@ -30,4 +41,4 @@ function updateStatus(channelId, status) {
   return WhatsAppChannel.findByIdAndUpdate(channelId, { status }, { new: true });
 }
 
-module.exports = { findByPhoneNumberId, findByTenant, findById, create, updateStatus };
+module.exports = { findByPhoneNumberId, findByWabaId, findByTenant, findById, create, updateStatus };

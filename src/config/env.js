@@ -105,4 +105,12 @@ module.exports = {
   // Valor secreto configurado en el panel de Gupshup (Webhook → Custom Header) bajo el nombre
   // X-Gupshup-Webhook-Token — Gupshup no ofrece Basic Auth, solo un header personalizado libre.
   GUPSHUP_WEBHOOK_HEADER: process.env.GUPSHUP_WEBHOOK_HEADER || 'x-gupshup-webhook-token', GUPSHUP_WEBHOOK_TOKEN: process.env.GUPSHUP_WEBHOOK_TOKEN || '',
+
+  // Feature flag temporal (Implementation Blueprint, Decisión 3) — corte del
+  // webhook de Gupshup hacia el nuevo Inbound Gateway (sub-fase 1.c en
+  // adelante). Default OFF: si la variable no existe (estado actual en
+  // Railway), el flujo viejo (findGupshupConfig/processGupshupMessage)
+  // sigue siendo el único que corre. Se elimina junto con el código viejo
+  // en la sub-fase 1.f, tras la ventana de validación de 14 días (1.e).
+  WHATSAPP_CHANNEL_CORE_ENABLED: process.env.WHATSAPP_CHANNEL_CORE_ENABLED === 'true',
 };
