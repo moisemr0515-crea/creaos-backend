@@ -3,19 +3,24 @@ const channelResolver = require('./channel.resolver');
 const tenantResolver = require('./tenant.resolver');
 const InboundEvent = require('./inboundEvent.model');
 const webhookService = require('../webhooks/webhook.service');
+const { enqueueInbound } = require('./queues/inbound.queue');
+const { WHATSAPP_QUEUE_PROCESSING_ENABLED } = require('../../config/env');
 const logger = require('../../utils/logger');
 
 /**
  * Inbound Gateway — sub-fase 1.c. Reemplaza a
  * webhook.service.js#findGupshupConfig() como mecanismo de identificación
- * de tenant, pero NO reemplaza el pipeline de IA/envío — eso sigue siendo
- * webhookService.processGupshupMessage(), sin tocar (AgentRuntime/colas
- * quedan explícitamente para la sub-fase 1.d, ver Implementation Blueprint
- * §9). Este archivo es deliberadamente quirúrgico: solo cambia QUIÉN
- * resuelve el tenant, no CÓMO se genera/envía la respuesta.
+ * de tenant. Desde la sub-fase 1.d, lo que pasa DESPUÉS de resolver el
+ * tenant y persistir el InboundEvent depende de un segundo flag,
+ * independiente del que activa este archivo (ver más abajo, handleOne()):
+ *
+ *  - WHATSAPP_QUEUE_PROCESSING_ENABLED=false (default): idéntico a 1.c —
+ *    llama a webhookService.processGupshupMessage() directo, síncrono.
+ *  - WHATSAPP_QUEUE_PROCESSING_ENABLED=true: encola en BullMQ, un Worker en
+ *    un servicio Railway separado lo procesa vía AgentRuntime.
  *
  * Solo se llama desde webhook.controller.js#gupshupWebhook() cuando
- * WHATSAPP_CHANNEL_CORE_ENABLED === true — con el flag en false (default),
+ * WHATSAPP_CHANNEL_CORE_ENABLED === true — con ESE flag en false (default),
  * este archivo no se ejecuta nunca.
  */
 
@@ -81,10 +86,18 @@ async function handleOne(msg) {
   event.status = 'processing';
   await event.save();
 
+  if (WHATSAPP_QUEUE_PROCESSING_ENABLED) {
+    // Sub-fase 1.d: se encola, no se procesa acá. El InboundEvent queda en
+    // 'processing' hasta que inbound.worker.js (servicio Railway separado)
+    // lo marque 'processed'/'failed'.
+    await enqueueInbound(event._id);
+    return;
+  }
+
   try {
-    // Sin cambios respecto al flujo viejo a partir de acá — mismo Lead/
-    // Conversation/ai.service.js/gupshup.client.js que usa processGupshupMessage()
-    // hoy. Lo único distinto es que `tenantId` vino de ChannelResolver +
+    // Sin cambios respecto al flujo de 1.c — mismo Lead/Conversation/
+    // ai.service.js/gupshup.client.js que usa processGupshupMessage() hoy.
+    // Lo único distinto es que `tenantId` vino de ChannelResolver +
     // TenantResolver, no de findGupshupConfig().
     await webhookService.processGupshupMessage({ phone: msg.from, text: msg.text, name: msg.name }, tenantId);
     event.status = 'processed';

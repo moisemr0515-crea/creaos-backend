@@ -3,7 +3,7 @@ const { OPENAI_API_KEY, OPENAI_MODEL, AI_MAX_TOKENS, AI_TEMPERATURE } = require(
 const Conversation = require('./conversation.model');
 const Lead = require('../leads/lead.model');
 const { AppError } = require('../../middleware/error.middleware');
-const { sendWhatsAppMessage } = require('../webhooks/gupshup.client');
+const channelService = require('../channels/channel.service');
 const logger = require('../../utils/logger');
 
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
@@ -247,7 +247,15 @@ const sendAgentMessage = async (conversationId, text, actor) => {
 
   if (esCanalWhatsApp && tieneTelefono) {
     try {
-      await sendWhatsAppMessage(lead.phone, text);
+      // channelService.sendMessage() (sub-fase 1.b) es síncrono — se
+      // resuelve el canal por `conversation.business` (no `tenantId`: ese
+      // campo sigue siendo opcional en Conversation, sin backfill todavía;
+      // `business` es requerido desde siempre y tiene el mismo valor,
+      // Decisión 1). Este envío NO pasa por la cola de salida — esa cola
+      // (sub-fase 1.d) es solo para las respuestas automáticas de la IA.
+      const channel = await channelService.getChannelForTenant(conversation.business);
+      if (!channel) throw new Error(`Ningún WhatsAppChannel activo para el tenant ${conversation.business}`);
+      await channelService.sendMessage(channel._id, lead.phone, text);
       mensaje.whatsappStatus = 'sent';
     } catch (error) {
       // No relanzar: el mensaje se guarda igual, solo queda marcado como fallido.
