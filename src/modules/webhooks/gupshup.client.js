@@ -157,6 +157,24 @@ async function sendTemplateMessage(to, template) {
  * en `message`. Igual que el texto libre, ESTO SÍ requiere la ventana de
  * 24h abierta (Meta trata la media como mensaje de sesión, no de plantilla)
  * — ese chequeo vive en ai.service.js#sendMediaMessage(), no acá.
+ *
+ * Shape del `message` VERIFICADO contra la referencia OpenAPI oficial de
+ * Gupshup para /wa/api/v1/msg (docs.gupshup.io/reference/msg) — NO es el
+ * mismo campo para imagen y video, a diferencia de lo que se asumió al
+ * implementar esto originalmente:
+ *   - image: { type:'image', originalUrl, previewUrl, caption? }
+ *   - video: { type:'video', url, caption? }
+ * El bug real (reportado y confirmado en producción): se usaba `url` para
+ * AMBOS tipos. Para video eso es correcto, pero para imagen Gupshup no
+ * reconoce el campo `url` — acepta el request igual (202 "submitted",
+ * valida solo los parámetros de nivel superior: channel/source/
+ * destination/apikey), pero no tiene ninguna URL de imagen válida que
+ * despachar. Por eso nunca llegaba nada al WhatsApp real Y tampoco
+ * generaba ningún callback de estado (ni "delivered" ni "failed") —
+ * confirmado revisando los logs de un envío real: sin ningún callback en
+ * absoluto, a diferencia de un mensaje de texto normal que sí recibe
+ * "delivered" en segundos.
+ *
  * @param {string} to
  * @param {{ url: string, type: 'image'|'video', caption?: string }} media
  */
@@ -168,16 +186,26 @@ async function sendMediaMessage(to, media) {
     source: GUPSHUP_PHONE_NUMBER,
   });
 
+  const messagePayload =
+    media.type === 'image'
+      ? {
+          type: 'image',
+          originalUrl: media.url,
+          previewUrl: media.url,
+          ...(media.caption ? { caption: media.caption } : {}),
+        }
+      : {
+          type: 'video',
+          url: media.url,
+          ...(media.caption ? { caption: media.caption } : {}),
+        };
+
   const body = new URLSearchParams({
     channel: 'whatsapp',
     source: GUPSHUP_PHONE_NUMBER,
     destination: to,
     'src.name': GUPSHUP_APP_NAME,
-    message: JSON.stringify({
-      type: media.type,
-      url: media.url,
-      ...(media.caption ? { caption: media.caption } : {}),
-    }),
+    message: JSON.stringify(messagePayload),
   });
 
   const response = await fetch('https://api.gupshup.io/wa/api/v1/msg', {
