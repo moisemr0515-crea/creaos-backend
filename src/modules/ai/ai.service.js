@@ -231,6 +231,18 @@ const sendAgentMessage = async (conversationId, text, actor) => {
   if (!conversation) throw new AppError('Conversación no encontrada', 404);
 
   const lead = await Lead.findById(conversation.lead);
+  // La Conversation de un lead soft-deleted NO se marca isDeleted a su vez
+  // (son entidades independientes) — sigue 100% funcional salvo este
+  // chequeo. Sin esto, un conversationId viejo (cacheado en el frontend,
+  // un tab abierto, etc.) apuntando a un lead ya descartado como duplicado
+  // permite seguir mandando mensajes reales por WhatsApp al número de ESE
+  // lead — que puede no ser el que la persona cree estar viendo. Hallazgo
+  // real, no hipotético: así se explicó un caso de "el mensaje llegó al
+  // número equivocado" que en realidad era un conversationId de un lead
+  // ya soft-deleted.
+  if (!lead || lead.isDeleted) {
+    throw new AppError('No se puede enviar el mensaje: el lead asociado a esta conversación ya no existe o fue eliminado', 404);
+  }
 
   const mensaje = {
     role: 'assistant',
