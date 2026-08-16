@@ -104,12 +104,37 @@ leadSchema.index({ business: 1, temperature: 1 });
 leadSchema.index({ business: 1, isDeleted: 1 });
 leadSchema.index({ business: 1, tags: 1 });
 leadSchema.index({ name: 'text', email: 'text', phone: 'text', company: 'text' });
-// No único todavía (Blueprint §7 paso 5) — permite que las queries de "¿ya
-// existe este lead?" usen el número ya normalizado, sin bloquear escrituras
-// mientras existan duplicados históricos sin revisar (ver §7 pasos 6-7 y
-// docs/implementation/fase-0a-contencion-report.md §3.2 — los ~15 duplicados
-// de Myrel Company).
-leadSchema.index({ business: 1, phone: 1 });
+// Único parcial (Blueprint §7 paso 7) — promovido desde el índice no-único
+// original una vez confirmado que no quedan duplicados activos (Problema 4,
+// Paso 2: 0 grupos {business,phone} duplicados en isDeleted:false,
+// verificado en producción antes de este cambio). `crearLead()` ya rechaza
+// duplicados a nivel de aplicación (409) desde el Paso 1 — este índice es
+// la red de seguridad a nivel de base de datos para cualquier otro camino
+// de escritura (import, scripts, futuras rutas) que no pase por ahí.
+//
+// partialFilterExpression solo aplica sobre isDeleted:false + phone de tipo
+// string — así, (a) un lead soft-deleted nunca bloquea la creación de un
+// lead nuevo con el mismo número (mismo criterio que ya usa crearLead()), y
+// (b) leads sin teléfono (campo opcional) quedan fuera del índice — Mongo
+// trataría un `phone` ausente/null como el mismo valor "faltante" en todos
+// los documentos y los haría chocar entre sí si no se excluyeran acá.
+// partialFilterExpression no soporta $ne, así que $type:'string' es la
+// forma de excluir missing/null (no excluye '' explícito, pero no hay
+// ningún lead con phone:'' en producción hoy — verificado antes de este
+// cambio).
+//
+// Nombre explícito a propósito: el índice viejo no-único de arriba tiene
+// las mismas claves {business,phone} y Mongo/Mongoose le asigna el mismo
+// nombre autogenerado ("business_1_phone_1") a cualquier índice nuevo con
+// esas claves — sin un nombre distinto, Lead.init() falla al arrancar con
+// "An existing index has the same name" (confirmado probándolo local antes
+// de este commit). Con nombre propio, este índice se crea sin chocar; el
+// viejo queda redundante pero inofensivo hasta que se borre aparte
+// (ver scripts/drop-old-lead-phone-index.js).
+leadSchema.index(
+  { business: 1, phone: 1 },
+  { name: 'business_1_phone_1_unique_active', unique: true, partialFilterExpression: { isDeleted: false, phone: { $type: 'string' } } }
+);
 
 // Normaliza `phone` a E.164 en cada creación/edición nueva — mismo patrón que
 // el pre('save') de `slug` en business.model.js. Solo corrige el formato del
