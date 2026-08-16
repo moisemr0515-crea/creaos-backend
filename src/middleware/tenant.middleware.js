@@ -10,7 +10,14 @@ const Business = require('../modules/businesses/business.model');
  */
 const injectTenant = async (req, res, next) => {
   try {
-    const businessId = req.businessId || req.user?.business?.toString();
+    // req.user.business viene de una consulta fresca a la base en
+    // authenticate() (User.findById en cada request) — se prioriza sobre
+    // req.businessId, que viene embebido en el JWT y puede quedar
+    // desactualizado (ej. tras cambiar el negocio de un usuario, como en
+    // la fusión CREA OS/Myrel Company) hasta que el access token se
+    // renueve. req.businessId queda como fallback solo para el caso raro
+    // de que req.user no traiga business poblado.
+    const businessId = req.user?.business?.toString() || req.businessId;
 
     if (!businessId) {
       throw new AppError('No se pudo determinar el negocio del usuario', 400);
