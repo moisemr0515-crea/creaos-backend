@@ -102,6 +102,11 @@ module.exports = {
   GUPSHUP_APP_NAME:     process.env.GUPSHUP_APP_NAME || '',
   GUPSHUP_PHONE_NUMBER: process.env.GUPSHUP_PHONE_NUMBER || '',
   GUPSHUP_WABA_ID:      process.env.GUPSHUP_WABA_ID || '',
+  // GUID de la app en el dashboard de Gupshup (distinto de GUPSHUP_APP_NAME,
+  // que es el nombre legible) — lo requiere la API de plantillas (listar y
+  // enviar), que a diferencia de sendWhatsAppMessage() sí es por-app, no por
+  // el número compartido (ventana de 24h / WhatsApp Business templates).
+  GUPSHUP_APP_ID:       process.env.GUPSHUP_APP_ID || '',
   // Valor secreto configurado en el panel de Gupshup (Webhook → Custom Header) bajo el nombre
   // X-Gupshup-Webhook-Token — Gupshup no ofrece Basic Auth, solo un header personalizado libre.
   GUPSHUP_WEBHOOK_HEADER: process.env.GUPSHUP_WEBHOOK_HEADER || 'x-gupshup-webhook-token', GUPSHUP_WEBHOOK_TOKEN: process.env.GUPSHUP_WEBHOOK_TOKEN || '',

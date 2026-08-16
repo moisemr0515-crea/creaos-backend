@@ -28,6 +28,27 @@ class GupshupProvider extends IChannelProvider {
   }
 
   /**
+   * @param {import('../whatsappChannel.model')} channel
+   * @param {string} to
+   * @param {{ id: string, params?: string[] }} template
+   */
+  async sendTemplate(channel, to, template) {
+    // Mismo criterio que sendMessage(): el `channel` se acepta por contrato,
+    // gupshup.client.js todavía resuelve el origen (GUPSHUP_PHONE_NUMBER) y
+    // la app (GUPSHUP_APP_ID) de forma global, no por canal.
+    return gupshupClient.sendTemplateMessage(to, template);
+  }
+
+  /**
+   * @param {import('../whatsappChannel.model')} _channel — no usado hoy,
+   *   mismo motivo que sendTemplate()/getChannelStatus().
+   * @returns {Promise<Array>}
+   */
+  async listTemplates(_channel) {
+    return gupshupClient.listTemplates();
+  }
+
+  /**
    * Estado operativo del canal — Fase 1.1 (Provider Abstraction). Envuelve
    * gupshup.client.js#estaConfigurado() (config-presence check, sin
    * llamada en vivo a la API de Gupshup, mismo criterio que ya usaba

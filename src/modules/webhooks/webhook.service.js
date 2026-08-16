@@ -431,6 +431,15 @@ async function processGupshupMessage({ phone, text, name }, businessId) {
       aiEnabled: true,
     });
   }
+
+  // Ventana de 24h de WhatsApp Business (Meta): SOLO un WhatsApp entrante
+  // real la abre/renueva — este es uno de los 2 lugares que procesan uno de
+  // verdad (el otro es ensureLeadAndConversation() en inbound.worker.js).
+  // Se actualiza siempre, incluso si aiEnabled:false más abajo — la ventana
+  // depende de que el lead escribió, no de si la IA le responde.
+  conversation.lastInboundMessageAt = new Date();
+  await conversation.save();
+
   logger.info('[gupshup] conversación lista', {
     conversationId: conversation._id.toString(),
     aiEnabled: conversation.aiEnabled,

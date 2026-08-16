@@ -12,6 +12,7 @@ const {
   GUPSHUP_APP_NAME,
   GUPSHUP_PHONE_NUMBER,
   GUPSHUP_WABA_ID,
+  GUPSHUP_APP_ID,
 } = require('../../config/env');
 
 /**
@@ -64,4 +65,82 @@ async function sendWhatsAppMessage(to, message) {
 const estaConfigurado = () =>
   Boolean(GUPSHUP_API_KEY && GUPSHUP_PHONE_NUMBER && GUPSHUP_WABA_ID);
 
-module.exports = { sendWhatsAppMessage, estaConfigurado };
+/**
+ * Lista las plantillas (WhatsApp Business templates) de la app en Gupshup —
+ * a diferencia de sendWhatsAppMessage()/sendTemplateMessage(), esta API es
+ * por-app (GUPSHUP_APP_ID, el GUID del dashboard), no por número compartido.
+ * Implementado según la documentación estándar de Gupshup (API "sm/api/v1") —
+ * sin health-check propio en esta sesión contra la cuenta real todavía;
+ * primer uso en producción sirve como verificación en vivo del shape exacto
+ * de la respuesta (mismo criterio que se usó para sendWhatsAppMessage en su
+ * momento).
+ *
+ * @returns {Promise<Array>} lista cruda de plantillas tal como las devuelve Gupshup
+ */
+async function listTemplates() {
+  if (!GUPSHUP_APP_ID) {
+    throw new Error('GUPSHUP_APP_ID no configurado — requerido para listar plantillas');
+  }
+
+  logger.info('[gupshup] listando plantillas', { appId: GUPSHUP_APP_ID });
+
+  const response = await fetch(`https://api.gupshup.io/sm/api/v1/template/list/${GUPSHUP_APP_ID}`, {
+    method: 'GET',
+    headers: { apikey: GUPSHUP_API_KEY },
+  });
+
+  if (!response.ok) {
+    const errText = await response.text().catch(() => '');
+    logger.error('[gupshup] error al listar plantillas', { status: response.status, body: errText });
+    throw new Error(`Gupshup API error (template list): ${response.status} ${errText}`);
+  }
+
+  const json = await response.json();
+  return json.templates || [];
+}
+
+/**
+ * Envía un mensaje de plantilla aprobada (WhatsApp Business template) —
+ * a diferencia de sendWhatsAppMessage() (texto libre), esto NO requiere que
+ * la ventana de 24h esté abierta; es justamente el mecanismo para reabrirla.
+ * @param {string} to
+ * @param {{ id: string, params?: string[] }} template — id de la plantilla en
+ *   Gupshup y los valores para sus variables {{1}}, {{2}}, ... en orden.
+ */
+async function sendTemplateMessage(to, template) {
+  logger.info('[gupshup] enviando plantilla via Gupshup API', {
+    to,
+    templateId: template?.id,
+    hasApiKey: Boolean(GUPSHUP_API_KEY),
+    source: GUPSHUP_PHONE_NUMBER,
+  });
+
+  const body = new URLSearchParams({
+    channel: 'whatsapp',
+    source: GUPSHUP_PHONE_NUMBER,
+    destination: to,
+    'src.name': GUPSHUP_APP_NAME,
+    template: JSON.stringify({ id: template.id, params: template.params || [] }),
+  });
+
+  const response = await fetch('https://api.gupshup.io/wa/api/v1/template/msg', {
+    method: 'POST',
+    headers: {
+      apikey: GUPSHUP_API_KEY,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: body.toString(),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text().catch(() => '');
+    logger.error('[gupshup] Gupshup API respondió error (template)', { status: response.status, body: errText });
+    throw new Error(`Gupshup API error (template send): ${response.status} ${errText}`);
+  }
+
+  const json = await response.json();
+  logger.info('[gupshup] plantilla enviada a Gupshup exitosamente', { to, gupshupResponse: json });
+  return json;
+}
+
+module.exports = { sendWhatsAppMessage, estaConfigurado, listTemplates, sendTemplateMessage };

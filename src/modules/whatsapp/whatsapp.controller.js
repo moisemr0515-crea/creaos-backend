@@ -124,4 +124,31 @@ const getStatus = async (req, res, next) => {
   }
 };
 
-module.exports = { createConnection, listConnections, disconnectConnection, getStatus };
+// ─── GET /api/v1/whatsapp/templates ────────────────────────────────────────
+// Plantillas aprobadas de WhatsApp Business para el canal del tenant — para
+// reabrir la ventana de 24h con un mensaje de texto libre. Proxy en vivo a
+// Gupshup (sin tabla local todavía) — mismo patrón de resolución que
+// getStatus(): sin WhatsAppChannel activo, no hay nada que listar.
+
+const getTemplates = async (req, res, next) => {
+  try {
+    const channel = await channelService.getChannelForTenant(req.businessId);
+    if (!channel) {
+      return respuestaExito(res, {
+        message: 'Plantillas de WhatsApp obtenidas',
+        data: { templates: [] },
+      });
+    }
+
+    const templates = await channelService.listTemplates(channel._id);
+
+    return respuestaExito(res, {
+      message: 'Plantillas de WhatsApp obtenidas',
+      data: { templates },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+module.exports = { createConnection, listConnections, disconnectConnection, getStatus, getTemplates };
