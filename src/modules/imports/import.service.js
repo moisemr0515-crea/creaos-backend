@@ -1,6 +1,7 @@
 const { parse } = require('csv-parse/sync');
 const XLSX = require('xlsx');
 const Lead = require('../leads/lead.model');
+const Conversation = require('../ai/conversation.model');
 const Pipeline = require('../pipeline/pipeline.model');
 const Import = require('./import.model');
 const { AppError } = require('../../middleware/error.middleware');
@@ -158,6 +159,22 @@ const procesarImportacion = async (businessId, actorId, { file, columnMapping = 
   if (leadsAInsertar.length) {
     const inserted = await Lead.insertMany(leadsAInsertar, { ordered: false });
     successCount = inserted.length;
+
+    // Mismo criterio que crearLead() (lead.service.js): un lead importado
+    // no pasa por ningún flujo que le cree una Conversation por su cuenta
+    // (eso solo pasa con un mensaje de WhatsApp entrante) — se crea acá,
+    // en lote, para que el panel de chat tenga un conversationId listo
+    // para usar sin esperar al primer mensaje real.
+    await Conversation.insertMany(
+      inserted.map((lead) => ({
+        business:  businessId,
+        lead:      lead._id,
+        channel:   'manual',
+        status:    'active',
+        aiEnabled: true,
+      })),
+      { ordered: false }
+    );
   }
 
   const completedAt = new Date();

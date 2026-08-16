@@ -164,6 +164,19 @@ async function processMetaLead(entry, config) {
       },
     });
 
+    // Mismo criterio que crearLead()/procesarImportacion(): un lead que
+    // llega por publicidad no pasa por ningún flujo que le cree una
+    // Conversation por su cuenta (eso solo pasa con un mensaje de
+    // WhatsApp entrante) — se crea acá para que el panel de chat tenga un
+    // conversationId listo para usar de entrada.
+    await Conversation.create({
+      business:  config.business,
+      lead:      lead._id,
+      channel:   'manual',
+      status:    'active',
+      aiEnabled: true,
+    });
+
     await WebhookConfig.updateOne(
       { _id: config._id },
       { $inc: { totalLeadsReceived: 1 }, $set: { lastReceivedAt: new Date() } }
@@ -235,6 +248,15 @@ async function processTikTokLead(payload, config) {
         leadgenId:   leadId,
         receivedAt:  new Date(),
       },
+    });
+
+    // Mismo criterio que arriba en processMetaLead() — ver comentario ahí.
+    await Conversation.create({
+      business:  config.business,
+      lead:      lead._id,
+      channel:   'manual',
+      status:    'active',
+      aiEnabled: true,
     });
 
     await WebhookConfig.updateOne(

@@ -1,4 +1,5 @@
 const Lead = require('./lead.model');
+const Conversation = require('../ai/conversation.model');
 const Pipeline = require('../pipeline/pipeline.model');
 const { obtenerPipelineEfectivo, validarStageEnPipeline } = require('../pipeline/pipeline.service');
 const User = require('../users/user.model');
@@ -70,6 +71,27 @@ const crearLead = async (businessId, actor, data) => {
   }
 
   await lead.save();
+
+  // Solo un lead que llega por un mensaje de WhatsApp ENTRANTE obtiene una
+  // Conversation automáticamente (ensureLeadAndConversation()/
+  // processGupshupMessage() en el flujo del webhook). Un lead creado acá
+  // (manual), importado (import.service.js) o por publicidad
+  // (processMetaLead/processTikTokLead en webhook.service.js) no pasaba
+  // por ningún flujo que le creara una — el panel de chat no tenía ningún
+  // conversationId que usar hasta el primer mensaje real de WhatsApp, y
+  // sendMessage/sendAgentMessage (que requieren un conversationId ya
+  // existente) rechazaban con 404 ("conversación no encontrada"). Se crea
+  // acá, al alta, para que CUALQUIER lead tenga una Conversation lista
+  // para usar sin importar su origen — mismo shape que ya usa
+  // startConversation() (ai.controller.js) para este mismo caso.
+  await Conversation.create({
+    business:   businessId,
+    lead:       lead._id,
+    assignedTo: actor._id,
+    channel:    'manual',
+    status:     'active',
+    aiEnabled:  true,
+  });
 
   // Trigger asíncrono — no bloquea la respuesta HTTP
   triggerAutomations('lead_created', lead).catch(() => {});
