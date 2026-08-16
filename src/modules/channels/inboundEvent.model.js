@@ -21,6 +21,15 @@ const inboundEventSchema = new mongoose.Schema(
     tenantId: { type: mongoose.Schema.Types.ObjectId, ref: 'Business', required: true },
     from: String,
     text: String,
+    // Imagen/video entrante (mismo alcance que el envío saliente: solo esos
+    // 2 tipos) — mediaSourceUrl es la URL TEMPORAL que manda Gupshup en el
+    // payload (documentan un urlExpiry), nunca se usa para servir el
+    // archivo al frontend; se descarga y re-aloja en Cloudinary recién al
+    // procesar el evento (ai.service.js#saveInboundMessage()). Se guarda
+    // acá solo para que el Worker (o un reintento) tenga de dónde
+    // descargarla sin tener que re-parsear rawPayload.
+    mediaType: { type: String, enum: ['image', 'video', null], default: null },
+    mediaSourceUrl: { type: String, default: null },
     rawPayload: mongoose.Schema.Types.Mixed,
     status: { type: String, enum: STATUSES, default: 'received' },
     error: { type: String, default: null },

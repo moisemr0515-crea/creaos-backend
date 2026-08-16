@@ -5,6 +5,11 @@ const IChannelProvider = require('../channelProvider.interface');
 const gupshupClient = require('../../webhooks/gupshup.client');
 const { GUPSHUP_PHONE_NUMBER } = require('../../../config/env');
 
+// Tipos de media ENTRANTE soportados por normalizeInboundEvent() — mismo
+// alcance que el envío saliente (ai.service.js#sendMediaMessage) y que
+// webhook.service.js#parseGupshupPayload().
+const MEDIA_TYPES_SOPORTADOS = ['image', 'video'];
+
 /**
  * GupshupProvider — primera (y única, Fase 0-3) implementación de
  * IChannelProvider. Envuelve gupshup.client.js casi sin cambios internos
@@ -86,11 +91,15 @@ class GupshupProvider extends IChannelProvider {
 
   /**
    * Traduce el payload crudo de Gupshup (formato "legacy" o "v3"/passthrough
-   * Meta) al evento canónico. Misma lógica que hoy vive en
+   * Meta) al evento canónico. Misma lógica que
    * webhook.service.js#parseGupshupPayload() + #extractGupshupAppIdentifiers()
-   * (líneas 287-336) — movida acá tal cual, sin cambios de comportamiento.
+   * — reconoce 'text', 'image' y 'video' (mismo alcance que el envío
+   * saliente de media), igual que se corrigió en parseGupshupPayload()
+   * (ai,webhooks): feat/inbound-media-messages. `mediaSourceUrl` es la URL
+   * TEMPORAL que trae el payload — nunca se usa tal cual, se descarga y
+   * re-aloja en Cloudinary al procesar el evento.
    *
-   * @returns {Array<{providerMessageId: string, from: string, text: string, name: string, channelIdentifiers: object}>}
+   * @returns {Array<{providerMessageId: string, from: string, text: string, name: string, mediaType?: 'image'|'video', mediaSourceUrl?: string, channelIdentifiers: object}>}
    */
   normalizeInboundEvent(rawPayload) {
     const channelIdentifiers = this._extractIdentifiers(rawPayload);
@@ -102,16 +111,23 @@ class GupshupProvider extends IChannelProvider {
           if (change.field !== 'messages') continue;
           const { messages = [], contacts = [] } = change.value || {};
           for (const msg of messages) {
-            if (msg.type !== 'text') continue;
             const from = msg.from;
             const contact = contacts.find((c) => c.wa_id === from);
-            results.push({
-              providerMessageId: msg.id,
-              from,
-              text: msg.text?.body || '',
-              name: contact?.profile?.name || from,
-              channelIdentifiers,
-            });
+            const base = { providerMessageId: msg.id, from, name: contact?.profile?.name || from, channelIdentifiers };
+
+            if (msg.type === 'text') {
+              results.push({ ...base, text: msg.text?.body || '' });
+            } else if (MEDIA_TYPES_SOPORTADOS.includes(msg.type)) {
+              const mediaField = msg[msg.type];
+              if (!mediaField?.url) continue;
+              results.push({
+                ...base,
+                text: mediaField.caption || '',
+                mediaType: msg.type,
+                mediaSourceUrl: mediaField.url,
+              });
+            }
+            // otros tipos: se ignoran, mismo comportamiento que antes
           }
         }
       }
@@ -120,15 +136,31 @@ class GupshupProvider extends IChannelProvider {
 
     if (rawPayload?.type === 'message') {
       const from = rawPayload.payload?.sender?.phone;
-      const text = rawPayload.payload?.payload?.text;
-      if (!from || !text) return [];
-      return [{
-        providerMessageId: rawPayload.payload?.id,
-        from,
-        text,
-        name: rawPayload.payload?.sender?.name || from,
-        channelIdentifiers,
-      }];
+      const name = rawPayload.payload?.sender?.name || from;
+      const providerMessageId = rawPayload.payload?.id;
+      const payloadType = rawPayload.payload?.type;
+
+      if (payloadType === 'text') {
+        const text = rawPayload.payload?.payload?.text;
+        if (!from || !text) return [];
+        return [{ providerMessageId, from, text, name, channelIdentifiers }];
+      }
+
+      if (MEDIA_TYPES_SOPORTADOS.includes(payloadType)) {
+        const mediaUrl = rawPayload.payload?.payload?.url;
+        if (!from || !mediaUrl) return [];
+        return [{
+          providerMessageId,
+          from,
+          name,
+          channelIdentifiers,
+          text: rawPayload.payload?.payload?.caption || '',
+          mediaType: payloadType,
+          mediaSourceUrl: mediaUrl,
+        }];
+      }
+
+      return [];
     }
 
     return [];
