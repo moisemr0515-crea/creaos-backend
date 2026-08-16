@@ -5,6 +5,7 @@ const Conversation = require('../ai/conversation.model');
 const Pipeline = require('../pipeline/pipeline.model');
 const Import = require('./import.model');
 const { AppError } = require('../../middleware/error.middleware');
+const { normalizeToE164 } = require('../../utils/phone');
 
 const VALID_STAGES = ['new', 'contacted', 'interested', 'proposal', 'negotiation', 'won', 'lost'];
 const VALID_SOURCES = ['manual', 'facebook', 'instagram', 'tiktok', 'whatsapp', 'referral', 'website', 'csv_import', 'other'];
@@ -132,7 +133,14 @@ const procesarImportacion = async (businessId, actorId, { file, columnMapping = 
       business: businessId,
       name: rowData.name,
       email: rowData.email ? rowData.email.toLowerCase() : undefined,
-      phone: rowData.phone || undefined,
+      // Lead.insertMany() (abajo) NO dispara el pre('save') de
+      // lead.model.js — a diferencia de crearLead()/processGupshupMessage(),
+      // un lead importado quedaba con el phone tal cual venía en el
+      // archivo (crudo, sin normalizar). Se normaliza acá, antes del
+      // insertMany, con la misma normalizeToE164() que usa el pre('save'),
+      // mismo criterio que ya se corrigió para creación manual (Paso 1) y
+      // WhatsApp entrante (fix/webhook-phone-normalization-lookup).
+      phone: rowData.phone ? normalizeToE164(rowData.phone) : undefined,
       company: rowData.company || undefined,
       position: rowData.position || undefined,
       source: rowData.source || defaultSource,
