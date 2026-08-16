@@ -61,6 +61,14 @@ class GupshupProvider extends IChannelProvider {
   }
 
   /**
+   * @param {import('../whatsappChannel.model')} _channel — no usado hoy, mismo motivo que el resto.
+   * @param {string} mediaUrl
+   */
+  async downloadMedia(_channel, mediaUrl) {
+    return gupshupClient.downloadMedia(mediaUrl);
+  }
+
+  /**
    * Estado operativo del canal — Fase 1.1 (Provider Abstraction). Envuelve
    * gupshup.client.js#estaConfigurado() (config-presence check, sin
    * llamada en vivo a la API de Gupshup, mismo criterio que ya usaba

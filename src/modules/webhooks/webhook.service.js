@@ -307,6 +307,13 @@ async function processWhatsAppMessage({ phoneNumberId, from, name, text, msgId }
 //  - "legacy": { type: "message", app, payload: { sender: { phone, name }, payload: { text } } }
 //  - "v3" (passthrough Meta): { object: "whatsapp_business_account", gs_app_id, entry: [{ id, changes: [{ field: "messages", value: { metadata, contacts, messages } }] }] }
 
+// Tipos de media entrante soportados — mismo alcance que el envío
+// SALIENTE (ai.service.js#sendMediaMessage): imagen y video. Otros tipos
+// (audio, document, sticker, location, contacts, etc.) siguen sin
+// reconocerse — quedan fuera de alcance de este fix, se descartan igual
+// que antes.
+const TIPOS_MEDIA_ENTRANTE_SOPORTADOS = ['image', 'video'];
+
 function parseGupshupPayload(body) {
   if (body?.object === 'whatsapp_business_account' && Array.isArray(body.entry)) {
     const results = [];
@@ -315,15 +322,28 @@ function parseGupshupPayload(body) {
         if (change.field !== 'messages') continue;
         const { messages = [], contacts = [] } = change.value || {};
         for (const msg of messages) {
-          if (msg.type !== 'text') continue;
           const from = msg.from;
           const contact = contacts.find((c) => c.wa_id === from);
-          results.push({
-            phone: from,
-            text: msg.text?.body || '',
-            name: contact?.profile?.name || from,
-            msgId: msg.id,
-          });
+          const base = { phone: from, name: contact?.profile?.name || from, msgId: msg.id };
+
+          if (msg.type === 'text') {
+            results.push({ ...base, text: msg.text?.body || '' });
+          } else if (TIPOS_MEDIA_ENTRANTE_SOPORTADOS.includes(msg.type)) {
+            // Formato real confirmado en producción (payload capturado en
+            // logs): msg.image/msg.video = { id, mime_type, sha256, url,
+            // caption? }. `url` es TEMPORAL (Gupshup expira estos links) —
+            // se re-aloja en Cloudinary en saveInboundMessage(), nunca se
+            // guarda tal cual.
+            const mediaField = msg[msg.type];
+            if (!mediaField?.url) continue; // sin URL no hay nada que procesar
+            results.push({
+              ...base,
+              text: mediaField.caption || '',
+              mediaType: msg.type,
+              mediaSourceUrl: mediaField.url,
+            });
+          }
+          // otros tipos: se ignoran, mismo comportamiento que antes de este fix
         }
       }
     }
@@ -332,14 +352,32 @@ function parseGupshupPayload(body) {
 
   if (body?.type === 'message') {
     const phone = body.payload?.sender?.phone;
-    const text = body.payload?.payload?.text;
-    if (!phone || !text) return [];
-    return [{
-      phone,
-      text,
-      name: body.payload?.sender?.name || phone,
-      msgId: body.payload?.id,
-    }];
+    const name = body.payload?.sender?.name || phone;
+    const msgId = body.payload?.id;
+    const payloadType = body.payload?.type;
+
+    if (payloadType === 'text') {
+      const text = body.payload?.payload?.text;
+      if (!phone || !text) return [];
+      return [{ phone, text, name, msgId }];
+    }
+
+    if (TIPOS_MEDIA_ENTRANTE_SOPORTADOS.includes(payloadType)) {
+      // Formato legacy documentado por Gupshup: payload.payload = { url,
+      // caption?, contentType, urlExpiry } — mismo criterio, `url` temporal.
+      const mediaUrl = body.payload?.payload?.url;
+      if (!phone || !mediaUrl) return [];
+      return [{
+        phone,
+        name,
+        msgId,
+        text: body.payload?.payload?.caption || '',
+        mediaType: payloadType,
+        mediaSourceUrl: mediaUrl,
+      }];
+    }
+
+    return [];
   }
 
   return [];
@@ -370,11 +408,15 @@ async function findGupshupConfig(body) {
   });
 }
 
-async function processGupshupMessage({ phone, text, name }, businessId) {
-  logger.info('[gupshup] processGupshupMessage: inicio', { phone, textPreview: text?.slice(0, 50), businessId });
+async function processGupshupMessage({ phone, text, name, mediaType, mediaSourceUrl }, businessId) {
+  logger.info('[gupshup] processGupshupMessage: inicio', { phone, textPreview: text?.slice(0, 50), mediaType, businessId });
 
-  if (!phone || !text) {
-    logger.warn('[gupshup] processGupshupMessage: phone o text vacío, se descarta', { phone, text });
+  // Un mensaje de imagen/video SIN caption llega con text:'' — antes este
+  // guard exigía `text` siempre, así que un mensaje de media sin caption
+  // (el caso más común: una foto sola, sin escribir nada) se descartaba
+  // acá mismo, ni siquiera llegaba a parseGupshupPayload() a guardarse.
+  if (!phone || (!text && !mediaSourceUrl)) {
+    logger.warn('[gupshup] processGupshupMessage: phone vacío y sin texto ni media, se descarta', { phone, text, mediaType });
     return;
   }
 
@@ -398,6 +440,10 @@ async function processGupshupMessage({ phone, text, name }, businessId) {
   const phoneNormalizado = normalizeToE164(phone);
   let lead = await Lead.findOne({ business: businessId, phone: phoneNormalizado, isDeleted: false });
 
+  // Mensaje de imagen/video sin caption -> text:'' — se usa un resumen
+  // legible para la actividad del lead en vez de dejarlo vacío.
+  const resumenActividad = text?.slice(0, 100) || (mediaType ? `[${mediaType}]` : '');
+
   if (!lead) {
     lead = await Lead.create({
       business:   businessId,
@@ -406,10 +452,10 @@ async function processGupshupMessage({ phone, text, name }, businessId) {
       source:     'whatsapp',
       whatsappId: phoneNormalizado,
       tags:       ['whatsapp'],
-      activity: [{ type: 'created', description: `Mensaje WhatsApp recibido: ${text.slice(0, 100)}` }],
+      activity: [{ type: 'created', description: `Mensaje WhatsApp recibido: ${resumenActividad}` }],
     });
   } else {
-    lead.activity.push({ type: 'contacted', description: `WhatsApp: ${text.slice(0, 100)}` });
+    lead.activity.push({ type: 'contacted', description: `WhatsApp: ${resumenActividad}` });
     lead.lastContactedAt = new Date();
     await lead.save();
   }
@@ -447,8 +493,17 @@ async function processGupshupMessage({ phone, text, name }, businessId) {
   // completo en cualquier conversación donde ya hubiera intervenido un
   // agente (aiEnabled:false, el estado casi permanente de una conversación
   // real) — hallazgo confirmado en producción, no hipotético. Ver
-  // ai.service.js#saveInboundMessage() para el detalle completo.
-  await aiService.saveInboundMessage(conversation._id, text);
+  // ai.service.js#saveInboundMessage() para el detalle completo. Si el
+  // mensaje trae media (imagen/video), saveInboundMessage() la descarga
+  // de la URL temporal de Gupshup y la re-aloja en Cloudinary — antes de
+  // este fix, parseGupshupPayload() ni siquiera reconocía estos tipos de
+  // mensaje (solo 'text'), así que la imagen/video se perdía por completo
+  // y como mucho sobrevivía el caption, guardado como si fuera texto puro.
+  await aiService.saveInboundMessage(
+    conversation._id,
+    text,
+    mediaSourceUrl ? { mediaType, sourceUrl: mediaSourceUrl } : undefined
+  );
 
   logger.info('[gupshup] conversación lista', {
     conversationId: conversation._id.toString(),

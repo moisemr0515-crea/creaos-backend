@@ -32,6 +32,15 @@ class IChannelProvider {
   }
 
   /**
+   * Descarga el binario de un media ENTRANTE (imagen/video que llegó de un
+   * lead) a partir de la URL temporal que trae el payload del webhook.
+   * @returns {Promise<{ buffer: Buffer, contentType: string|null }>}
+   */
+  async downloadMedia(_channel, _mediaUrl) {
+    throw new Error('not_implemented_v1: downloadMedia');
+  }
+
+  /**
    * Envía un mensaje con medios adjuntos (imagen/video).
    * @param {{ url: string, type: 'image'|'video', caption?: string }} _media
    */

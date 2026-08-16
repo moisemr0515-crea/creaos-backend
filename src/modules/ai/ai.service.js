@@ -67,19 +67,53 @@ INSTRUCCIONES:
  * lastInboundMessageAt actualizado, pero ausentes de conversation.messages
  * porque aiEnabled era false en los 3 casos).
  *
+ * Si el lead mandó una imagen/video (`media`), esta función también la
+ * descarga de la URL temporal que trae el payload de Gupshup y la
+ * re-aloja en Cloudinary (mismo storage y mismo shape que ya usa el envío
+ * SALIENTE de media — mediaUrl/mediaType en el mensaje) — ANTES de este
+ * fix, cualquier imagen/video entrante se descartaba por completo en
+ * parseGupshupPayload() (solo reconocía `msg.type === 'text'`), y como
+ * mucho sobrevivía el caption si lo traía (guardado como si fuera un
+ * mensaje de puro texto). Fail-soft a propósito: si la descarga/re-alojo
+ * falla (URL ya expirada, WhatsAppChannel caído, etc.), el mensaje se
+ * guarda igual con el caption/placeholder — nunca se pierde el mensaje
+ * completo solo porque la media no se pudo procesar.
+ *
  * @param {string} conversationId
  * @param {string} text
+ * @param {{ mediaType: 'image'|'video', sourceUrl: string }} [media] URL
+ *   TEMPORAL de Gupshup — nunca se guarda tal cual, se re-aloja primero.
  * @returns {Promise<import('./conversation.model')>} la conversación actualizada
  */
-const saveInboundMessage = async (conversationId, text) => {
+const saveInboundMessage = async (conversationId, text, media) => {
   const conversation = await Conversation.findById(conversationId);
   if (!conversation) throw new AppError('Conversación no encontrada', 404);
 
-  conversation.messages.push({
+  const mensaje = {
     role: 'user',
-    content: text,
+    content: text || (media ? (media.mediaType === 'video' ? '[Video]' : '[Imagen]') : ''),
     timestamp: new Date(),
-  });
+  };
+
+  if (media?.sourceUrl) {
+    try {
+      const channel = await channelService.getChannelForTenant(conversation.business);
+      if (!channel) {
+        throw new Error(`Ningún WhatsAppChannel activo para el tenant ${conversation.business}`);
+      }
+      const { buffer } = await channelService.downloadMedia(channel._id, media.sourceUrl);
+      const resultado = await cloudinaryUtil.subirBuffer(buffer, {
+        folder: `creaos/conversations/${conversationId}/media`,
+        resource_type: media.mediaType,
+      });
+      mensaje.mediaUrl = resultado.secure_url;
+      mensaje.mediaType = media.mediaType;
+    } catch (error) {
+      logger.error(`No se pudo descargar/re-alojar media entrante (conversación ${conversationId}): ${error.message}`);
+    }
+  }
+
+  conversation.messages.push(mensaje);
   await conversation.save();
 
   return conversation;

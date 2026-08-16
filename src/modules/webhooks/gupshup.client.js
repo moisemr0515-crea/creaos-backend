@@ -228,4 +228,32 @@ async function sendMediaMessage(to, media) {
   return json;
 }
 
-module.exports = { sendWhatsAppMessage, estaConfigurado, listTemplates, sendTemplateMessage, sendMediaMessage };
+/**
+ * Descarga el binario de un media ENTRANTE (imagen/video que un lead mandó
+ * por WhatsApp) desde la URL que trae el propio payload del webhook de
+ * Gupshup (filemanager.gupshup.io/...). Esa URL es TEMPORAL (Gupshup
+ * documenta un `urlExpiry`) — quien llame a esto debe descargar y
+ * re-alojar en Cloudinary de inmediato (ver ai.service.js#
+ * saveInboundMessage()), nunca guardar esta URL tal cual para uso futuro.
+ *
+ * @param {string} mediaUrl la URL que vino en el payload entrante (msg.image.url / msg.video.url)
+ * @returns {Promise<{ buffer: Buffer, contentType: string|null }>}
+ */
+async function downloadMedia(mediaUrl) {
+  logger.info('[gupshup] descargando media entrante', { mediaUrl });
+
+  const response = await fetch(mediaUrl, {
+    headers: { apikey: GUPSHUP_API_KEY },
+  });
+
+  if (!response.ok) {
+    const errText = await response.text().catch(() => '');
+    logger.error('[gupshup] error al descargar media entrante', { status: response.status, body: errText });
+    throw new Error(`Gupshup API error (media download): ${response.status} ${errText}`);
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  return { buffer: Buffer.from(arrayBuffer), contentType: response.headers.get('content-type') };
+}
+
+module.exports = { sendWhatsAppMessage, estaConfigurado, listTemplates, sendTemplateMessage, sendMediaMessage, downloadMedia };
