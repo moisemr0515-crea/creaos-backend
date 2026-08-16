@@ -83,6 +83,23 @@ async function sendMedia(channelId, to, media) {
 }
 
 /**
+ * Descarga el binario de un media ENTRANTE (imagen/video que un lead mandó)
+ * a partir de la URL temporal que trae el payload del webhook.
+ * @param {string} channelId
+ * @param {string} mediaUrl
+ * @returns {Promise<{ buffer: Buffer, contentType: string|null }>}
+ */
+async function downloadMedia(channelId, mediaUrl) {
+  const channel = await channelRepository.findById(channelId);
+  if (!channel) {
+    throw new AppError(`WhatsAppChannel ${channelId} no encontrado`, 404);
+  }
+
+  const provider = getProviderFor(channel);
+  return provider.downloadMedia(channel, mediaUrl);
+}
+
+/**
  * Estado operativo de un canal — Fase 1.1 (Provider Abstraction). Mismo
  * patrón de resolución que sendMessage(): recibe el ID, no el documento,
  * para mantener a ChannelService como la única puerta de entrada.
@@ -111,4 +128,4 @@ function listChannels(tenantId) {
   return channelRepository.findByTenant(tenantId);
 }
 
-module.exports = { sendMessage, sendTemplate, listTemplates, sendMedia, getChannelStatus, getChannelForTenant, listChannels };
+module.exports = { sendMessage, sendTemplate, listTemplates, sendMedia, downloadMedia, getChannelStatus, getChannelForTenant, listChannels };
