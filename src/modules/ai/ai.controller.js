@@ -120,6 +120,35 @@ const sendAgentMessage = async (req, res, next) => {
   }
 };
 
+/**
+ * POST /:conversationId/template-message
+ * Envía una plantilla aprobada de WhatsApp Business — a diferencia de
+ * agent-message (texto libre), esto NO requiere que la ventana de 24h esté
+ * abierta: es justamente el mecanismo para reabrirla. El scoping por
+ * businessId pasa acá, mismo patrón que sendAgentMessage.
+ */
+const sendTemplateMessage = async (req, res, next) => {
+  try {
+    const { conversationId } = req.params;
+    const { templateId, params } = req.body;
+    if (!templateId) throw new AppError('templateId es requerido', 400);
+
+    const conversation = await Conversation.findOne({
+      _id: conversationId,
+      business: req.businessId,
+      isDeleted: false,
+    });
+    if (!conversation) throw new AppError('Conversación no encontrada', 404);
+    if (conversation.status === 'resolved') throw new AppError('La conversación ya está resuelta', 400);
+
+    const mensajeGuardado = await aiService.sendTemplateMessage(conversationId, { id: templateId, params }, req.user);
+
+    return respuestaExito(res, { message: 'Plantilla enviada', data: { message: mensajeGuardado } });
+  } catch (err) {
+    next(err);
+  }
+};
+
 const getConversation = async (req, res, next) => {
   try {
     const conversation = await Conversation.findOne({
@@ -132,7 +161,15 @@ const getConversation = async (req, res, next) => {
 
     if (!conversation) throw new AppError('Conversación no encontrada', 404);
 
-    return respuestaExito(res, { message: 'Conversación obtenida exitosamente', data: { conversation } });
+    // Ventana de 24h de WhatsApp Business (Meta) — el frontend la necesita
+    // para decidir si mostrar el compositor de texto libre o forzar una
+    // plantilla, sin tener que pedirla aparte.
+    const { windowOpen, windowExpiresAt } = conversation.getWindowState();
+
+    return respuestaExito(res, {
+      message: 'Conversación obtenida exitosamente',
+      data: { conversation, windowOpen, windowExpiresAt },
+    });
   } catch (err) {
     next(err);
   }
@@ -299,6 +336,7 @@ module.exports = {
   startConversation,
   sendMessage,
   sendAgentMessage,
+  sendTemplateMessage,
   getConversation,
   listConversations,
   qualifyLead,

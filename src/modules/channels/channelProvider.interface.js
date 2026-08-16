@@ -18,9 +18,17 @@ class IChannelProvider {
     throw new Error('not_implemented_v1: sendMessage');
   }
 
-  /** Envía un mensaje de plantilla aprobada (WhatsApp Business templates). */
-  async sendTemplate(_channel, _to, _templateName, _params) {
+  /**
+   * Envía un mensaje de plantilla aprobada (WhatsApp Business templates).
+   * @param {{ id: string, params?: string[] }} _template
+   */
+  async sendTemplate(_channel, _to, _template) {
     throw new Error('not_implemented_v1: sendTemplate');
+  }
+
+  /** Lista las plantillas aprobadas disponibles para este canal. */
+  async listTemplates(_channel) {
+    throw new Error('not_implemented_v1: listTemplates');
   }
 
   /** Envía un mensaje con medios adjuntos (imagen/documento/audio). */

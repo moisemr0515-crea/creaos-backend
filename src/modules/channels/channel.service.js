@@ -34,6 +34,38 @@ async function sendMessage(channelId, to, text) {
 }
 
 /**
+ * Envía un mensaje de plantilla aprobada — a diferencia de sendMessage()
+ * (texto libre), no requiere que la ventana de 24h esté abierta.
+ * @param {string} channelId
+ * @param {string} to
+ * @param {{ id: string, params?: string[] }} template
+ */
+async function sendTemplate(channelId, to, template) {
+  const channel = await channelRepository.findById(channelId);
+  if (!channel) {
+    throw new AppError(`WhatsAppChannel ${channelId} no encontrado`, 404);
+  }
+
+  const provider = getProviderFor(channel);
+  return provider.sendTemplate(channel, to, template);
+}
+
+/**
+ * Lista las plantillas aprobadas disponibles para un canal.
+ * @param {string} channelId
+ * @returns {Promise<Array>}
+ */
+async function listTemplates(channelId) {
+  const channel = await channelRepository.findById(channelId);
+  if (!channel) {
+    throw new AppError(`WhatsAppChannel ${channelId} no encontrado`, 404);
+  }
+
+  const provider = getProviderFor(channel);
+  return provider.listTemplates(channel);
+}
+
+/**
  * Estado operativo de un canal — Fase 1.1 (Provider Abstraction). Mismo
  * patrón de resolución que sendMessage(): recibe el ID, no el documento,
  * para mantener a ChannelService como la única puerta de entrada.
@@ -62,4 +94,4 @@ function listChannels(tenantId) {
   return channelRepository.findByTenant(tenantId);
 }
 
-module.exports = { sendMessage, getChannelStatus, getChannelForTenant, listChannels };
+module.exports = { sendMessage, sendTemplate, listTemplates, getChannelStatus, getChannelForTenant, listChannels };

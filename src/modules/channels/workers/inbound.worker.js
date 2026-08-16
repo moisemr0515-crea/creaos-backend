@@ -82,6 +82,12 @@ async function ensureLeadAndConversation({ businessId, phone, text, name }) {
     conversation = await Conversation.create({ business: businessId, lead: lead._id, channel: 'whatsapp', status: 'active', aiEnabled: true });
   }
 
+  // Ventana de 24h de WhatsApp Business (Meta) — mismo criterio que
+  // webhook.service.js#processGupshupMessage(): SOLO un WhatsApp entrante
+  // real la abre/renueva. Se actualiza siempre, independiente de aiEnabled.
+  conversation.lastInboundMessageAt = new Date();
+  await conversation.save();
+
   return { business, lead, conversation };
 }
 

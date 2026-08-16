@@ -1,5 +1,10 @@
 const mongoose = require('mongoose');
 
+// Regla de Meta/WhatsApp Business: solo se puede mandar texto libre a un
+// contacto si escribió en las últimas 24h; fuera de eso, hay que reabrir con
+// una plantilla aprobada. Ver conversationSchema.methods.getWindowState().
+const WINDOW_DURATION_MS = 24 * 60 * 60 * 1000;
+
 const messageSchema = new mongoose.Schema(
   {
     role:      { type: String, enum: ['user', 'assistant', 'system'], required: true },
@@ -60,6 +65,16 @@ const conversationSchema = new mongoose.Schema(
     leadQualification: leadQualificationSchema,
     totalTokensUsed: { type: Number, default: 0 },
     isDeleted:  { type: Boolean, default: false },
+    // Timestamp del último mensaje de WhatsApp ENTRANTE real (del lead, no
+    // del agente/IA) — SOLO lo actualizan los flujos que procesan un
+    // WhatsApp entrante de verdad (webhook.service.js#processGupshupMessage,
+    // inbound.worker.js#ensureLeadAndConversation). Deliberadamente NO lo
+    // toca ai.service.js#chat() (usado por sendMessage(), que "simula" lo
+    // que dijo el lead para probar la respuesta de la IA sin que haya
+    // pasado nada real por WhatsApp) — si lo tocara, la ventana calculada
+    // acá quedaría "abierta" en nuestra base sin que Meta la haya abierto
+    // de verdad, dando una falsa sensación de cumplimiento.
+    lastInboundMessageAt: { type: Date, default: null },
   },
   { timestamps: true }
 );
@@ -68,4 +83,19 @@ conversationSchema.index({ business: 1, lead: 1 });
 conversationSchema.index({ business: 1, status: 1 });
 conversationSchema.index({ business: 1, createdAt: -1 });
 
+/**
+ * Estado de la ventana de 24h de WhatsApp Business (Meta). Sin ningún
+ * mensaje entrante real registrado todavía, la ventana se considera
+ * cerrada (no hay base para asumir que se puede mandar texto libre).
+ * @returns {{ windowOpen: boolean, windowExpiresAt: Date|null }}
+ */
+conversationSchema.methods.getWindowState = function () {
+  if (!this.lastInboundMessageAt) {
+    return { windowOpen: false, windowExpiresAt: null };
+  }
+  const windowExpiresAt = new Date(this.lastInboundMessageAt.getTime() + WINDOW_DURATION_MS);
+  return { windowOpen: windowExpiresAt.getTime() > Date.now(), windowExpiresAt };
+};
+
 module.exports = mongoose.model('Conversation', conversationSchema);
+module.exports.WINDOW_DURATION_MS = WINDOW_DURATION_MS;

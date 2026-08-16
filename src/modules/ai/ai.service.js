@@ -244,6 +244,22 @@ const sendAgentMessage = async (conversationId, text, actor) => {
     throw new AppError('No se puede enviar el mensaje: el lead asociado a esta conversación ya no existe o fue eliminado', 404);
   }
 
+  const esCanalWhatsApp = conversation.channel === 'whatsapp';
+  const tieneTelefono = Boolean(lead?.phone);
+
+  // Ventana de 24h de WhatsApp Business (Meta): fuera de las 24h desde el
+  // último mensaje ENTRANTE real del lead, Meta rechaza texto libre — solo
+  // admite reabrir con una plantilla aprobada (ver sendTemplateMessage()).
+  // Antes de este chequeo, ese rechazo llegaba recién en el catch de abajo
+  // (como cualquier otro fallo de Gupshup) y el mensaje quedaba guardado
+  // igual marcado whatsappStatus:'failed' — silencioso y con un error crudo
+  // de la API en vez de una explicación clara. Se rechaza acá, ANTES de
+  // guardar nada, mismo criterio que el chequeo de lead soft-deleted de
+  // arriba.
+  if (esCanalWhatsApp && tieneTelefono && !conversation.getWindowState().windowOpen) {
+    throw new AppError('La ventana de 24h de WhatsApp está cerrada — se requiere enviar una plantilla aprobada', 422);
+  }
+
   const mensaje = {
     role: 'assistant',
     content: text,
@@ -253,9 +269,6 @@ const sendAgentMessage = async (conversationId, text, actor) => {
     whatsappError: null,
     metadata: actor ? { agentId: actor._id, agentName: actor.name } : undefined,
   };
-
-  const esCanalWhatsApp = conversation.channel === 'whatsapp';
-  const tieneTelefono = Boolean(lead?.phone);
 
   if (esCanalWhatsApp && tieneTelefono) {
     try {
@@ -300,4 +313,75 @@ const sendAgentMessage = async (conversationId, text, actor) => {
   return conversation.messages[conversation.messages.length - 1];
 };
 
-module.exports = { buildSystemPrompt, chat, qualifyLead, generateSummary, suggestResponse, sendAgentMessage };
+/**
+ * Envía una plantilla aprobada de WhatsApp Business a un lead — a diferencia
+ * de sendAgentMessage() (texto libre), esto NO requiere que la ventana de
+ * 24h esté abierta: es justamente el mecanismo para reabrirla. Por el mismo
+ * motivo, tampoco actualiza conversation.lastInboundMessageAt — solo un
+ * WhatsApp entrante real del lead abre/renueva la ventana (ver
+ * conversation.model.js), nunca un mensaje saliente nuestro.
+ *
+ * Mismo criterio de guard (lead soft-deleted) y mismo fail-soft de Gupshup
+ * (nunca se pierde el registro de que se intentó, aunque el envío falle)
+ * que sendAgentMessage() — pero SIN el chequeo de ventana, obviamente.
+ *
+ * @param {string} conversationId
+ * @param {{ id: string, params?: string[] }} template
+ * @param {{_id, name}} [actor]
+ */
+const sendTemplateMessage = async (conversationId, template, actor) => {
+  if (!template?.id) throw new AppError('templateId es requerido', 400);
+
+  const conversation = await Conversation.findById(conversationId);
+  if (!conversation) throw new AppError('Conversación no encontrada', 404);
+
+  const lead = await Lead.findById(conversation.lead);
+  if (!lead || lead.isDeleted) {
+    throw new AppError('No se puede enviar la plantilla: el lead asociado a esta conversación ya no existe o fue eliminado', 404);
+  }
+  if (conversation.channel !== 'whatsapp') {
+    throw new AppError('Las plantillas de WhatsApp solo aplican a conversaciones por ese canal', 400);
+  }
+  if (!lead.phone) {
+    throw new AppError('El lead no tiene un número de teléfono registrado', 400);
+  }
+
+  const mensaje = {
+    role: 'assistant',
+    content: `[Plantilla: ${template.id}]`,
+    timestamp: new Date(),
+    sentBy: 'agent',
+    whatsappStatus: 'not_applicable',
+    whatsappError: null,
+    metadata: {
+      isTemplate: true,
+      templateId: template.id,
+      templateParams: template.params || [],
+      ...(actor ? { agentId: actor._id, agentName: actor.name } : {}),
+    },
+  };
+
+  try {
+    const channel = await channelService.getChannelForTenant(conversation.business);
+    if (!channel) {
+      logger.warn(`sendTemplateMessage: sin WhatsAppChannel activo para el tenant ${conversation.business} (conversación ${conversationId})`);
+      throw new Error(`Ningún WhatsAppChannel activo para el tenant ${conversation.business}`);
+    }
+    await channelService.sendTemplate(channel._id, lead.phone, template);
+    mensaje.whatsappStatus = 'sent';
+  } catch (error) {
+    logger.error(`No se pudo enviar plantilla de WhatsApp (conversación ${conversationId}): ${error.message}`);
+    mensaje.whatsappStatus = 'failed';
+    mensaje.whatsappError = error.message;
+  }
+
+  conversation.messages.push(mensaje);
+  // Mismo criterio que sendAgentMessage(): un agente inició este envío
+  // (aunque sea una plantilla, no texto libre) — toma el control manual.
+  conversation.aiEnabled = false;
+  await conversation.save();
+
+  return conversation.messages[conversation.messages.length - 1];
+};
+
+module.exports = { buildSystemPrompt, chat, qualifyLead, generateSummary, suggestResponse, sendAgentMessage, sendTemplateMessage };
