@@ -149,6 +149,46 @@ const sendTemplateMessage = async (req, res, next) => {
   }
 };
 
+/**
+ * POST /:conversationId/media-message
+ * Envía una imagen o video por WhatsApp — acepta multipart (campo `media`,
+ * subido a Cloudinary acá) o una `mediaUrl` ya alojada (ej. el frontend
+ * subió directo a Cloudinary del lado del cliente). Mismo scoping por
+ * businessId que sendAgentMessage/sendTemplateMessage.
+ */
+const sendMediaMessage = async (req, res, next) => {
+  try {
+    const { conversationId } = req.params;
+    const { mediaUrl, mediaType, caption } = req.body;
+    if (!req.file && !mediaUrl) {
+      throw new AppError('Se requiere un archivo (media) o una mediaUrl ya alojada', 400);
+    }
+
+    const conversation = await Conversation.findOne({
+      _id: conversationId,
+      business: req.businessId,
+      isDeleted: false,
+    });
+    if (!conversation) throw new AppError('Conversación no encontrada', 404);
+    if (conversation.status === 'resolved') throw new AppError('La conversación ya está resuelta', 400);
+
+    const mensajeGuardado = await aiService.sendMediaMessage(
+      conversationId,
+      {
+        file: req.file ? { buffer: req.file.buffer, mimetype: req.file.mimetype } : undefined,
+        mediaUrl,
+        mediaType,
+        caption,
+      },
+      req.user
+    );
+
+    return respuestaExito(res, { message: 'Media enviada', data: { message: mensajeGuardado } });
+  } catch (err) {
+    next(err);
+  }
+};
+
 const getConversation = async (req, res, next) => {
   try {
     const conversation = await Conversation.findOne({
@@ -337,6 +377,7 @@ module.exports = {
   sendMessage,
   sendAgentMessage,
   sendTemplateMessage,
+  sendMediaMessage,
   getConversation,
   listConversations,
   qualifyLead,

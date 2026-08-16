@@ -49,6 +49,18 @@ class GupshupProvider extends IChannelProvider {
   }
 
   /**
+   * @param {import('../whatsappChannel.model')} channel
+   * @param {string} to
+   * @param {{ url: string, type: 'image'|'video', caption?: string }} media
+   */
+  async sendMedia(channel, to, media) {
+    // Mismo criterio que sendMessage()/sendTemplate(): el `channel` se
+    // acepta por contrato, gupshup.client.js todavía resuelve el origen de
+    // forma global, no por canal.
+    return gupshupClient.sendMediaMessage(to, media);
+  }
+
+  /**
    * Estado operativo del canal — Fase 1.1 (Provider Abstraction). Envuelve
    * gupshup.client.js#estaConfigurado() (config-presence check, sin
    * llamada en vivo a la API de Gupshup, mismo criterio que ya usaba
