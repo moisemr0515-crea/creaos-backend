@@ -440,6 +440,16 @@ async function processGupshupMessage({ phone, text, name }, businessId) {
   conversation.lastInboundMessageAt = new Date();
   await conversation.save();
 
+  // Guarda el mensaje entrante SIEMPRE, sin importar si la IA va a
+  // responder — independiente de la decisión de abajo. Antes esto solo
+  // pasaba como efecto colateral de aiService.chat() (llamado únicamente
+  // cuando aiEnabled), así que un mensaje real del lead se perdía por
+  // completo en cualquier conversación donde ya hubiera intervenido un
+  // agente (aiEnabled:false, el estado casi permanente de una conversación
+  // real) — hallazgo confirmado en producción, no hipotético. Ver
+  // ai.service.js#saveInboundMessage() para el detalle completo.
+  await aiService.saveInboundMessage(conversation._id, text);
+
   logger.info('[gupshup] conversación lista', {
     conversationId: conversation._id.toString(),
     aiEnabled: conversation.aiEnabled,
@@ -452,8 +462,8 @@ async function processGupshupMessage({ phone, text, name }, businessId) {
     return { lead, conversation };
   }
 
-  logger.info('[gupshup] llamando a aiService.chat', { conversationId: conversation._id.toString() });
-  const { reply } = await aiService.chat(conversation._id, text, business, lead);
+  logger.info('[gupshup] llamando a aiService.generateReply', { conversationId: conversation._id.toString() });
+  const { reply } = await aiService.generateReply(conversation._id, business, lead);
   logger.info('[gupshup] respuesta de IA recibida', { replyPreview: reply?.slice(0, 50) });
 
   // Fase 1.1 (Provider Abstraction): antes llamaba a gupshup.client.js

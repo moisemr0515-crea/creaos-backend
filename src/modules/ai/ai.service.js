@@ -48,15 +48,54 @@ INSTRUCCIONES:
 7. Nunca menciones que eres una IA a menos que te lo pregunten directamente`;
 };
 
-const chat = async (conversationId, userMessage, business, lead) => {
+/**
+ * Guarda un mensaje ENTRANTE real del lead en conversation.messages — paso
+ * independiente de si la IA le va a responder o no.
+ *
+ * Hallazgo real (no hipotético): antes, esto solo pasaba como efecto
+ * colateral de chat() (que guardaba el entrante Y generaba la respuesta de
+ * la IA en el mismo paso, atómicamente). processGupshupMessage()/
+ * processInboundJob() (inbound.worker.js) solo llamaban a chat() cuando
+ * conversation.aiEnabled era true — si un agente ya había intervenido en la
+ * conversación (aiEnabled queda en false después de CUALQUIER
+ * sendAgentMessage/sendTemplateMessage/sendMediaMessage, el estado casi
+ * permanente de una conversación real), el mensaje real que mandó el lead
+ * por WhatsApp NUNCA quedaba guardado en ningún lado — ni en
+ * conversation.messages ni en ningún otro registro (confirmado en
+ * producción: 3 mensajes reales de "Crea Emprendedores" en una sola
+ * mañana, resueltos correctamente al lead/conversación, con
+ * lastInboundMessageAt actualizado, pero ausentes de conversation.messages
+ * porque aiEnabled era false en los 3 casos).
+ *
+ * @param {string} conversationId
+ * @param {string} text
+ * @returns {Promise<import('./conversation.model')>} la conversación actualizada
+ */
+const saveInboundMessage = async (conversationId, text) => {
   const conversation = await Conversation.findById(conversationId);
   if (!conversation) throw new AppError('Conversación no encontrada', 404);
 
   conversation.messages.push({
     role: 'user',
-    content: userMessage,
+    content: text,
     timestamp: new Date(),
   });
+  await conversation.save();
+
+  return conversation;
+};
+
+/**
+ * Genera y guarda la respuesta de la IA para una conversación — asume que
+ * el mensaje del lead que se está respondiendo YA está guardado en
+ * conversation.messages (ver saveInboundMessage(), que debe llamarse
+ * antes). Vuelve a leer la conversación de la base (no reusa un objeto en
+ * memoria) para tomar siempre el estado más reciente de `messages` como
+ * contexto del prompt.
+ */
+const generateReply = async (conversationId, business, lead) => {
+  const conversation = await Conversation.findById(conversationId);
+  if (!conversation) throw new AppError('Conversación no encontrada', 404);
 
   const systemPrompt = buildSystemPrompt(business, lead);
   const recentMessages = conversation.messages.slice(-10).map((m) => ({
@@ -90,6 +129,29 @@ const chat = async (conversationId, userMessage, business, lead) => {
   await conversation.save();
 
   return { reply, tokensUsed, conversationId: conversation._id };
+};
+
+/**
+ * sendMessage() (ai.controller.js, simula lo que dijo el lead para probar
+ * la respuesta de la IA) sigue usando esta función tal cual — mismo
+ * contrato y mismo comportamiento externo que antes (guarda el mensaje del
+ * "lead" + genera y guarda la respuesta, en un solo paso). Por dentro ahora
+ * es la composición de saveInboundMessage() + generateReply(), para que
+ * processGupshupMessage()/processInboundJob() puedan usar esos 2 pasos por
+ * separado (guardar SIEMPRE, responder solo si aiEnabled).
+ */
+const chat = async (conversationId, userMessage, business, lead) => {
+  // module.exports.X(...) en vez de llamar a X(...) directo (la referencia
+  // local del mismo archivo) — a propósito: mismo principio de "referencia
+  // viva" que gupshupProvider.js aplica a gupshup.client.js, pero acá hace
+  // falta explícito porque saveInboundMessage/generateReply están en ESTE
+  // mismo módulo (una llamada directa a la const local ignora cualquier
+  // mock hecho sobre aiService.saveInboundMessage/aiService.generateReply
+  // desde afuera — hallazgo real: sin esto, un test que mockea
+  // aiService.generateReply para no llamar a OpenAI de verdad NO lo
+  // interceptaba al pasar por chat(), y terminaba pegándole a la API real).
+  await module.exports.saveInboundMessage(conversationId, userMessage);
+  return module.exports.generateReply(conversationId, business, lead);
 };
 
 const qualifyLead = async (conversationId, lead) => {
@@ -493,4 +555,4 @@ const sendMediaMessage = async (conversationId, media, actor) => {
   return conversation.messages[conversation.messages.length - 1];
 };
 
-module.exports = { buildSystemPrompt, chat, qualifyLead, generateSummary, suggestResponse, sendAgentMessage, sendTemplateMessage, sendMediaMessage };
+module.exports = { buildSystemPrompt, chat, saveInboundMessage, generateReply, qualifyLead, generateSummary, suggestResponse, sendAgentMessage, sendTemplateMessage, sendMediaMessage };

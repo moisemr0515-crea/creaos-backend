@@ -5,15 +5,25 @@ const { OPENAI_MODEL } = require('../../config/env');
 
 /**
  * DefaultAgentRuntime — implementación de Fase 0-3 (sub-fase 1.d). Envoltorio
- * literal de ai.service.js#chat() actual, sin agregar inteligencia nueva —
- * el objetivo es fijar el contrato ahora para que Bloque C lo sustituya
- * después sin tocar Worker/Gateway (Blueprint §4.7).
+ * literal de ai.service.js#generateReply() actual, sin agregar inteligencia
+ * nueva — el objetivo es fijar el contrato ahora para que Bloque C lo
+ * sustituya después sin tocar Worker/Gateway (Blueprint §4.7).
+ *
+ * Usa generateReply(), NO chat() — asume que el mensaje entrante del lead
+ * YA está guardado en conversation.messages antes de llegar acá (lo hace
+ * inbound.worker.js#processInboundJob(), SIEMPRE, sin importar si esta
+ * clase termina generando una respuesta o no — mismo criterio que
+ * webhook.service.js#processGupshupMessage(), ver ai.service.js#
+ * saveInboundMessage() para el porqué). Si esto llamara a chat() en vez de
+ * generateReply(), el mensaje del lead quedaría duplicado en
+ * conversation.messages.
  *
  * AgentRuntimeInput solo trae `leadId` (no el Lead completo) — se re-consulta
- * acá porque ai.service.js#chat()/buildSystemPrompt() necesita varios campos
- * del Lead (name, company, temperature, pipelineStage, potentialValue,
- * currency) que el contrato no carga, y mantener el input liviano es
- * deliberado: es el shape que viaja como payload de un job de BullMQ.
+ * acá porque ai.service.js#generateReply()/buildSystemPrompt() necesita
+ * varios campos del Lead (name, company, temperature, pipelineStage,
+ * potentialValue, currency) que el contrato no carga, y mantener el input
+ * liviano es deliberado: es el shape que viaja como payload de un job de
+ * BullMQ.
  */
 class DefaultAgentRuntime extends IAgentRuntime {
   async process(input) {
@@ -24,7 +34,7 @@ class DefaultAgentRuntime extends IAgentRuntime {
       return { reply: null, actions: [], aiEnabled: false, metadata: { tokensUsed: 0, model: OPENAI_MODEL } };
     }
 
-    const { reply, tokensUsed } = await aiService.chat(input.conversationId, input.message.text, input.businessContext, lead);
+    const { reply, tokensUsed } = await aiService.generateReply(input.conversationId, input.businessContext, lead);
 
     return {
       reply,

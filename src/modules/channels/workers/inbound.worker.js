@@ -7,6 +7,7 @@ const OutboundEvent = require('../outboundEvent.model');
 const Business = require('../../businesses/business.model');
 const Lead = require('../../leads/lead.model');
 const Conversation = require('../../ai/conversation.model');
+const aiService = require('../../ai/ai.service');
 const DefaultAgentRuntime = require('../defaultAgentRuntime');
 const { normalizeToE164 } = require('../../../utils/phone');
 const logger = require('../../../utils/logger');
@@ -132,6 +133,15 @@ async function processInboundJob(job) {
   }
 
   const { business, lead, conversation } = result;
+
+  // Guarda el mensaje entrante SIEMPRE, sin importar si la IA va a
+  // responder — mismo criterio y mismo motivo que
+  // webhook.service.js#processGupshupMessage() (ver ai.service.js#
+  // saveInboundMessage()). Este camino no está activo en producción todavía
+  // (WHATSAPP_QUEUE_PROCESSING_ENABLED=false), pero tenía la misma bomba: un
+  // mensaje real solo se guardaba como efecto colateral de que la IA
+  // respondiera.
+  await aiService.saveInboundMessage(conversation._id, event.text);
 
   if (!conversation.aiEnabled) {
     logger.info('[inboundWorker] IA deshabilitada para esta conversación, no se responde', { conversationId: conversation._id.toString() });
