@@ -69,11 +69,19 @@ const estaConfigurado = () =>
  * Lista las plantillas (WhatsApp Business templates) de la app en Gupshup —
  * a diferencia de sendWhatsAppMessage()/sendTemplateMessage(), esta API es
  * por-app (GUPSHUP_APP_ID, el GUID del dashboard), no por número compartido.
- * Implementado según la documentación estándar de Gupshup (API "sm/api/v1") —
- * sin health-check propio en esta sesión contra la cuenta real todavía;
- * primer uso en producción sirve como verificación en vivo del shape exacto
- * de la respuesta (mismo criterio que se usó para sendWhatsAppMessage en su
- * momento).
+ *
+ * Endpoint verificado EN VIVO contra la cuenta real (producción, appId
+ * "CREAOS") — la implementación original usaba `sm/api/v1/template/list/
+ * {appId}`, que Gupshup rechazaba con 401 "Portal User Not Found With
+ * APIKey": ese endpoint pertenece a la familia de API que requiere login
+ * de Partner/Portal (usuario+contraseña, no un apikey de app), no la misma
+ * familia que ya usa sendWhatsAppMessage()/sendTemplateMessage() (`wa/api/
+ * v1/...`, autenticada con el apikey simple de la app). El endpoint
+ * correcto para el mismo apikey es `wa/app/{appId}/template` — confirmado
+ * con un GET real que devolvió 200 y la plantilla aprobada real de la
+ * cuenta ("bienvenidos_creaos"). sendTemplateMessage() (envío, no listado)
+ * ya estaba en la familia correcta desde el principio — se probó aparte y
+ * respondió 202 sin cambios.
  *
  * @returns {Promise<Array>} lista cruda de plantillas tal como las devuelve Gupshup
  */
@@ -84,7 +92,7 @@ async function listTemplates() {
 
   logger.info('[gupshup] listando plantillas', { appId: GUPSHUP_APP_ID });
 
-  const response = await fetch(`https://api.gupshup.io/sm/api/v1/template/list/${GUPSHUP_APP_ID}`, {
+  const response = await fetch(`https://api.gupshup.io/wa/app/${GUPSHUP_APP_ID}/template`, {
     method: 'GET',
     headers: { apikey: GUPSHUP_API_KEY },
   });
