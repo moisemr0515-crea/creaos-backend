@@ -4,9 +4,24 @@ const { obtenerPipelineEfectivo, validarStageEnPipeline } = require('../pipeline
 const User = require('../users/user.model');
 const { AppError } = require('../../middleware/error.middleware');
 const { triggerAutomations } = require('../automations/automation.engine');
+const { normalizeToE164 } = require('../../utils/phone');
 
 const crearLead = async (businessId, actor, data) => {
   const { note, ...leadData } = data;
+
+  // Validación de duplicados por teléfono (Problema 4 — antes no existía
+  // ningún chequeo, ver diagnóstico previo). No se fusiona ni se reutiliza
+  // el lead existente automáticamente — se rechaza con 409 explícito para
+  // que quien lo crea decida (mismo principio de "no fusionar
+  // automáticamente" usado en toda la Fase 0). El índice {business, phone}
+  // sigue siendo no-único a nivel de esquema hasta el Paso 3.
+  if (leadData.phone) {
+    const phoneNormalizado = normalizeToE164(leadData.phone);
+    const existente = await Lead.findOne({ business: businessId, phone: phoneNormalizado, isDeleted: false });
+    if (existente) {
+      throw new AppError(`Ya existe un lead con este teléfono: ${existente.name}, ${existente._id}`, 409);
+    }
+  }
 
   let pipeline = await Pipeline.findOne({ business: businessId, isDefault: true, isActive: true });
   if (!pipeline) {
