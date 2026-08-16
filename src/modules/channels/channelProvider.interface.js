@@ -31,8 +31,11 @@ class IChannelProvider {
     throw new Error('not_implemented_v1: listTemplates');
   }
 
-  /** Envía un mensaje con medios adjuntos (imagen/documento/audio). */
-  async sendMedia(_channel, _to, _mediaUrl, _caption) {
+  /**
+   * Envía un mensaje con medios adjuntos (imagen/video).
+   * @param {{ url: string, type: 'image'|'video', caption?: string }} _media
+   */
+  async sendMedia(_channel, _to, _media) {
     throw new Error('not_implemented_v1: sendMedia');
   }
 

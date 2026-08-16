@@ -143,4 +143,53 @@ async function sendTemplateMessage(to, template) {
   return json;
 }
 
-module.exports = { sendWhatsAppMessage, estaConfigurado, listTemplates, sendTemplateMessage };
+/**
+ * Envía un mensaje con media (imagen/video) por WhatsApp — mismo endpoint
+ * que sendWhatsAppMessage() (/wa/api/v1/msg), solo cambia el shape del JSON
+ * en `message`. Igual que el texto libre, ESTO SÍ requiere la ventana de
+ * 24h abierta (Meta trata la media como mensaje de sesión, no de plantilla)
+ * — ese chequeo vive en ai.service.js#sendMediaMessage(), no acá.
+ * @param {string} to
+ * @param {{ url: string, type: 'image'|'video', caption?: string }} media
+ */
+async function sendMediaMessage(to, media) {
+  logger.info('[gupshup] enviando media via Gupshup API', {
+    to,
+    mediaType: media?.type,
+    hasApiKey: Boolean(GUPSHUP_API_KEY),
+    source: GUPSHUP_PHONE_NUMBER,
+  });
+
+  const body = new URLSearchParams({
+    channel: 'whatsapp',
+    source: GUPSHUP_PHONE_NUMBER,
+    destination: to,
+    'src.name': GUPSHUP_APP_NAME,
+    message: JSON.stringify({
+      type: media.type,
+      url: media.url,
+      ...(media.caption ? { caption: media.caption } : {}),
+    }),
+  });
+
+  const response = await fetch('https://api.gupshup.io/wa/api/v1/msg', {
+    method: 'POST',
+    headers: {
+      apikey: GUPSHUP_API_KEY,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: body.toString(),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text().catch(() => '');
+    logger.error('[gupshup] Gupshup API respondió error (media)', { status: response.status, body: errText });
+    throw new Error(`Gupshup API error (media send): ${response.status} ${errText}`);
+  }
+
+  const json = await response.json();
+  logger.info('[gupshup] media enviada a Gupshup exitosamente', { to, gupshupResponse: json });
+  return json;
+}
+
+module.exports = { sendWhatsAppMessage, estaConfigurado, listTemplates, sendTemplateMessage, sendMediaMessage };

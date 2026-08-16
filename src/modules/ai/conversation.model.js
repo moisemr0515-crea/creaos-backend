@@ -25,6 +25,13 @@ const messageSchema = new mongoose.Schema(
     // mensaje interno en una conversación de canal 'manual').
     whatsappStatus: { type: String, enum: ['sent', 'failed', 'not_applicable'], default: 'not_applicable' },
     whatsappError:  { type: String, default: null },
+    // Imagen/video adjunto — `content` sigue siendo required (queda con el
+    // caption si lo hay, o un placeholder tipo "[Imagen]"/"[Video]" si no,
+    // para no romper nada que ya lea `content`: resúmenes de IA, contexto
+    // de chat, etc.). mediaUrl/mediaType van null en cualquier mensaje sin
+    // adjunto — la gran mayoría.
+    mediaUrl:  { type: String, default: null },
+    mediaType: { type: String, enum: ['image', 'video', null], default: null },
   },
   { _id: false }
 );

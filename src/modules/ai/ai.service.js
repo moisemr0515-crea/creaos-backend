@@ -4,6 +4,11 @@ const Conversation = require('./conversation.model');
 const Lead = require('../leads/lead.model');
 const { AppError } = require('../../middleware/error.middleware');
 const channelService = require('../channels/channel.service');
+// Se requiere el módulo completo (no se destructura subirBuffer acá) para
+// que la llamada use siempre la referencia viva del export — mismo motivo
+// que gupshupProvider.js con gupshup.client.js: permite mockearlo en tests
+// sin tocar el módulo real.
+const cloudinaryUtil = require('../../utils/cloudinary');
 const logger = require('../../utils/logger');
 
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
@@ -384,4 +389,108 @@ const sendTemplateMessage = async (conversationId, template, actor) => {
   return conversation.messages[conversation.messages.length - 1];
 };
 
-module.exports = { buildSystemPrompt, chat, qualifyLead, generateSummary, suggestResponse, sendAgentMessage, sendTemplateMessage };
+/**
+ * Envía un mensaje con media (imagen/video) a un lead — como sendAgentMessage()
+ * (texto libre), SÍ requiere que la ventana de 24h esté abierta: Meta trata
+ * la media como mensaje de sesión, no de plantilla (a diferencia de
+ * sendTemplateMessage()).
+ *
+ * Acepta dos modos (confirmado con el usuario — le da flexibilidad al
+ * frontend sin costo extra real):
+ *  - `file`: buffer ya validado por multer (mimetype/tamaño) — se sube a
+ *    Cloudinary acá mismo; el mediaType se infiere del mimetype REAL del
+ *    archivo (no se confía en lo que declare el cliente).
+ *  - `mediaUrl` + `mediaType`: el archivo ya está alojado (ej. el frontend
+ *    lo subió directo a Cloudinary del lado del cliente) — mediaType es
+ *    obligatorio en este caso porque no hay mimetype real que inspeccionar
+ *    sin una llamada HTTP extra.
+ *
+ * Los guards (lead activo, canal, teléfono, ventana) se chequean ANTES de
+ * subir nada a Cloudinary — evita gastar un upload si el envío se va a
+ * rechazar igual. Mismo fail-soft de Gupshup y mismo apagado de aiEnabled
+ * que sendAgentMessage()/sendTemplateMessage().
+ *
+ * @param {string} conversationId
+ * @param {{ file?: {buffer:Buffer, mimetype:string}, mediaUrl?: string, mediaType?: 'image'|'video', caption?: string }} media
+ * @param {{_id, name}} [actor]
+ */
+const sendMediaMessage = async (conversationId, media, actor) => {
+  if (!media?.file && !media?.mediaUrl) {
+    throw new AppError('Se requiere un archivo (media) o una mediaUrl ya alojada', 400);
+  }
+  if (media.mediaUrl && !media.file && !media.mediaType) {
+    throw new AppError('mediaType es requerido cuando se envía mediaUrl sin archivo', 400);
+  }
+
+  const conversation = await Conversation.findById(conversationId);
+  if (!conversation) throw new AppError('Conversación no encontrada', 404);
+
+  const lead = await Lead.findById(conversation.lead);
+  // Mismo chequeo que sendAgentMessage()/sendTemplateMessage() — ver el
+  // comentario detallado en sendAgentMessage() sobre por qué es necesario.
+  if (!lead || lead.isDeleted) {
+    throw new AppError('No se puede enviar el mensaje: el lead asociado a esta conversación ya no existe o fue eliminado', 404);
+  }
+  if (conversation.channel !== 'whatsapp') {
+    throw new AppError('El envío de imágenes/video solo aplica a conversaciones por WhatsApp', 400);
+  }
+  if (!lead.phone) {
+    throw new AppError('El lead no tiene un número de teléfono registrado', 400);
+  }
+
+  // Ventana de 24h — mismo criterio que sendAgentMessage(): la media es
+  // mensaje de sesión, no de plantilla, así que Meta exige la ventana
+  // abierta igual que texto libre.
+  if (!conversation.getWindowState().windowOpen) {
+    throw new AppError('La ventana de 24h de WhatsApp está cerrada — se requiere enviar una plantilla aprobada', 422);
+  }
+
+  let url = media.mediaUrl;
+  let mediaType = media.mediaType;
+
+  if (media.file) {
+    const resourceType = media.file.mimetype.startsWith('video/') ? 'video' : 'image';
+    mediaType = resourceType;
+    const resultado = await cloudinaryUtil.subirBuffer(media.file.buffer, {
+      folder: `creaos/conversations/${conversationId}/media`,
+      resource_type: resourceType,
+    });
+    url = resultado.secure_url;
+  }
+
+  const mensaje = {
+    role: 'assistant',
+    content: media.caption || (mediaType === 'video' ? '[Video]' : '[Imagen]'),
+    timestamp: new Date(),
+    sentBy: 'agent',
+    whatsappStatus: 'not_applicable',
+    whatsappError: null,
+    mediaUrl: url,
+    mediaType,
+    metadata: actor ? { agentId: actor._id, agentName: actor.name } : undefined,
+  };
+
+  try {
+    const channel = await channelService.getChannelForTenant(conversation.business);
+    if (!channel) {
+      logger.warn(`sendMediaMessage: sin WhatsAppChannel activo para el tenant ${conversation.business} (conversación ${conversationId})`);
+      throw new Error(`Ningún WhatsAppChannel activo para el tenant ${conversation.business}`);
+    }
+    await channelService.sendMedia(channel._id, lead.phone, { url, type: mediaType, caption: media.caption });
+    mensaje.whatsappStatus = 'sent';
+  } catch (error) {
+    // No relanzar: el mensaje (y el archivo, ya subido a Cloudinary) se
+    // guardan igual, solo queda marcado como fallido.
+    logger.error(`No se pudo enviar media por WhatsApp (conversación ${conversationId}): ${error.message}`);
+    mensaje.whatsappStatus = 'failed';
+    mensaje.whatsappError = error.message;
+  }
+
+  conversation.messages.push(mensaje);
+  conversation.aiEnabled = false; // mismo criterio que sendAgentMessage()/sendTemplateMessage()
+  await conversation.save();
+
+  return conversation.messages[conversation.messages.length - 1];
+};
+
+module.exports = { buildSystemPrompt, chat, qualifyLead, generateSummary, suggestResponse, sendAgentMessage, sendTemplateMessage, sendMediaMessage };

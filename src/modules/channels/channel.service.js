@@ -66,6 +66,23 @@ async function listTemplates(channelId) {
 }
 
 /**
+ * Envía un mensaje con media (imagen/video) — al igual que sendMessage()
+ * (texto libre), SÍ requiere que la ventana de 24h esté abierta.
+ * @param {string} channelId
+ * @param {string} to
+ * @param {{ url: string, type: 'image'|'video', caption?: string }} media
+ */
+async function sendMedia(channelId, to, media) {
+  const channel = await channelRepository.findById(channelId);
+  if (!channel) {
+    throw new AppError(`WhatsAppChannel ${channelId} no encontrado`, 404);
+  }
+
+  const provider = getProviderFor(channel);
+  return provider.sendMedia(channel, to, media);
+}
+
+/**
  * Estado operativo de un canal — Fase 1.1 (Provider Abstraction). Mismo
  * patrón de resolución que sendMessage(): recibe el ID, no el documento,
  * para mantener a ChannelService como la única puerta de entrada.
@@ -94,4 +111,4 @@ function listChannels(tenantId) {
   return channelRepository.findByTenant(tenantId);
 }
 
-module.exports = { sendMessage, sendTemplate, listTemplates, getChannelStatus, getChannelForTenant, listChannels };
+module.exports = { sendMessage, sendTemplate, listTemplates, sendMedia, getChannelStatus, getChannelForTenant, listChannels };
