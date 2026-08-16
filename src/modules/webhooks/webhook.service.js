@@ -5,6 +5,7 @@ const Conversation = require('../ai/conversation.model');
 const Business = require('../businesses/business.model');
 const aiService = require('../ai/ai.service');
 const channelService = require('../channels/channel.service');
+const { normalizeToE164 } = require('../../utils/phone');
 const logger = require('../../utils/logger');
 const {
   META_APP_SECRET,
@@ -361,15 +362,27 @@ async function processGupshupMessage({ phone, text, name }, businessId) {
     return;
   }
 
-  let lead = await Lead.findOne({ business: businessId, phone, isDeleted: false });
+  // Gupshup manda el teléfono "crudo" (ej. "51910265404", sin "+") — pero
+  // todo Lead se guarda con `phone` normalizado a E.164 ("+51910265404")
+  // por el pre('save') de lead.model.js. Sin normalizar acá también, este
+  // findOne NUNCA calzaba contra un lead ya existente: caía siempre a
+  // Lead.create(), que el mismo pre('save') normalizaba antes de insertar
+  // — antes del índice único de Paso 3 eso creaba un lead+conversation
+  // duplicado en CADA mensaje entrante de un contacto ya conocido (fuente
+  // real, no hipotética, de buena parte de los duplicados que motivaron el
+  // Paso 2/3); desde el índice único, en vez de duplicar, revienta con
+  // E11000 y el mensaje se pierde sin respuesta de IA. Mismo criterio que
+  // ya usa crearLead() (lead.service.js) desde el Paso 1.
+  const phoneNormalizado = normalizeToE164(phone);
+  let lead = await Lead.findOne({ business: businessId, phone: phoneNormalizado, isDeleted: false });
 
   if (!lead) {
     lead = await Lead.create({
       business:   businessId,
-      name:       name || phone,
-      phone,
+      name:       name || phoneNormalizado,
+      phone:      phoneNormalizado,
       source:     'whatsapp',
-      whatsappId: phone,
+      whatsappId: phoneNormalizado,
       tags:       ['whatsapp'],
       activity: [{ type: 'created', description: `Mensaje WhatsApp recibido: ${text.slice(0, 100)}` }],
     });

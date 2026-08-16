@@ -8,6 +8,7 @@ const Business = require('../../businesses/business.model');
 const Lead = require('../../leads/lead.model');
 const Conversation = require('../../ai/conversation.model');
 const DefaultAgentRuntime = require('../defaultAgentRuntime');
+const { normalizeToE164 } = require('../../../utils/phone');
 const logger = require('../../../utils/logger');
 
 /**
@@ -50,14 +51,23 @@ async function ensureLeadAndConversation({ businessId, phone, text, name }) {
     return null;
   }
 
-  let lead = await Lead.findOne({ business: businessId, phone, isDeleted: false });
+  // Mismo bug y mismo fix que webhook.service.js#processGupshupMessage():
+  // el phone que manda Gupshup viene crudo (sin "+"), pero todo Lead se
+  // guarda normalizado a E.164 por el pre('save') de lead.model.js — sin
+  // normalizar acá también, este findOne nunca encontraba al lead ya
+  // existente y terminaba intentando crear uno duplicado (E11000 desde el
+  // índice único de Paso 3). Duplicación deliberada de esa función (ver
+  // nota de diseño arriba) — se corrige acá también, no se extrae a un
+  // helper compartido, mismo criterio que el resto de este archivo.
+  const phoneNormalizado = normalizeToE164(phone);
+  let lead = await Lead.findOne({ business: businessId, phone: phoneNormalizado, isDeleted: false });
   if (!lead) {
     lead = await Lead.create({
       business: businessId,
-      name: name || phone,
-      phone,
+      name: name || phoneNormalizado,
+      phone: phoneNormalizado,
       source: 'whatsapp',
-      whatsappId: phone,
+      whatsappId: phoneNormalizado,
       tags: ['whatsapp'],
       activity: [{ type: 'created', description: `Mensaje WhatsApp recibido: ${text.slice(0, 100)}` }],
     });
