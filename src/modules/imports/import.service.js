@@ -6,6 +6,7 @@ const Pipeline = require('../pipeline/pipeline.model');
 const Import = require('./import.model');
 const { AppError } = require('../../middleware/error.middleware');
 const { normalizeToE164 } = require('../../utils/phone');
+const logger = require('../../utils/logger');
 
 const VALID_STAGES = ['new', 'contacted', 'interested', 'proposal', 'negotiation', 'won', 'lost'];
 const VALID_SOURCES = ['manual', 'facebook', 'instagram', 'tiktok', 'whatsapp', 'referral', 'website', 'csv_import', 'other'];
@@ -105,6 +106,7 @@ const procesarImportacion = async (businessId, actorId, { file, columnMapping = 
 
   const errores = [];
   const leadsAInsertar = [];
+  const rowNumsAInsertar = []; // paralelo a leadsAInsertar — permite reportar el rowNum real si insertMany rechaza un doc puntual (ver catch de abajo)
   const emailsEnLote = new Set();
   let duplicateCount = 0;
 
@@ -161,11 +163,40 @@ const procesarImportacion = async (businessId, actorId, { file, columnMapping = 
         },
       ],
     });
+    rowNumsAInsertar.push(rowNum);
   }
 
   let successCount = 0;
   if (leadsAInsertar.length) {
-    const inserted = await Lead.insertMany(leadsAInsertar, { ordered: false });
+    let inserted;
+    try {
+      inserted = await Lead.insertMany(leadsAInsertar, { ordered: false });
+    } catch (err) {
+      // insertMany({ordered:false}) intenta TODOS los docs — si alguno
+      // choca (ej. E11000 del índice único {business,phone}, más probable
+      // ahora que el phone llega normalizado, ver commit anterior),
+      // Mongoose lanza un MongoBulkWriteError con los que SÍ se
+      // insertaron en err.insertedDocs y el detalle de los que fallaron
+      // en err.writeErrors. Antes, este catch no existía: la excepción se
+      // propagaba sin capturar, el Import quedaba colgado en 'processing'
+      // para siempre y se perdía de vista qué parte del lote sí se había
+      // insertado.
+      if (!err.insertedDocs) throw err; // no es un fallo parcial de escritura conocido — no hay nada que rescatar, se relanza tal cual
+      inserted = err.insertedDocs;
+      for (const we of err.writeErrors || []) {
+        const rowData = leadsAInsertar[we.index];
+        const esDuplicado = (we.err?.code ?? we.code) === 11000;
+        errores.push({
+          row: rowNumsAInsertar[we.index] ?? null,
+          field: 'phone',
+          value: rowData?.phone || '',
+          message: esDuplicado
+            ? 'Ya existe otro lead con este teléfono en este negocio'
+            : (we.err?.errmsg || we.errmsg || 'No se pudo insertar este lead'),
+        });
+      }
+      logger.error(`[import] insertMany parcial: ${inserted.length}/${leadsAInsertar.length} insertados, ${(err.writeErrors || []).length} fallaron`, { importId: importRecord._id.toString() });
+    }
     successCount = inserted.length;
 
     // Mismo criterio que crearLead() (lead.service.js): un lead importado
@@ -173,16 +204,26 @@ const procesarImportacion = async (businessId, actorId, { file, columnMapping = 
     // (eso solo pasa con un mensaje de WhatsApp entrante) — se crea acá,
     // en lote, para que el panel de chat tenga un conversationId listo
     // para usar sin esperar al primer mensaje real.
-    await Conversation.insertMany(
-      inserted.map((lead) => ({
-        business:  businessId,
-        lead:      lead._id,
-        channel:   'manual',
-        status:    'active',
-        aiEnabled: true,
-      })),
-      { ordered: false }
-    );
+    if (inserted.length) {
+      try {
+        await Conversation.insertMany(
+          inserted.map((lead) => ({
+            business:  businessId,
+            lead:      lead._id,
+            channel:   'manual',
+            status:    'active',
+            aiEnabled: true,
+          })),
+          { ordered: false }
+        );
+      } catch (err) {
+        // Los leads YA se insertaron correctamente — un fallo acá no debe
+        // perder ese progreso ni dejar el Import colgado. Se loguea, no
+        // se relanza (mismo criterio de "nunca perder trabajo ya hecho"
+        // que el resto de este flujo).
+        logger.error(`[import] fallo creando Conversations en lote: ${err.message}`, { importId: importRecord._id.toString() });
+      }
+    }
   }
 
   const completedAt = new Date();
