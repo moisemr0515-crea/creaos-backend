@@ -72,6 +72,8 @@ async function handleOne(msg) {
       tenantId,
       from: msg.from,
       text: msg.text,
+      mediaType: msg.mediaType || null,
+      mediaSourceUrl: msg.mediaSourceUrl || null,
       rawPayload: msg,
       status: 'received',
     });
@@ -111,8 +113,13 @@ async function handleOne(msg) {
     // Sin cambios respecto al flujo de 1.c — mismo Lead/Conversation/
     // ai.service.js/gupshup.client.js que usa processGupshupMessage() hoy.
     // Lo único distinto es que `tenantId` vino de ChannelResolver +
-    // TenantResolver, no de findGupshupConfig().
-    await webhookService.processGupshupMessage({ phone: msg.from, text: msg.text, name: msg.name }, tenantId);
+    // TenantResolver, no de findGupshupConfig(). mediaType/mediaSourceUrl
+    // se pasan tal cual — processGupshupMessage() ya sabe qué hacer con
+    // ellos (feat/inbound-media-messages).
+    await webhookService.processGupshupMessage(
+      { phone: msg.from, text: msg.text, name: msg.name, mediaType: msg.mediaType, mediaSourceUrl: msg.mediaSourceUrl },
+      tenantId
+    );
     event.status = 'processed';
     event.processedAt = new Date();
     await event.save();

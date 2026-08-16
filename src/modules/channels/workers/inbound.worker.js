@@ -40,9 +40,13 @@ const agentRuntime = new DefaultAgentRuntime();
  * ya probado del flujo síncrono (throw + reintentos + dead-letter en vez de
  * un no-op consistente).
  */
-async function ensureLeadAndConversation({ businessId, phone, text, name }) {
-  if (!phone || !text) {
-    logger.warn('[inboundWorker] phone o text vacío, se descarta', { businessId, phone, text });
+async function ensureLeadAndConversation({ businessId, phone, text, name, mediaType, mediaSourceUrl }) {
+  // Mismo criterio que webhook.service.js#processGupshupMessage(): un
+  // mensaje de imagen/video sin caption llega con text:'' — antes este
+  // guard exigía `text` siempre, así que el caso más común (una foto sola,
+  // sin escribir nada) se descartaba acá, aunque hubiera media real.
+  if (!phone || (!text && !mediaSourceUrl)) {
+    logger.warn('[inboundWorker] phone vacío y sin texto ni media, se descarta', { businessId, phone, text });
     return null;
   }
 
@@ -62,6 +66,11 @@ async function ensureLeadAndConversation({ businessId, phone, text, name }) {
   // helper compartido, mismo criterio que el resto de este archivo.
   const phoneNormalizado = normalizeToE164(phone);
   let lead = await Lead.findOne({ business: businessId, phone: phoneNormalizado, isDeleted: false });
+
+  // Mensaje de imagen/video sin caption -> text:'' — mismo fallback legible
+  // que webhook.service.js#processGupshupMessage().
+  const resumenActividad = text?.slice(0, 100) || (mediaType ? `[${mediaType}]` : '');
+
   if (!lead) {
     lead = await Lead.create({
       business: businessId,
@@ -70,10 +79,10 @@ async function ensureLeadAndConversation({ businessId, phone, text, name }) {
       source: 'whatsapp',
       whatsappId: phoneNormalizado,
       tags: ['whatsapp'],
-      activity: [{ type: 'created', description: `Mensaje WhatsApp recibido: ${text.slice(0, 100)}` }],
+      activity: [{ type: 'created', description: `Mensaje WhatsApp recibido: ${resumenActividad}` }],
     });
   } else {
-    lead.activity.push({ type: 'contacted', description: `WhatsApp: ${text.slice(0, 100)}` });
+    lead.activity.push({ type: 'contacted', description: `WhatsApp: ${resumenActividad}` });
     lead.lastContactedAt = new Date();
     await lead.save();
   }
@@ -120,6 +129,8 @@ async function processInboundJob(job) {
     phone: event.from,
     text: event.text,
     name: event.rawPayload?.name,
+    mediaType: event.mediaType,
+    mediaSourceUrl: event.mediaSourceUrl,
   });
 
   if (!result) {
@@ -140,8 +151,14 @@ async function processInboundJob(job) {
   // saveInboundMessage()). Este camino no está activo en producción todavía
   // (WHATSAPP_QUEUE_PROCESSING_ENABLED=false), pero tenía la misma bomba: un
   // mensaje real solo se guardaba como efecto colateral de que la IA
-  // respondiera.
-  await aiService.saveInboundMessage(conversation._id, event.text);
+  // respondiera. Si el evento trae media (imagen/video), saveInboundMessage()
+  // la descarga de la URL temporal de Gupshup y la re-aloja en Cloudinary —
+  // mismo criterio que processGupshupMessage() (feat/inbound-media-messages).
+  await aiService.saveInboundMessage(
+    conversation._id,
+    event.text,
+    event.mediaSourceUrl ? { mediaType: event.mediaType, sourceUrl: event.mediaSourceUrl } : undefined
+  );
 
   if (!conversation.aiEnabled) {
     logger.info('[inboundWorker] IA deshabilitada para esta conversación, no se responde', { conversationId: conversation._id.toString() });
