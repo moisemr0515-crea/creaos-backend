@@ -5,6 +5,26 @@ const Business = require('../businesses/business.model');
 const { AppError } = require('../../middleware/error.middleware');
 const { respuestaExito, buildMeta } = require('../../utils/response');
 
+/**
+ * Verifica que el lead detrás de una conversación siga activo (existe y
+ * isDeleted:false) antes de permitir una acción de escritura sobre esa
+ * conversación. La Conversation NO se marca isDeleted en cascada cuando su
+ * Lead se soft-deletea (son entidades independientes) — sigue 100%
+ * funcional salvo este chequeo explícito. Sin esto, un conversationId
+ * viejo (cacheado en el frontend, un tab abierto, etc.) que apunta a un
+ * lead ya descartado como duplicado permite seguir escribiendo/enviando
+ * sobre ESE lead — que puede no ser el que el usuario cree estar viendo.
+ * Mismo criterio que ai.service.js#sendAgentMessage. Se llama ANTES de
+ * cualquier escritura, para que un rechazo no deje nada guardado.
+ */
+const assertLeadActive = async (leadId) => {
+  const lead = await Lead.findById(leadId, '_id isDeleted');
+  if (!lead || lead.isDeleted) {
+    throw new AppError('El lead asociado a esta conversación ya no existe o fue eliminado', 404);
+  }
+  return lead;
+};
+
 const startConversation = async (req, res, next) => {
   try {
     const { leadId, channel = 'manual' } = req.body;
@@ -58,6 +78,9 @@ const sendMessage = async (req, res, next) => {
       Lead.findById(conversation.lead),
       Business.findById(req.businessId),
     ]);
+    if (!lead || lead.isDeleted) {
+      throw new AppError('El lead asociado a esta conversación ya no existe o fue eliminado', 404);
+    }
 
     const result = await aiService.chat(conversationId, message, business, lead);
 
@@ -161,6 +184,9 @@ const qualifyLead = async (req, res, next) => {
     }
 
     const lead = await Lead.findById(conversation.lead);
+    if (!lead || lead.isDeleted) {
+      throw new AppError('El lead asociado a esta conversación ya no existe o fue eliminado', 404);
+    }
     const qualification = await aiService.qualifyLead(conversationId, lead);
 
     return respuestaExito(res, { message: 'Lead calificado exitosamente', data: { qualification } });
@@ -182,6 +208,7 @@ const getSummary = async (req, res, next) => {
     if (conversation.messages.length < 2) {
       throw new AppError('Se necesitan al menos 2 mensajes para generar un resumen', 400);
     }
+    await assertLeadActive(conversation.lead);
 
     const summary = await aiService.generateSummary(conversationId);
 
@@ -217,6 +244,7 @@ const toggleAI = async (req, res, next) => {
       isDeleted: false,
     });
     if (!conversation) throw new AppError('Conversación no encontrada', 404);
+    await assertLeadActive(conversation.lead);
 
     conversation.aiEnabled = !conversation.aiEnabled;
     await conversation.save();
@@ -244,6 +272,7 @@ const escalate = async (req, res, next) => {
     if (conversation.status === 'escalated') {
       throw new AppError('La conversación ya está escalada', 400);
     }
+    await assertLeadActive(conversation.lead);
 
     conversation.status = 'escalated';
     conversation.escalatedAt = new Date();
