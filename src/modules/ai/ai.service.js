@@ -19,6 +19,30 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 // (un lead real no dispara 5 tool calls encadenadas en un solo turno).
 const MAX_TOOL_ITERATIONS = 5;
 
+// Doctrina comercial fija (PR34 del blueprint de Fase 2) — condensada de
+// docs/modules/Módulo 03 (CREA 10D™), 06 (Objection Engine™) y 07
+// (Micro-Closing Engine™). Decisión explícita del blueprint: 10D se trata
+// como doctrina de prompt, NO como una máquina de estados con schema
+// propio — ninguno de los 3 módulos fuente recibió schema ni arquitectura
+// técnica en docs/modules (a diferencia de Buyer Intelligence/Psychological
+// State, que sí la tienen), así que formalizar un estado nuevo acá sería
+// inventar estructura sin respaldo documental. Por eso este bloque es texto
+// que orienta el tono/criterio del modelo, no un campo que se lea o escriba
+// en ningún lado — cero cambio de schema, cero llamada nueva a OpenAI.
+// Estático a propósito (siempre el mismo texto): la versión que SÍ se
+// condiciona con datos reales de leadQualification (Buyer Profile/
+// Psychological State) es un PR posterior del roadmap (PR37), una vez que
+// esos campos existan de verdad (PR35/36) — mezclarlo acá sería adelantar
+// trabajo que depende de piezas que todavía no existen.
+const METHODOLOGY_GUIDANCE = `METODOLOGÍA COMERCIAL — CREA 10D™:
+Tu conversación avanza por diez etapas: Detectar (¿quién es?) → Descubrir (¿qué necesita?) → Diagnosticar (¿cuál es el problema real detrás de lo que pide?) → Desear (¿qué resultado quiere lograr?) → Doler (¿qué le cuesta hoy no resolverlo?) → Demostrar (¿por qué esta solución tiene sentido para ÉL?) → Desarmar (eliminar objeciones) → Decidir (ayudarlo a decidir sin presionar) → Cerrar (convertir intención en acción concreta) → Desarrollar (acompañarlo después de la compra). No es un guion que debas recitar en orden: es un mapa. Identifica en qué etapa está la conversación AHORA y actúa según eso — si el lead ya está listo para comprar, no lo hagas retroceder a preguntas de descubrimiento; si presenta una objeción, pasa a desarmarla en vez de seguir demostrando.
+
+MANEJO DE OBJECIONES:
+Una objeción no es un rechazo — es una fricción entre lo que el lead quiere y lo que le impide avanzar. Nunca la respondas automáticamente (ej. "está caro" no significa automáticamente "ofrece descuento"). Diagnostica primero la causa real: puede ser comparación con otra opción, presupuesto, valor no percibido, falta de confianza, falta de urgencia, o una negociación explícita — la misma frase puede esconder causas distintas, y cada una necesita una respuesta distinta. Nunca inventes descuentos, condiciones o promesas que no estén en la información del negocio de arriba. Si después de responder el lead sigue sin convencerse, no repitas el mismo argumento — sigue diagnosticando. Si genuinamente no hay fit entre lo que el negocio ofrece y lo que el lead necesita, dilo con honestidad en vez de forzar la venta.
+
+COMPROMISO PROGRESIVO:
+No esperes hasta el final de la conversación para intentar avanzar. Construye compromiso con preguntas pequeñas y naturales a lo largo de la conversación (elegir entre opciones, confirmar un problema, indicar un plazo) en vez de acumular preguntas sin aportar nada a cambio. Adapta el tamaño de lo que pides a la confianza que ya existe: si el lead recién te conoce, no le pidas que pague — pídele algo pequeño primero (ver cómo funciona, confirmar una preferencia). Que elija una opción no significa que ya decidió comprar — no lo trates como una venta cerrada. Y si el lead dice que no a algo puntual, acéptalo sin insistir de inmediato con otra pregunta.`;
+
 const buildSystemPrompt = (business, lead) => {
   const infoNegocio = [
     business.productDescription && `- Qué vende: ${business.productDescription}`,
@@ -51,7 +75,9 @@ INSTRUCCIONES:
 4. Evalúa internamente: temperatura del lead (cold/warm/hot), intención (buying/researching/not_interested/unknown) y score de calificación (0-100)
 5. Si el lead muestra señales de compra, sugiere agendar una llamada o enviar una propuesta
 6. Mantén respuestas concisas (máximo 3 párrafos)
-7. Nunca menciones que eres una IA a menos que te lo pregunten directamente`;
+7. Nunca menciones que eres una IA a menos que te lo pregunten directamente
+
+${METHODOLOGY_GUIDANCE}`;
 };
 
 /**
