@@ -4,6 +4,14 @@
 // pero mantiene su tarifa original congelada para integraciones existentes (confirmado jul 2026).
 const PRICING_PER_MILLION_TOKENS = {
   'gpt-4o': { input: 2.50, output: 10.00 },
+  // Agregado junto con PR39 (model routing, ai.service.js) — sin esta
+  // entrada, cualquier mensaje guardado con metadata.model:'gpt-4o-mini'
+  // caía a DEFAULT_PRICING (la tarifa de gpt-4o), sobrestimando el costo
+  // real de los turnos ruteados al modelo barato. Último precio publicado
+  // de OpenAI que tengo confirmado para gpt-4o-mini — verificar contra el
+  // pricing vigente antes de confiar en el costo calculado para estos
+  // mensajes si pasó mucho tiempo desde este commit.
+  'gpt-4o-mini': { input: 0.15, output: 0.60 },
 };
 
 // Fallback si el modelo configurado no está en la tabla de arriba.

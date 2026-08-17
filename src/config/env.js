@@ -67,6 +67,22 @@ module.exports = {
   OPENAI_MODEL:    process.env.OPENAI_MODEL || 'gpt-4o',
   AI_MAX_TOKENS:   parseInt(process.env.AI_MAX_TOKENS, 10) || 1000,
   AI_TEMPERATURE:  parseFloat(process.env.AI_TEMPERATURE) || 0.7,
+  // Modelo "barato" para el model routing de ai.service.js#generateReply()
+  // (PR39 del blueprint de Fase 2) — deliberadamente una env var y NO una
+  // constante en el código: el objetivo es poder migrar a otro modelo/tier
+  // más barato (ej. una futura generación tipo "GPT-5.6 Terra") con un
+  // cambio de variable en Railway, sin tocar código ni redeployar, el día
+  // que gpt-4o-mini deje de ser la opción vigente. Mismo motivo por el que
+  // OPENAI_MODEL (arriba) ya es una env var y no algo hardcodeado.
+  OPENAI_MODEL_CHEAP: process.env.OPENAI_MODEL_CHEAP || 'gpt-4o-mini',
+  // Apagado por default a propósito: con este flag en false,
+  // generateReply() usa OPENAI_MODEL para absolutamente todo, byte a byte
+  // igual que antes de PR39 — el ahorro de costo de model routing viene
+  // con un trade-off real de calidad de respuesta (ver PR body de PR39),
+  // así que activarlo es una decisión de negocio explícita, no algo que
+  // este PR deba imponer solo por mergearse. Mismo patrón que
+  // WHATSAPP_QUEUE_PROCESSING_ENABLED (abajo).
+  AI_MODEL_ROUTING_ENABLED: process.env.AI_MODEL_ROUTING_ENABLED === 'true',
 
   // Meta Ads
   META_APP_ID:              process.env.META_APP_ID,

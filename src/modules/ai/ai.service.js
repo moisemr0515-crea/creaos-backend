@@ -1,5 +1,5 @@
 const OpenAI = require('openai');
-const { OPENAI_API_KEY, OPENAI_MODEL, AI_MAX_TOKENS, AI_TEMPERATURE } = require('../../config/env');
+const { OPENAI_API_KEY, OPENAI_MODEL, OPENAI_MODEL_CHEAP, AI_MODEL_ROUTING_ENABLED, AI_MAX_TOKENS, AI_TEMPERATURE } = require('../../config/env');
 const Conversation = require('./conversation.model');
 const Lead = require('../leads/lead.model');
 const { AppError } = require('../../middleware/error.middleware');
@@ -18,6 +18,62 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 // cortar con error — corte de seguridad, no un caso esperado en uso real
 // (un lead real no dispara 5 tool calls encadenadas en un solo turno).
 const MAX_TOOL_ITERATIONS = 5;
+
+/**
+ * PR39 del blueprint de Fase 2 — model routing. Con AI_MODEL_ROUTING_ENABLED
+ * en false (default, config/env.js), esTurnoSimple() ni se evalúa:
+ * selectModel() devuelve OPENAI_MODEL siempre, generateReply() se comporta
+ * byte a byte igual que antes de este PR.
+ *
+ * Con el flag activo, las 4 condiciones van con AND — cualquier dato
+ * faltante o con forma inesperada hace que la condición correspondiente
+ * sea false, nunca true por default (fail-soft: ante la duda, modelo
+ * grande, nunca el barato por defecto):
+ *
+ * 1. La conversación tiene 2 mensajes o menos — el turno está dentro del
+ *    primer intercambio real.
+ * 2. El contenido combinado de recentMessages (la misma ventana de
+ *    últimos 10 que ya arma generateReply()) no pasa de ~500 caracteres —
+ *    cubre un primer mensaje inusualmente largo.
+ * 3. Ningún mensaje de recentMessages tiene role:'tool' — sin actividad
+ *    de tools todavía en esta conversación. Nota: recentMessages es un
+ *    map() que solo conserva {role, content} (ver generateReply()), así
+ *    que no tiene sentido chequear toolCalls acá — el mensaje role:'tool'
+ *    (el resultado de la tool) es señal suficiente por sí sola, siempre
+ *    aparece junto a cualquier tool call que haya ocurrido dentro de la
+ *    ventana visible.
+ * 4. Si leadQualification.psychologicalState existe, tiene que mapear al
+ *    modo 'discovery' de PSYCHOLOGICAL_STATE_MODE (PR37, reutilizada tal
+ *    cual, sin import nuevo — ya vive en este archivo). Sin
+ *    psychologicalState todavía, esta condición no bloquea: ausencia de
+ *    evidencia no es evidencia de complejidad.
+ *
+ * Por qué no hace falta escalar a mitad de turno si la heurística se
+ * equivoca: OPENAI_MODEL_CHEAP (gpt-4o-mini por default) soporta function
+ * calling igual que OPENAI_MODEL — se manda el mismo `tools: TOOL_SCHEMAS`
+ * sin importar qué modelo eligió esta función, así que el loop de PR33
+ * maneja un tool call exactamente igual con cualquiera de los dos. El
+ * riesgo de una mala clasificación es una respuesta de texto menos
+ * matizada para ESE turno puntual, no una falla funcional ni una tool
+ * inaccesible.
+ */
+const esTurnoSimple = (conversation, leadQualification, recentMessages) => {
+  const pocosMensajes = conversation.messages.length <= 2;
+
+  const contextoCorto = recentMessages.reduce((total, m) => total + (m.content?.length || 0), 0) <= 500;
+
+  const sinActividadDeTools = !recentMessages.some((m) => m.role === 'tool');
+
+  const estadoEsDiscovery = !leadQualification?.psychologicalState
+    || PSYCHOLOGICAL_STATE_MODE[leadQualification.psychologicalState] === 'discovery';
+
+  return pocosMensajes && contextoCorto && sinActividadDeTools && estadoEsDiscovery;
+};
+
+const selectModel = (conversation, leadQualification, recentMessages) => {
+  if (!AI_MODEL_ROUTING_ENABLED) return OPENAI_MODEL;
+  return esTurnoSimple(conversation, leadQualification, recentMessages) ? OPENAI_MODEL_CHEAP : OPENAI_MODEL;
+};
 
 // Doctrina comercial fija (PR34 del blueprint de Fase 2) — condensada de
 // docs/modules/Módulo 03 (CREA 10D™), 06 (Objection Engine™) y 07
@@ -306,11 +362,19 @@ const generateReply = async (conversationId, business, lead) => {
   // modelo pide ejecutar una tool.
   const apiMessages = [{ role: 'system', content: systemPrompt }, ...recentMessages];
 
+  // PR39 — decidido UNA sola vez por llamada a generateReply(), antes del
+  // loop, no en cada iteración: todas las vueltas de un mismo turno usan
+  // el mismo modelo (evita cambiar de modelo a mitad de un intercambio de
+  // tool calling, que no aporta nada y solo agrega variabilidad). Con
+  // AI_MODEL_ROUTING_ENABLED en false, selectModel() devuelve OPENAI_MODEL
+  // siempre — ver comentario completo de la heurística arriba.
+  const selectedModel = selectModel(conversation, conversation.leadQualification, recentMessages);
+
   let totalTokensUsed = 0;
 
   for (let iteration = 1; iteration <= MAX_TOOL_ITERATIONS; iteration += 1) {
     const completion = await openai.chat.completions.create({
-      model: OPENAI_MODEL,
+      model: selectedModel,
       messages: apiMessages,
       max_tokens: AI_MAX_TOKENS,
       temperature: AI_TEMPERATURE,
@@ -336,8 +400,12 @@ const generateReply = async (conversationId, business, lead) => {
         tokens: totalTokensUsed,
         // Desglose prompt/completion para costo exacto (ver config/aiPricing.js).
         // Mensajes anteriores a este cambio no lo tienen — el cálculo de costo cae
-        // a una tarifa combinada estimada para esos casos.
-        metadata: { promptTokens, completionTokens, model: OPENAI_MODEL },
+        // a una tarifa combinada estimada para esos casos. model: selectedModel
+        // (no OPENAI_MODEL fijo) desde PR39 — con model routing activo, el
+        // modelo real usado en ESTE mensaje puede ser el barato; grabar
+        // siempre OPENAI_MODEL acá haría que aiPricing.js#getPricing()
+        // calculara el costo con la tarifa equivocada para esos mensajes.
+        metadata: { promptTokens, completionTokens, model: selectedModel },
       });
       conversation.totalTokensUsed += totalTokensUsed;
       await conversation.save();
@@ -355,7 +423,9 @@ const generateReply = async (conversationId, business, lead) => {
       content: message.content || '',
       timestamp: new Date(),
       toolCalls: message.tool_calls,
-      metadata: { promptTokens, completionTokens, model: OPENAI_MODEL },
+      // Mismo motivo que el metadata de arriba: selectedModel, no
+      // OPENAI_MODEL fijo (PR39).
+      metadata: { promptTokens, completionTokens, model: selectedModel },
     });
 
     for (const toolCall of message.tool_calls) {
