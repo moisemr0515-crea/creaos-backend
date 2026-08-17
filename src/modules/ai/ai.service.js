@@ -315,7 +315,8 @@ Responde ÚNICAMENTE con JSON válido siguiendo este formato exacto:
   "intent": <"buying" | "researching" | "not_interested" | "unknown">,
   "budget": <presupuesto mencionado como string, o null>,
   "timeline": <plazo de compra como string, o null>,
-  "notes": <observaciones clave en 1-2 oraciones>
+  "notes": <observaciones clave en 1-2 oraciones>,
+  "psychologicalState": <uno de estos 11 valores exactos, el que mejor describa el estado ACTUAL del comprador: "UNKNOWN" | "CURIOUS" | "INTERESTED" | "ENGAGED" | "PROBLEM-AWARE" | "SOLUTION-AWARE" | "TRUSTING" | "BUYING" | "OBJECTING" | "DECIDING" | "PURCHASED">
 }`;
 
   const completion = await openai.chat.completions.create({
@@ -334,6 +335,19 @@ Responde ÚNICAMENTE con JSON válido siguiendo este formato exacto:
     qualification = JSON.parse(completion.choices[0].message.content);
   } catch {
     throw new AppError('Error al parsear calificación de IA', 500);
+  }
+
+  // Fail-soft a propósito, mismo criterio que executeToolCall()/
+  // saveInboundMessage(): psychologicalState tiene 11 valores posibles (a
+  // diferencia de temperature/intent, con 3-4), más superficie para que el
+  // modelo devuelva algo fuera de forma (typo, guion bajo en vez de guion,
+  // minúsculas). Si eso pasa, el enum de conversation.model.js igual lo
+  // rechazaría en el conversation.save() de abajo y tumbaría qualifyLead()
+  // ENTERO — incluyendo score/temperature/intent, que sí venían bien. Mejor
+  // descartar solo el campo problemático que perder toda la calificación.
+  if (qualification.psychologicalState && !Conversation.PSYCHOLOGICAL_STATES.includes(qualification.psychologicalState)) {
+    logger.warn(`qualifyLead(): psychologicalState fuera de los 11 valores esperados, se descarta: ${qualification.psychologicalState}`);
+    delete qualification.psychologicalState;
   }
 
   conversation.leadQualification = { ...qualification, qualifiedAt: new Date() };
