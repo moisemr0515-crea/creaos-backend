@@ -18,7 +18,16 @@ const messageSchema = new mongoose.Schema(
     // role:'assistant' (para que la IA lo vea como turno propio si retoma
     // la conversación después) + sentBy:'agent', para poder distinguirlo en
     // UI/reportes sin tocar el enum de `role`.
-    sentBy: { type: String, enum: ['ai', 'agent', 'system'], default: 'ai' },
+    //
+    // 'lead' agregado a propósito (hallazgo real, no hipotético): un
+    // mensaje entrante del lead (role:'user') nunca seteaba sentBy
+    // explícito, así que cada uno quedaba con el default 'ai' — mismo
+    // valor que una respuesta real de la IA. `role:'user'` ya lo distingue
+    // sin ambigüedad de los mensajes salientes, pero dejar sentBy:'ai' en
+    // un mensaje del lead es semánticamente incorrecto y confunde a
+    // cualquier consumidor (UI, reportes) que mire sentBy sin filtrar por
+    // role primero. Ver ai.service.js#saveInboundMessage().
+    sentBy: { type: String, enum: ['ai', 'agent', 'lead', 'system'], default: 'ai' },
     // Estado del envío real por WhatsApp de ESTE mensaje puntual — no de la
     // conversación entera, porque una misma conversación puede tener
     // mensajes que sí intentaron salir por WhatsApp y otros que no (ej. un
