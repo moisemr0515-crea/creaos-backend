@@ -22,6 +22,10 @@ const { enviarEmailVerificacion, enviarEmailResetPassword } = require('../../uti
 // Duración del refresh token en segundos para Redis
 const REFRESH_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 días
 
+// Ventana de gracia (segundos) al ROTAR un refresh token — ver
+// rotarRefreshToken() más abajo para el porqué.
+const REFRESH_ROTATION_GRACE_SECONDS = 15;
+
 // ─── HELPERS DE TOKEN ─────────────────────────────────────────────────────────
 
 /**
@@ -64,11 +68,44 @@ const generarRefreshToken = async (usuario) => {
 };
 
 /**
- * Elimina un refresh token de Redis (logout / rotación).
+ * Elimina un refresh token de Redis INMEDIATAMENTE — para logout
+ * explícito. A propósito SIN ventana de gracia: si el usuario cierra
+ * sesión, el token debe dejar de servir al instante (ver
+ * rotarRefreshToken() para el caso de rotación, que sí la tiene).
  */
 const revocarRefreshToken = async (userId, jti) => {
   const redis = getRedis();
   await redis.del(`rt:${userId}:${jti}`);
+};
+
+/**
+ * "Revoca" un refresh token por ROTACIÓN (no por logout) — en vez de
+ * borrarlo al instante, le acorta el TTL a una ventana de gracia corta.
+ *
+ * Hallazgo real (no hipotético): con revocarRefreshToken() (DEL
+ * inmediato) usado también para rotación, dos requests casi simultáneas
+ * usando el MISMO refreshToken (2 pestañas compartiendo localStorage, un
+ * doble-render de React, un retry de red tras un timeout) chocaban: la
+ * primera rotaba bien, la segunda encontraba el token ya borrado y
+ * fallaba con 401 "ya fue utilizado" — si el frontend interpreta eso
+ * como "no autenticado", fuerza un logout aunque la sesión siguiera
+ * siendo válida.
+ *
+ * Con la ventana de gracia, esa segunda request (dentro de los
+ * REFRESH_ROTATION_GRACE_SECONDS siguientes) todavía encuentra el token
+ * "vigente" en Redis y recibe su propio par de tokens nuevos — no pasa
+ * nada raro: los dos pares nuevos pertenecen al mismo usuario autenticado
+ * (exactamente igual que ya pasa hoy con 2 pestañas que cada una tiene su
+ * PROPIO refreshToken desde el login — esto no es un caso nuevo de "2
+ * sesiones válidas a la vez", ya existía). Pasada la ventana, el token
+ * viejo expira igual que antes — no queda utilizable indefinidamente.
+ *
+ * No se usa para logout (ver revocarRefreshToken de arriba) — ahí sigue
+ * siendo inmediato, sin ventana, a propósito.
+ */
+const rotarRefreshToken = async (userId, jti) => {
+  const redis = getRedis();
+  await redis.expire(`rt:${userId}:${jti}`, REFRESH_ROTATION_GRACE_SECONDS);
 };
 
 /**
@@ -258,8 +295,10 @@ const refreshAccessToken = async ({ refreshToken }) => {
     throw new AppError('Usuario no encontrado o inactivo', 401);
   }
 
-  // Revocar token anterior (rotación)
-  await revocarRefreshToken(payload.sub, payload.jti);
+  // Rotar el token anterior — NO revocarRefreshToken() (DEL inmediato):
+  // eso rompía la segunda de 2 requests de refresh casi simultáneas con
+  // el mismo token (ver rotarRefreshToken() para el detalle completo).
+  await rotarRefreshToken(payload.sub, payload.jti);
 
   // Generar nuevos tokens
   const nuevoAccessToken = generarAccessToken(usuario);

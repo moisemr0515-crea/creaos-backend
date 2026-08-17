@@ -23,8 +23,20 @@ const missionRoutes      = require('./modules/missions/mission.routes');
 
 const app = express();
 
-// Railway / proxies reversos — necesario para que req.ip y rate-limit usen la IP real
-app.set('trust proxy', 1);
+// Railway / proxies reversos — necesario para que req.ip y rate-limit usen la IP real.
+// Investigado en vivo (soporte de Railway, station.railway.com): el número de
+// saltos NO está garantizado ni documentado de forma estable — "puede haber
+// otro salto según cómo se enrute la request" (respuesta oficial de Railway).
+// Con `1` (el valor anterior), req.ip resolvía sistemáticamente a un puñado
+// de IPs internas de Railway compartidas por TODO el tráfico real de la app
+// (confirmado revisando logs de producción: el mismo handful de IPs para
+// usuarios que definitivamente eran personas distintas) — cualquier lógica
+// basada en IP (rate limiting, logging) terminaba agrupando usuarios
+// distintos bajo la misma "IP". Se sube a `2` como mejora de mejor esfuerzo,
+// pero como el número de saltos de Railway no es estable, rateLimitLogin
+// específicamente ya NO depende de esto — ver keyGenerator en
+// rateLimit.middleware.js.
+app.set('trust proxy', 2);
 
 // ─── SEGURIDAD: HEADERS HTTP ──────────────────────────────────────────────────
 app.use(helmet());
