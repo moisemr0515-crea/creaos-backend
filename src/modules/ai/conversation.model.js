@@ -77,6 +77,20 @@ const messageSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// Los 11 estados del Psychological State Engine™ (docs/modules/Módulo 05,
+// formalizados en el Módulo 22 — Conversation State Schema). Decisión del
+// blueprint de Fase 2 (PR35): se persisten con este mismo nombre literal
+// (mayúsculas, guiones) que usa la fuente, para que no haga falta traducir
+// entre lo que devuelve el modelo y lo que se guarda — el modelo ya
+// clasifica en estos términos porque son los que homologamos en el prompt
+// de qualifyLead() (ver ai.service.js). Exportado para que ai.service.js
+// pueda validar contra la misma lista sin duplicarla (evita que las dos
+// copias se desincronicen).
+const PSYCHOLOGICAL_STATES = [
+  'UNKNOWN', 'CURIOUS', 'INTERESTED', 'ENGAGED', 'PROBLEM-AWARE',
+  'SOLUTION-AWARE', 'TRUSTING', 'BUYING', 'OBJECTING', 'DECIDING', 'PURCHASED',
+];
+
 const leadQualificationSchema = new mongoose.Schema(
   {
     score:       { type: Number, min: 0, max: 100 },
@@ -85,6 +99,10 @@ const leadQualificationSchema = new mongoose.Schema(
     budget:      String,
     timeline:    String,
     notes:       String,
+    // Opcional, igual que el resto de este subschema — ver PSYCHOLOGICAL_STATES
+    // arriba. qualifyLead() lo valida ANTES de guardar (ver ai.service.js);
+    // este enum es una segunda barrera, no la única.
+    psychologicalState: { type: String, enum: PSYCHOLOGICAL_STATES },
     qualifiedAt: Date,
   },
   { _id: false }
@@ -147,3 +165,4 @@ conversationSchema.methods.getWindowState = function () {
 
 module.exports = mongoose.model('Conversation', conversationSchema);
 module.exports.WINDOW_DURATION_MS = WINDOW_DURATION_MS;
+module.exports.PSYCHOLOGICAL_STATES = PSYCHOLOGICAL_STATES;
