@@ -534,6 +534,41 @@ async function processGupshupMessage({ phone, text, name, mediaType, mediaSource
     logger.warn('[gupshup] sin WhatsAppChannel activo para este tenant, no se pudo enviar la respuesta', { businessId, leadId: lead._id.toString() });
   } else {
     await channelService.sendMessage(channel._id, phone, reply);
+
+    // PR36 del blueprint de Fase 2 — scoring automático (Buyer Profile +
+    // psychologicalState, PR35) DESPUÉS de que el reply ya salió por
+    // WhatsApp arriba. A propósito NO se hace `await` acá: es una promesa
+    // "flotante" con su propio .catch(), así que processGupshupMessage()
+    // retorna exactamente en el mismo instante que antes de este PR, sin
+    // importar cuánto tarde qualifyLead() — ni el reply que el lead ya
+    // recibió ni el timing de quien llama a esta función (webhook.controller.js
+    // fire-and-forget, o el path síncrono de inbound.gateway.js que SÍ
+    // hace await de processGupshupMessage()) se ven afectados.
+    //
+    // Fail-soft estricto: si qualifyLead() falla (OpenAI caído, rate
+    // limit, lo que sea), el .catch() de abajo se queda con el error —
+    // nunca llega a convertirse en una excepción no manejada, y nunca
+    // puede tumbar esta función ni el reply que ya se envió.
+    //
+    // No durable a propósito (ver docs/implementation/known-issues.md
+    // para el criterio general de esta sesión sobre qué SÍ necesita
+    // BullMQ): si el proceso se reinicia a mitad de este scoring, la
+    // promesa simplemente se pierde sin dejar rastro — no hay error que
+    // loguear porque el proceso ya no existe para loguearlo. No hace
+    // falta ninguna recuperación explícita: el PRÓXIMO mensaje real de
+    // este lead vuelve a disparar este mismo camino, con el historial de
+    // conversación ya más completo, y sobrescribe leadQualification con
+    // una clasificación fresca. El único costo es que la calificación
+    // queda desactualizada por un turno si el proceso murió justo acá —
+    // igual de aceptable que cualquier otro dato "fire-and-forget" de
+    // este sistema, y se autocorrige solo en el siguiente mensaje.
+    aiService.qualifyLead(conversation._id, lead).catch((err) => {
+      logger.error('[gupshup] qualifyLead() automático post-respuesta falló (no afecta el reply ya enviado)', {
+        conversationId: conversation._id.toString(),
+        leadId: lead._id.toString(),
+        error: err.message,
+      });
+    });
   }
   logger.info('[gupshup] processGupshupMessage: completado', { leadId: lead._id.toString() });
 
