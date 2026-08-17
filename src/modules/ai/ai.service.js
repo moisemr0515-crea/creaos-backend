@@ -10,8 +10,14 @@ const channelService = require('../channels/channel.service');
 // sin tocar el módulo real.
 const cloudinaryUtil = require('../../utils/cloudinary');
 const logger = require('../../utils/logger');
+const { TOOL_SCHEMAS, executeToolCall } = require('./tools');
 
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+
+// Máximo de vueltas del loop tool-calling de generateReply() antes de
+// cortar con error — corte de seguridad, no un caso esperado en uso real
+// (un lead real no dispara 5 tool calls encadenadas en un solo turno).
+const MAX_TOOL_ITERATIONS = 5;
 
 const buildSystemPrompt = (business, lead) => {
   const infoNegocio = [
@@ -130,6 +136,19 @@ const saveInboundMessage = async (conversationId, text, media) => {
  * antes). Vuelve a leer la conversación de la base (no reusa un objeto en
  * memoria) para tomar siempre el estado más reciente de `messages` como
  * contexto del prompt.
+ *
+ * Tool calling (escalate_to_human, ver ./tools): cada vuelta manda
+ * `tools: TOOL_SCHEMAS` a OpenAI. Si el modelo responde SIN tool_calls (la
+ * inmensa mayoría de los casos — cualquier respuesta de texto normal), el
+ * comportamiento es exactamente el de antes de este cambio: un solo
+ * request, un solo mensaje assistant guardado, mismo return. Si el modelo
+ * SÍ pide una tool, se ejecuta vía executeToolCall() (nunca lanza — ver
+ * ./tools), se guarda el intercambio completo (mensaje del assistant con
+ * toolCalls + mensaje(s) role:'tool' con el resultado) y se vuelve a
+ * llamar a OpenAI con ese contexto extra, hasta que responda con texto
+ * final o se llegue a MAX_TOOL_ITERATIONS. Un solo `conversation.save()`
+ * al final (cuando ya hay texto final que devolver) — nunca saves
+ * parciales a mitad del loop.
  */
 const generateReply = async (conversationId, business, lead) => {
   const conversation = await Conversation.findById(conversationId);
@@ -141,32 +160,88 @@ const generateReply = async (conversationId, business, lead) => {
     content: m.content,
   }));
 
-  const completion = await openai.chat.completions.create({
-    model: OPENAI_MODEL,
-    messages: [{ role: 'system', content: systemPrompt }, ...recentMessages],
-    max_tokens: AI_MAX_TOKENS,
-    temperature: AI_TEMPERATURE,
-  });
+  // apiMessages es lo que efectivamente se manda a OpenAI en cada vuelta —
+  // arranca igual que siempre (system + últimos 10) y solo crece si el
+  // modelo pide ejecutar una tool.
+  const apiMessages = [{ role: 'system', content: systemPrompt }, ...recentMessages];
 
-  const reply = completion.choices[0].message.content;
-  const promptTokens = completion.usage?.prompt_tokens || 0;
-  const completionTokens = completion.usage?.completion_tokens || 0;
-  const tokensUsed = completion.usage?.total_tokens || (promptTokens + completionTokens);
+  let totalTokensUsed = 0;
 
-  conversation.messages.push({
-    role: 'assistant',
-    content: reply,
-    timestamp: new Date(),
-    tokens: tokensUsed,
-    // Desglose prompt/completion para costo exacto (ver config/aiPricing.js).
-    // Mensajes anteriores a este cambio no lo tienen — el cálculo de costo cae
-    // a una tarifa combinada estimada para esos casos.
-    metadata: { promptTokens, completionTokens, model: OPENAI_MODEL },
-  });
-  conversation.totalTokensUsed += tokensUsed;
-  await conversation.save();
+  for (let iteration = 1; iteration <= MAX_TOOL_ITERATIONS; iteration += 1) {
+    const completion = await openai.chat.completions.create({
+      model: OPENAI_MODEL,
+      messages: apiMessages,
+      max_tokens: AI_MAX_TOKENS,
+      temperature: AI_TEMPERATURE,
+      tools: TOOL_SCHEMAS,
+    });
 
-  return { reply, tokensUsed, conversationId: conversation._id };
+    const promptTokens = completion.usage?.prompt_tokens || 0;
+    const completionTokens = completion.usage?.completion_tokens || 0;
+    totalTokensUsed += completion.usage?.total_tokens || (promptTokens + completionTokens);
+
+    const message = completion.choices[0].message;
+
+    // Camino SIN tool_calls — idéntico al comportamiento anterior a este
+    // cambio: se guarda como único mensaje assistant del turno y se
+    // retorna igual que siempre.
+    if (!message.tool_calls || message.tool_calls.length === 0) {
+      const reply = message.content;
+
+      conversation.messages.push({
+        role: 'assistant',
+        content: reply,
+        timestamp: new Date(),
+        tokens: totalTokensUsed,
+        // Desglose prompt/completion para costo exacto (ver config/aiPricing.js).
+        // Mensajes anteriores a este cambio no lo tienen — el cálculo de costo cae
+        // a una tarifa combinada estimada para esos casos.
+        metadata: { promptTokens, completionTokens, model: OPENAI_MODEL },
+      });
+      conversation.totalTokensUsed += totalTokensUsed;
+      await conversation.save();
+
+      return { reply, tokensUsed: totalTokensUsed, conversationId: conversation._id };
+    }
+
+    // El modelo pidió ejecutar 1+ tools antes de responder — se guarda el
+    // mensaje del assistant que las pidió (content puede venir vacío/null
+    // de OpenAI cuando el turno es solo tool_calls; ver default:'' en el
+    // schema) y se ejecuta cada tool call en orden.
+    apiMessages.push({ role: 'assistant', content: message.content || '', tool_calls: message.tool_calls });
+    conversation.messages.push({
+      role: 'assistant',
+      content: message.content || '',
+      timestamp: new Date(),
+      toolCalls: message.tool_calls,
+      metadata: { promptTokens, completionTokens, model: OPENAI_MODEL },
+    });
+
+    for (const toolCall of message.tool_calls) {
+      // eslint-disable-next-line no-await-in-loop -- cada tool call depende
+      // del estado que dejó la anterior (ej. conversation.status), deben
+      // ejecutarse en orden, no en paralelo.
+      const result = await executeToolCall(toolCall, { conversation, business, lead });
+      const resultContent = JSON.stringify(result);
+
+      apiMessages.push({ role: 'tool', tool_call_id: toolCall.id, content: resultContent });
+      conversation.messages.push({
+        role: 'tool',
+        content: resultContent,
+        timestamp: new Date(),
+        toolCallId: toolCall.id,
+        name: toolCall.function?.name,
+      });
+    }
+    // No hay save acá a propósito — sigue al siguiente `for` con el
+    // resultado de la tool ya en apiMessages, hasta que el modelo responda
+    // con texto final (arriba) o se agoten las iteraciones.
+  }
+
+  // Solo se llega acá si el modelo siguió pidiendo tools sin converger a
+  // una respuesta de texto en MAX_TOOL_ITERATIONS vueltas — no debería
+  // pasar en uso normal (ver comentario de MAX_TOOL_ITERATIONS).
+  throw new AppError('El agente no pudo completar la respuesta (demasiadas tool calls encadenadas)', 500);
 };
 
 /**
@@ -593,4 +668,14 @@ const sendMediaMessage = async (conversationId, media, actor) => {
   return conversation.messages[conversation.messages.length - 1];
 };
 
-module.exports = { buildSystemPrompt, chat, saveInboundMessage, generateReply, qualifyLead, generateSummary, suggestResponse, sendAgentMessage, sendTemplateMessage, sendMediaMessage };
+module.exports = {
+  buildSystemPrompt, chat, saveInboundMessage, generateReply, qualifyLead, generateSummary,
+  suggestResponse, sendAgentMessage, sendTemplateMessage, sendMediaMessage,
+  // Exportado únicamente para tests: este repo no tiene un framework de
+  // mocks (ver convención de "referencia viva" en los comentarios de
+  // arriba) — sin exponer el cliente real de OpenAI, no hay forma de
+  // interceptar openai.chat.completions.create() desde un script de test
+  // externo para simular una respuesta con tool_calls sin pegarle a la API
+  // real. No se usa en ningún otro lado del código de producción.
+  openai,
+};

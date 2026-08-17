@@ -7,11 +7,43 @@ const WINDOW_DURATION_MS = 24 * 60 * 60 * 1000;
 
 const messageSchema = new mongoose.Schema(
   {
-    role:      { type: String, enum: ['user', 'assistant', 'system'], required: true },
-    content:   { type: String, required: true, maxlength: 4000 },
+    // 'tool' agregado para function calling real (ver ai/tools/index.js +
+    // ai.service.js#generateReply()): un mensaje role:'tool' es el
+    // RESULTADO de ejecutar una tool que el modelo pidió invocar, y se le
+    // manda de vuelta a OpenAI como parte del contexto para que complete su
+    // respuesta — mismo rol que usa la API de OpenAI para esto.
+    role:      { type: String, enum: ['user', 'assistant', 'system', 'tool'], required: true },
+    // Ya NO es required:true (lo era antes de este cambio) — un mensaje
+    // role:'assistant' que SOLO pide tool_calls (sin texto todavía) viene
+    // de OpenAI con content:null, y Mongoose rechaza '' como si fuera
+    // "ausente" en un String required:true (a diferencia de otros tipos).
+    // default:'' cubre ese único caso; para el resto de mensajes (la
+    // inmensa mayoría) sigue siendo, en la práctica, siempre no-vacío
+    // porque quien los crea siempre les pasa contenido real. Ver
+    // generateReply().
+    content:   { type: String, default: '', maxlength: 4000 },
     timestamp: { type: Date, default: Date.now },
     tokens:    Number,
     metadata:  mongoose.Schema.Types.Mixed,
+    // Los siguientes 3 campos solo se usan en mensajes relacionados a tool
+    // calling — quedan null/undefined en el resto (la inmensa mayoría) de
+    // mensajes, que no cambian de forma en absoluto.
+    //
+    // toolCalls: en un mensaje role:'assistant' que pidió invocar una o más
+    // tools, la lista tal cual la devolvió OpenAI
+    // (`completion.choices[0].message.tool_calls`) — se guarda sin
+    // transformar, para poder auditar/reproducir exactamente qué pidió el
+    // modelo.
+    toolCalls: { type: mongoose.Schema.Types.Mixed, default: null },
+    // toolCallId: en un mensaje role:'tool' (el resultado), el id del
+    // tool_call específico que está respondiendo — OpenAI lo requiere para
+    // emparejar la respuesta con el pedido en el siguiente turno.
+    toolCallId: { type: String, default: null },
+    // name: en un mensaje role:'tool', el nombre de la tool ejecutada (ej.
+    // 'escalate_to_human') — no lo exige la API, pero sin esto un mensaje
+    // role:'tool' es ilegible en la UI/DB sin cruzarlo con el toolCallId del
+    // mensaje anterior.
+    name: { type: String, default: null },
     // Quién escribió este mensaje — independiente de `role` (que sigue
     // siendo el eje user/assistant/system que consume OpenAI como contexto
     // de conversación). Un mensaje de agente humano queda con
