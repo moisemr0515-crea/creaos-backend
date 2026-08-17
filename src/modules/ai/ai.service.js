@@ -29,21 +29,128 @@ const MAX_TOOL_ITERATIONS = 5;
 // inventar estructura sin respaldo documental. Por eso este bloque es texto
 // que orienta el tono/criterio del modelo, no un campo que se lea o escriba
 // en ningún lado — cero cambio de schema, cero llamada nueva a OpenAI.
-// Estático a propósito (siempre el mismo texto): la versión que SÍ se
-// condiciona con datos reales de leadQualification (Buyer Profile/
-// Psychological State) es un PR posterior del roadmap (PR37), una vez que
-// esos campos existan de verdad (PR35/36) — mezclarlo acá sería adelantar
-// trabajo que depende de piezas que todavía no existen.
-const METHODOLOGY_GUIDANCE = `METODOLOGÍA COMERCIAL — CREA 10D™:
-Tu conversación avanza por diez etapas: Detectar (¿quién es?) → Descubrir (¿qué necesita?) → Diagnosticar (¿cuál es el problema real detrás de lo que pide?) → Desear (¿qué resultado quiere lograr?) → Doler (¿qué le cuesta hoy no resolverlo?) → Demostrar (¿por qué esta solución tiene sentido para ÉL?) → Desarmar (eliminar objeciones) → Decidir (ayudarlo a decidir sin presionar) → Cerrar (convertir intención en acción concreta) → Desarrollar (acompañarlo después de la compra). No es un guion que debas recitar en orden: es un mapa. Identifica en qué etapa está la conversación AHORA y actúa según eso — si el lead ya está listo para comprar, no lo hagas retroceder a preguntas de descubrimiento; si presenta una objeción, pasa a desarmarla en vez de seguir demostrando.
+// SIEMPRE estático (nunca se condiciona) — a diferencia del bloque de
+// Objection/Micro-Closing de abajo, que PR37 sí condiciona.
+const METHODOLOGY_10D_GUIDANCE = `METODOLOGÍA COMERCIAL — CREA 10D™:
+Tu conversación avanza por diez etapas: Detectar (¿quién es?) → Descubrir (¿qué necesita?) → Diagnosticar (¿cuál es el problema real detrás de lo que pide?) → Desear (¿qué resultado quiere lograr?) → Doler (¿qué le cuesta hoy no resolverlo?) → Demostrar (¿por qué esta solución tiene sentido para ÉL?) → Desarmar (eliminar objeciones) → Decidir (ayudarlo a decidir sin presionar) → Cerrar (convertir intención en acción concreta) → Desarrollar (acompañarlo después de la compra). No es un guion que debas recitar en orden: es un mapa. Identifica en qué etapa está la conversación AHORA y actúa según eso — si el lead ya está listo para comprar, no lo hagas retroceder a preguntas de descubrimiento; si presenta una objeción, pasa a desarmarla en vez de seguir demostrando.`;
 
-MANEJO DE OBJECIONES:
+// Fallback estático de Objection/Micro-Closing (texto literal de PR34,
+// sin cambios) — usado por buildObjectionMicroClosingGuidance() cuando NO
+// hay leadQualification.psychologicalState real todavía (lead nuevo,
+// primera interacción, antes del primer qualifyLead() de PR35/36). Fail-soft
+// a propósito: el prompt nunca debe fallar ni quedar sin este bloque solo
+// porque el scoring todavía no corrió.
+const STATIC_OBJECTION_MICROCLOSING_GUIDANCE = `MANEJO DE OBJECIONES:
 Una objeción no es un rechazo — es una fricción entre lo que el lead quiere y lo que le impide avanzar. Nunca la respondas automáticamente (ej. "está caro" no significa automáticamente "ofrece descuento"). Diagnostica primero la causa real: puede ser comparación con otra opción, presupuesto, valor no percibido, falta de confianza, falta de urgencia, o una negociación explícita — la misma frase puede esconder causas distintas, y cada una necesita una respuesta distinta. Nunca inventes descuentos, condiciones o promesas que no estén en la información del negocio de arriba. Si después de responder el lead sigue sin convencerse, no repitas el mismo argumento — sigue diagnosticando. Si genuinamente no hay fit entre lo que el negocio ofrece y lo que el lead necesita, dilo con honestidad en vez de forzar la venta.
 
 COMPROMISO PROGRESIVO:
 No esperes hasta el final de la conversación para intentar avanzar. Construye compromiso con preguntas pequeñas y naturales a lo largo de la conversación (elegir entre opciones, confirmar un problema, indicar un plazo) en vez de acumular preguntas sin aportar nada a cambio. Adapta el tamaño de lo que pides a la confianza que ya existe: si el lead recién te conoce, no le pidas que pague — pídele algo pequeño primero (ver cómo funciona, confirmar una preferencia). Que elija una opción no significa que ya decidió comprar — no lo trates como una venta cerrada. Y si el lead dice que no a algo puntual, acéptalo sin insistir de inmediato con otra pregunta.`;
 
-const buildSystemPrompt = (business, lead) => {
+// PR37 del blueprint de Fase 2 — agrupa los 11 valores de
+// Conversation.PSYCHOLOGICAL_STATES en 6 "modos" de doctrina. Mapeo
+// groundeado directamente en la fuente, no inventado:
+// - docs/modules/Módulo 05 §30 (tabla Estado → Objetivo principal → CREA 10D™)
+// - docs/modules/Módulo 06 §29-30 (OBJECIÓN → CREA 10D / OBJECIÓN → PSYCHOLOGICAL STATE)
+// - docs/modules/Módulo 07 §20 (MICRO-CLOSING Y PSYCHOLOGICAL STATE)
+const PSYCHOLOGICAL_STATE_MODE = {
+  UNKNOWN: 'discovery',
+  CURIOUS: 'discovery',
+  INTERESTED: 'discovery',
+  ENGAGED: 'discovery',
+  'PROBLEM-AWARE': 'diagnosis',
+  'SOLUTION-AWARE': 'diagnosis',
+  TRUSTING: 'trust',
+  BUYING: 'closing',
+  OBJECTING: 'objection_active',
+  DECIDING: 'closing',
+  PURCHASED: 'post_purchase',
+};
+
+const OBJECTION_MICROCLOSING_BY_MODE = {
+  // UNKNOWN, CURIOUS, INTERESTED, ENGAGED — Módulo 05 §5-8: objetivo "Detectar y descubrir" / "Descubrir" / "Profundizar".
+  discovery: {
+    objection: 'Este lead todavía está en una etapa temprana de la conversación. Si menciona una duda o reparo, trátalo como falta de información, no como una objeción de cierre — no actives el árbol de diagnóstico de precio/negociación todavía. Primero termina de entender su necesidad.',
+    microClosing: 'No intentes ningún compromiso grande (pago, agendar una compra). Usa solo microcompromisos pequeños de información o preferencia para seguir descubriendo — nada que suene a cierre.',
+  },
+  // PROBLEM-AWARE, SOLUTION-AWARE — Módulo 05 §9-10: objetivo "Diagnosticar impacto" / "Demostrar por qué la solución tiene sentido".
+  diagnosis: {
+    objection: 'El lead ya reconoce su problema y está evaluando soluciones. Si presenta una duda, probablemente es sobre si ESTA solución encaja con SU situación — diagnostica antes de argumentar, conectando siempre con el problema específico que ya identificaste, no con características genéricas.',
+    microClosing: 'Usa microcompromisos de preferencia y confirmación (elegir entre opciones, validar que entendiste bien el problema) — todavía no pidas una acción de compra.',
+  },
+  // TRUSTING — Módulo 05 §11: "TRUSTING → Demostrar solución" + reducir fricción.
+  trust: {
+    objection: 'El lead ya muestra confianza en la empresa y la solución. Si aparece una objeción acá, dale prioridad alta: puede ser lo único que falta para que decida. Diagnostica rápido y resuelve con evidencia concreta, no con frases genéricas de confianza.',
+    microClosing: 'Puedes pedir compromisos más grandes que en etapas anteriores (ver una demo, confirmar el siguiente paso) — el nivel de confianza ya lo permite.',
+  },
+  // OBJECTING — Módulo 05 §13 + Módulo 06 §29: "OBJECTING → Diagnosticar la objeción", conectado a 10D:DESARMAR.
+  objection_active: {
+    objection: 'Este lead está ACTIVAMENTE en una objeción sin resolver — es la prioridad absoluta de este turno. No avances a demostrar ni a cerrar hasta diagnosticar la causa real (comparación, presupuesto, valor, confianza, urgencia o negociación) y confirmar explícitamente que quedó resuelta antes de seguir.',
+    microClosing: 'No pidas ningún compromiso nuevo mientras la objeción siga sin diagnosticar. Como mucho, un microcompromiso puede servir para AISLAR la objeción (ej. "si resolvemos el tema de la inversión, ¿seguirías considerando contratarlo?"), nunca para avanzar hacia el cierre.',
+  },
+  // BUYING, DECIDING — Módulo 05 §12,14: "BUYING → Reducir fricción" / "DECIDING → Cerrar".
+  closing: {
+    objection: 'El lead ya muestra intención de compra. Si aparece una objeción, es probable que sea la última barrera antes de cerrar — resuélvela con la mayor rapidez posible, sin reabrir descubrimiento que ya no hace falta.',
+    microClosing: 'Reduce fricción: usa compromisos directos hacia la acción final (elegir plan, confirmar método de pago, definir el siguiente paso concreto). Ya no corresponde seguir preguntando por preferencias generales.',
+  },
+  // PURCHASED — Módulo 05 §15, conectado a 10D:DESARROLLAR (postventa).
+  post_purchase: {
+    objection: 'Este lead ya compró — cualquier duda ahora es de postventa, no una objeción comercial. Trátala como soporte y acompañamiento, no como una barrera que hay que superar.',
+    microClosing: 'No apliques micro-closing comercial acá. El objetivo es acompañamiento, satisfacción, y detectar oportunidades futuras de recompra o referidos — no avanzar hacia una nueva venta inmediata.',
+  },
+};
+
+/**
+ * Construye el bloque de MANEJO DE OBJECIONES + COMPROMISO PROGRESIVO —
+ * dinámico (PR37) cuando hay suficiente leadQualification real, con
+ * fallback al texto estático de PR34 en cualquier otro caso.
+ *
+ * Señales usadas, en orden — documentado acá para que quede trazable de
+ * dónde sale cada condición (ver también el PR body):
+ * 1. psychologicalState → selecciona uno de 6 "modos" (tabla
+ *    PSYCHOLOGICAL_STATE_MODE arriba). Es la señal PRIMARIA — sin un
+ *    psychologicalState reconocido, se usa el fallback estático completo,
+ *    sin importar qué otros campos de leadQualification sí existan.
+ * 2. intent === 'not_interested' → agrega una nota de honestidad/no-fit
+ *    (Módulo 06 §40 "Objeciones no siempre deben ser superadas"),
+ *    independiente del modo elegido por psychologicalState.
+ * 3. score (si es un número 0-100) → agrega UNA nota de ritmo, mutuamente
+ *    excluyente: score < 40 → conservador; score >= 80 → priorizar avance.
+ *    Entre 40 y 80 no agrega nada (no todo tiene que generar una nota).
+ * budget/timeline quedan disponibles en leadQualification pero
+ * deliberadamente NO se usan para condicionar texto en este PR — con
+ * psychologicalState + intent + score ya alcanza para el matiz que hace
+ * falta, y sumar más ejes hoy sería combinatoria sin payoff claro.
+ */
+const buildObjectionMicroClosingGuidance = (leadQualification) => {
+  const mode = leadQualification?.psychologicalState
+    ? PSYCHOLOGICAL_STATE_MODE[leadQualification.psychologicalState]
+    : undefined;
+
+  if (!mode) return STATIC_OBJECTION_MICROCLOSING_GUIDANCE;
+
+  const { objection, microClosing } = OBJECTION_MICROCLOSING_BY_MODE[mode];
+  const notas = [];
+
+  if (leadQualification.intent === 'not_interested') {
+    notas.push('El lead fue clasificado con intención "not_interested" — prioriza la honestidad sobre seguir vendiendo; si genuinamente no hay fit entre lo que ofrece el negocio y lo que el lead necesita, dilo con claridad en vez de forzar la conversación hacia una venta.');
+  }
+
+  if (typeof leadQualification.score === 'number') {
+    if (leadQualification.score < 40) {
+      notas.push(`El score de calificación es bajo (${leadQualification.score}/100) — sé conservador con el ritmo, prioriza seguir entendiendo antes de acelerar hacia un compromiso mayor.`);
+    } else if (leadQualification.score >= 80) {
+      notas.push(`El score de calificación es alto (${leadQualification.score}/100) — prioriza avanzar, evita repetir descubrimiento que ya quedó cubierto.`);
+    }
+  }
+
+  return `MANEJO DE OBJECIONES:
+${objection}
+
+COMPROMISO PROGRESIVO:
+${microClosing}${notas.length ? `\n\n${notas.join('\n')}` : ''}`;
+};
+
+const buildSystemPrompt = (business, lead, leadQualification) => {
   const infoNegocio = [
     business.productDescription && `- Qué vende: ${business.productDescription}`,
     business.targetCustomer && `- Cliente ideal: ${business.targetCustomer}`,
@@ -77,7 +184,9 @@ INSTRUCCIONES:
 6. Mantén respuestas concisas (máximo 3 párrafos)
 7. Nunca menciones que eres una IA a menos que te lo pregunten directamente
 
-${METHODOLOGY_GUIDANCE}`;
+${METHODOLOGY_10D_GUIDANCE}
+
+${buildObjectionMicroClosingGuidance(leadQualification)}`;
 };
 
 /**
@@ -180,7 +289,13 @@ const generateReply = async (conversationId, business, lead) => {
   const conversation = await Conversation.findById(conversationId);
   if (!conversation) throw new AppError('Conversación no encontrada', 404);
 
-  const systemPrompt = buildSystemPrompt(business, lead);
+  // PR37 del blueprint de Fase 2 — pasa la calificación real ya persistida
+  // (PR35/36) para que buildSystemPrompt() pueda condicionar Objection/
+  // Micro-Closing. conversation.leadQualification viene undefined en
+  // conversaciones nuevas (antes del primer qualifyLead() automático) —
+  // buildSystemPrompt()/buildObjectionMicroClosingGuidance() lo manejan
+  // como fallback al bloque estático, no como error.
+  const systemPrompt = buildSystemPrompt(business, lead, conversation.leadQualification);
   const recentMessages = conversation.messages.slice(-10).map((m) => ({
     role: m.role,
     content: m.content,
