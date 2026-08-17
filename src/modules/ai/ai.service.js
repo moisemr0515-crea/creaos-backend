@@ -93,6 +93,10 @@ const saveInboundMessage = async (conversationId, text, media) => {
     role: 'user',
     content: text || (media ? (media.mediaType === 'video' ? '[Video]' : '[Imagen]') : ''),
     timestamp: new Date(),
+    // Explícito — sin esto, el default del schema ('ai') dejaba un mensaje
+    // del LEAD indistinguible de una respuesta real de la IA para
+    // cualquiera que mire sentBy sin filtrar por role primero.
+    sentBy: 'lead',
   };
 
   if (media?.sourceUrl) {
