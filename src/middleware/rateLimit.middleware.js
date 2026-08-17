@@ -17,8 +17,30 @@ const rateLimitGeneral = rateLimit({
 
 /**
  * Rate limit estricto para login.
- * 5 intentos por IP cada 15 minutos.
+ * 5 intentos por CUENTA (email intentado) cada 15 minutos.
  * Bloquea ataques de fuerza bruta.
+ *
+ * Por email, NO por IP — hallazgo real de producción (no hipotético):
+ * detrás de Railway, req.ip resolvía sistemáticamente a un puñado de IPs
+ * internas de Railway compartidas por TODO el tráfico real (ver nota en
+ * app.js sobre trust proxy) — el balde de "5 intentos" terminaba
+ * compartido entre usuarios distintos sin relación entre sí, así que
+ * bastaban unos pocos intentos legítimos combinados (de gente distinta)
+ * para bloquear a todo el mundo, sin que nadie individualmente hubiera
+ * fallado el login varias veces.
+ *
+ * Con la clave por email, el límite protege lo que realmente importa
+ * (fuerza bruta contra UNA cuenta puntual) y deja de depender de que
+ * Railway resuelva la IP real correctamente — algo que su propio soporte
+ * confirma que no está garantizado de forma estable entre requests.
+ *
+ * Trade-off conocido y aceptado: alguien que sepa el email de otra
+ * persona puede "trabarle" el login por 15 min fallando 5 veces a
+ * propósito (denegación de servicio dirigida a una cuenta). Para este
+ * CRM interno, con usuarios conocidos y sin ser un objetivo de alto
+ * valor, se considera un riesgo aceptable frente al problema real que
+ * esto soluciona. Si se vuelve un problema, la mitigación estándar es
+ * backoff progresivo en vez de bloqueo duro, no volver a IP.
  */
 const rateLimitLogin = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutos
@@ -26,6 +48,13 @@ const rateLimitLogin = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   skipSuccessfulRequests: true, // No contar logins exitosos
+  keyGenerator: (req) => {
+    const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+    // Sin email (body malformado/vacío — rateLimitLogin corre ANTES que
+    // validarLogin en la ruta, ver auth.routes.js) cae a IP, mismo criterio
+    // de antes — ese caso de todas formas lo rechaza el validator después.
+    return email || req.ip;
+  },
   message: {
     success: false,
     message: 'Demasiados intentos de inicio de sesión. Intenta de nuevo en 15 minutos.',
