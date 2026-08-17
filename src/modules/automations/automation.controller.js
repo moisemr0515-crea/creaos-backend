@@ -30,6 +30,29 @@ const status = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+/**
+ * GET /automations/limit — mismo dato que status(), shape distinto
+ * ({current, limit, allowed}) para el candado de plan de Lovable. NO
+ * reimplementa el cálculo: reutiliza service.obtenerEstadoAutomatizaciones()
+ * tal cual (misma fuente de verdad que status(), Plan.limits.maxActiveAutomations
+ * de subscriptionService — ver automation.service.js), solo traduce las
+ * keys. Evita que /status y /limit puedan desincronizarse por tener cada
+ * uno su propia cuenta de "activas" o su propia lectura del plan.
+ *
+ * allowed: true si el negocio puede activar UNA automatización más ahora
+ * mismo — límite ilimitado (-1) o todavía hay cupo disponible.
+ */
+const limit = async (req, res, next) => {
+  try {
+    const estado = await service.obtenerEstadoAutomatizaciones(req.businessId, req.user._id);
+    const allowed = estado.limite === -1 || estado.activas < estado.limite;
+    return respuestaExito(res, {
+      message: 'Límite de automatizaciones obtenido',
+      data: { current: estado.activas, limit: estado.limite, allowed },
+    });
+  } catch (err) { next(err); }
+};
+
 const get = async (req, res, next) => {
   try {
     const automation = await service.getAutomationById(req.businessId, req.params.automationId);
@@ -86,4 +109,4 @@ const test = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-module.exports = { create, list, status, get, update, remove, toggle, getLogs, test };
+module.exports = { create, list, status, limit, get, update, remove, toggle, getLogs, test };
