@@ -10,6 +10,10 @@ const Lead            = require('../leads/lead.model');
 const User            = require('../users/user.model');
 const Conversation    = require('../ai/conversation.model');
 const Pipeline        = require('../pipeline/pipeline.model');
+// Referencia al módulo completo (no se destructura createNotification acá)
+// — misma convención de "referencia viva" que el resto del repo.
+const notificationService = require('../admin/notification.service');
+const logger = require('../../utils/logger');
 
 // ─── Condition evaluation ─────────────────────────────────────────────────────
 
@@ -129,11 +133,57 @@ async function execStartAIConversation(config, lead) {
   return { conversationId: conv._id };
 }
 
+/**
+ * PR-A2 del plan de empaquetado Android/Capacitor — reusa el Notification
+ * ya existente (src/modules/admin/notification.model.js +
+ * notification.service.js), en vez de crear uno nuevo. Ese modelo estaba
+ * completo (schema, service, rutas GET/PATCH/DELETE bajo
+ * /api/v1/admin/notifications, montadas "todos los autenticados") pero
+ * huérfano — createNotification() nunca se llamaba desde ningún lado del
+ * código, ni siquiera desde acá, pese a que el comentario de esta función
+ * decía literalmente "En producción: WebSocket / push".
+ */
 async function execSendNotification(config, lead) {
-  // In-app: se registra en el activity log del lead. En producción: WebSocket / push.
   const msg = config.message || `Notificación automática para lead ${lead.name}`;
+
+  // Efecto existente, SIN cambios — el activity log del lead sigue siendo
+  // el registro permanente y auditable de que esto pasó, visible en el
+  // timeline del lead. La Notification de abajo es un canal aparte
+  // (campanita + push, cuando exista PR-B), transitorio y descartable —
+  // no reemplaza al activity log, lo complementa.
   lead.activity.push({ type: 'note_added', description: `[Notificación] ${msg}`, performedBy: null, performedByName: 'Automatización' });
   await lead.save();
+
+  // Notification real — se dirige a lead.assignedTo si tiene uno (mismo
+  // destinatario ya decidido para escalate_to_human/update_lead_stage en
+  // el plan de push), se omite si el lead no tiene nadie asignado.
+  // category:'automation' porque el origen es una regla de automatización
+  // configurada por el negocio, no un evento directo del lead ni una
+  // decisión de la IA — esas dos son category:'lead' y category:'ai'
+  // respectivamente, para los 3 disparadores nuevos que se conectan en
+  // PR-C/D/E, no acá.
+  //
+  // Nunca deja que un fallo acá tumbe la automatización — envuelto en
+  // try/catch a propósito: runAutomation() marca la automatización entera
+  // como 'partial'/failed si executeAction() lanza (ver automation.engine.js
+  // más abajo), y el efecto que SÍ importa (el activity log de arriba) ya
+  // se guardó. Mismo criterio fail-soft que el resto de esta sesión.
+  if (lead.assignedTo) {
+    try {
+      await notificationService.createNotification({
+        business: lead.business,
+        user: lead.assignedTo,
+        type: 'info',
+        category: 'automation',
+        title: 'Notificación automática',
+        message: msg,
+        meta: { leadId: lead._id.toString(), source: 'automation' },
+      });
+    } catch (error) {
+      logger.error(`[automations] createNotification() falló para lead ${lead._id}: ${error.message}`);
+    }
+  }
+
   return { notified: true, message: msg };
 }
 
