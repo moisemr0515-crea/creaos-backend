@@ -8,6 +8,8 @@ const Business = require('../../businesses/business.model');
 const Lead = require('../../leads/lead.model');
 const Conversation = require('../../ai/conversation.model');
 const aiService = require('../../ai/ai.service');
+const notificationService = require('../../admin/notification.service');
+const pushService = require('../../push/push.service');
 const DefaultAgentRuntime = require('../defaultAgentRuntime');
 const { normalizeToE164 } = require('../../../utils/phone');
 const logger = require('../../../utils/logger');
@@ -162,6 +164,46 @@ async function processInboundJob(job) {
 
   if (!conversation.aiEnabled) {
     logger.info('[inboundWorker] IA deshabilitada para esta conversación, no se responde', { conversationId: conversation._id.toString() });
+
+    // PR-C — mismo disparador ("lead_message") que
+    // webhook.service.js#processGupshupMessage(), duplicado a propósito acá
+    // (ver la nota de diseño arriba de este archivo: ningún helper
+    // compartido entre los dos caminos). Mismo destinatario y mismo
+    // criterio fail-soft por canal.
+    if (lead.assignedTo) {
+      const previewTexto = event.text.slice(0, 150);
+
+      try {
+        await notificationService.createNotification({
+          business: business._id,
+          user: lead.assignedTo,
+          type: 'info',
+          category: 'lead',
+          title: `Nuevo mensaje de ${lead.name}`,
+          message: previewTexto,
+          meta: { leadId: lead._id, conversationId: conversation._id, event: 'lead_message' },
+        });
+      } catch (err) {
+        logger.error('[inboundWorker] createNotification() falló para lead_message', {
+          leadId: lead._id.toString(),
+          error: err.message,
+        });
+      }
+
+      try {
+        await pushService.sendToUser(lead.assignedTo, {
+          title: `Nuevo mensaje de ${lead.name}`,
+          body: previewTexto,
+          data: { type: 'lead_message', leadId: String(lead._id), conversationId: String(conversation._id) },
+        });
+      } catch (err) {
+        logger.error('[inboundWorker] sendToUser() falló para lead_message', {
+          leadId: lead._id.toString(),
+          error: err.message,
+        });
+      }
+    }
+
     event.status = 'processed';
     event.processedAt = new Date();
     await event.save();

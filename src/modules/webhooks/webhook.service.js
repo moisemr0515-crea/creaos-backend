@@ -5,6 +5,8 @@ const Conversation = require('../ai/conversation.model');
 const Business = require('../businesses/business.model');
 const aiService = require('../ai/ai.service');
 const channelService = require('../channels/channel.service');
+const notificationService = require('../admin/notification.service');
+const pushService = require('../push/push.service');
 const { normalizeToE164 } = require('../../utils/phone');
 const logger = require('../../utils/logger');
 const {
@@ -514,6 +516,51 @@ async function processGupshupMessage({ phone, text, name, mediaType, mediaSource
     logger.info('[gupshup] IA deshabilitada para esta conversación, no se responde', {
       conversationId: conversation._id.toString(),
     });
+
+    // PR-C (roadmap de push/notificaciones) — disparador "lead_message": con
+    // la IA apagada, generateReply() no corre (ver el `return` de abajo), así
+    // que nadie le contesta al lead salvo que un humano lo vea. Se avisa al
+    // agente asignado por los 2 canales (campanita + push), mismo
+    // destinatario que execSendNotification() (PR-A2): lead.assignedTo, se
+    // omite si no hay nadie asignado — no hay a quién avisarle.
+    //
+    // Cada canal en su propio try/catch, fail-soft — un fallo acá (ej.
+    // Firebase sin configurar todavía) nunca debe hacer perder el mensaje
+    // ya guardado arriba (saveInboundMessage) ni tumbar este webhook.
+    if (lead.assignedTo) {
+      const previewTexto = text.slice(0, 150);
+
+      try {
+        await notificationService.createNotification({
+          business: businessId,
+          user: lead.assignedTo,
+          type: 'info',
+          category: 'lead',
+          title: `Nuevo mensaje de ${lead.name}`,
+          message: previewTexto,
+          meta: { leadId: lead._id, conversationId: conversation._id, event: 'lead_message' },
+        });
+      } catch (err) {
+        logger.error('[gupshup] createNotification() falló para lead_message (no afecta el mensaje ya guardado)', {
+          leadId: lead._id.toString(),
+          error: err.message,
+        });
+      }
+
+      try {
+        await pushService.sendToUser(lead.assignedTo, {
+          title: `Nuevo mensaje de ${lead.name}`,
+          body: previewTexto,
+          data: { type: 'lead_message', leadId: String(lead._id), conversationId: String(conversation._id) },
+        });
+      } catch (err) {
+        logger.error('[gupshup] sendToUser() falló para lead_message (no afecta el mensaje ya guardado)', {
+          leadId: lead._id.toString(),
+          error: err.message,
+        });
+      }
+    }
+
     return { lead, conversation };
   }
 
