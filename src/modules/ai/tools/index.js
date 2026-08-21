@@ -99,7 +99,7 @@ const TOOL_SCHEMAS = [
  * avisa al modelo que ya estaba escalada para que pueda responder acorde,
  * en vez de lanzar un error que cortaría el loop de generateReply().
  */
-const escalateToHuman = async (args, { conversation }) => {
+const escalateToHuman = async (args, { conversation, lead }) => {
   const reason = typeof args?.reason === 'string' && args.reason.trim()
     ? args.reason.trim()
     : 'La IA determinó que la conversación requiere intervención humana.';
@@ -116,6 +116,51 @@ const escalateToHuman = async (args, { conversation }) => {
     content: `Conversación escalada a humano por la IA. Motivo: ${reason}`,
     timestamp: new Date(),
   });
+
+  // PR-D (roadmap de push/notificaciones) — Opción A: avisa solo al agente
+  // asignado del lead (lead.assignedTo), mismo destinatario que los otros
+  // 2 disparadores (lead_message/PR-C, update_lead_stage/PR-E), no a todos
+  // los admins del negocio. Se omite si no hay nadie asignado.
+  //
+  // Va ACÁ (dentro del executor), no después en generateReply() tras el
+  // save: escalateToHuman() no hace su propio conversation.save() (ver
+  // nota de arriba — eso es responsabilidad exclusiva de generateReply(),
+  // al final del loop), pero avisar al humano no depende de que ese save
+  // ya haya ocurrido — la mutación real (status/aiEnabled/escalatedAt) ya
+  // pasó en memoria acá arriba, y generateReply() la persiste de todos
+  // modos.
+  //
+  // Cada canal en su propio try/catch, a propósito: un fallo acá NO debe
+  // propagarse fuera de este executor — executeToolCall() envuelve toda
+  // la ejecución y, si esta función tirara, le devolvería success:false al
+  // modelo (ver tools/index.js#executeToolCall), haciéndole creer que el
+  // escalamiento no funcionó cuando en realidad sí mutó la conversación
+  // arriba. Mismo criterio fail-soft que el disparador de PR-C.
+  if (lead?.assignedTo) {
+    try {
+      await notificationService.createNotification({
+        business: conversation.business,
+        user: lead.assignedTo,
+        type: 'warning',
+        category: 'lead',
+        title: `${lead.name} pidió hablar con un humano`,
+        message: reason,
+        meta: { leadId: lead._id, conversationId: conversation._id, event: 'escalated_to_human' },
+      });
+    } catch (err) {
+      logger.error(`escalateToHuman(): createNotification() falló (no afecta el escalamiento ya realizado): ${err.message}`);
+    }
+
+    try {
+      await pushService.sendToUser(lead.assignedTo, {
+        title: `${lead.name} pidió hablar con un humano`,
+        body: reason,
+        data: { type: 'escalated_to_human', leadId: String(lead._id), conversationId: String(conversation._id) },
+      });
+    } catch (err) {
+      logger.error(`escalateToHuman(): sendToUser() falló (no afecta el escalamiento ya realizado): ${err.message}`);
+    }
+  }
 
   return { success: true, alreadyEscalated: false, message: 'Conversación escalada a un agente humano exitosamente.' };
 };
