@@ -4,6 +4,8 @@ const Lead = require('../../leads/lead.model');
 // de "referencia viva" que el resto del repo (ver cloudinaryUtil en
 // ai.service.js, gupshup.client.js, etc.).
 const leadService = require('../../leads/lead.service');
+const notificationService = require('../../admin/notification.service');
+const pushService = require('../../push/push.service');
 
 /**
  * Registro de tools reales que el modelo puede invocar durante
@@ -164,6 +166,57 @@ const updateLeadStage = async (args, { conversation }) => {
   const actorIA = { _id: undefined, name: 'CREA (IA)' };
 
   const leadActualizado = await leadService.cambiarEtapa(conversation.business, conversation.lead, actorIA, stage, reason);
+
+  // PR-E (roadmap de push/notificaciones) — disparador "lead_stage_changed":
+  // avisa al agente asignado (mismo destinatario que PR-C/PR-D) de que la
+  // IA movió al lead de etapa. Se omite si no hay nadie asignado. Usa
+  // leadActualizado (el documento completo que ya devolvió cambiarEtapa(),
+  // recién guardado, con assignedTo/name al día) — no hace falta otra
+  // query a Mongo.
+  //
+  // Distinto de automation.engine.js#execSendNotification(): ese es un
+  // canal opt-in que el negocio configura a mano (una regla de
+  // automatización con trigger:'lead_stage_changed'); esto es un aviso
+  // directo e incondicional, específico de que fue la IA quien decidió el
+  // cambio — mismo criterio que los otros 2 disparadores de este roadmap.
+  // cambiarEtapa() ya dispara triggerAutomations('lead_stage_changed', ...)
+  // por su cuenta (ver lead.service.js) — son 2 caminos independientes que
+  // conviven sin duplicarse.
+  //
+  // Fail-soft, mismo criterio que PR-C/PR-D: cada canal en su propio
+  // try/catch — un fallo acá no debe convertir esta respuesta en
+  // success:false (la etapa YA cambió y ya se guardó arriba).
+  if (leadActualizado.assignedTo) {
+    try {
+      await notificationService.createNotification({
+        business: conversation.business,
+        user: leadActualizado.assignedTo,
+        type: 'info',
+        category: 'lead',
+        title: `${leadActualizado.name} cambió de etapa`,
+        message: reason ? `Ahora en "${stage}" — ${reason}` : `Ahora en "${stage}".`,
+        meta: {
+          leadId: leadActualizado._id,
+          conversationId: conversation._id,
+          event: 'lead_stage_changed',
+          from: leadActual.pipelineStage,
+          to: stage,
+        },
+      });
+    } catch (err) {
+      logger.error(`updateLeadStage(): createNotification() falló (no afecta el cambio de etapa ya guardado): ${err.message}`);
+    }
+
+    try {
+      await pushService.sendToUser(leadActualizado.assignedTo, {
+        title: `${leadActualizado.name} cambió de etapa`,
+        body: `Ahora en "${stage}"`,
+        data: { type: 'lead_stage_changed', leadId: String(leadActualizado._id), conversationId: String(conversation._id) },
+      });
+    } catch (err) {
+      logger.error(`updateLeadStage(): sendToUser() falló (no afecta el cambio de etapa ya guardado): ${err.message}`);
+    }
+  }
 
   return {
     success: true,
