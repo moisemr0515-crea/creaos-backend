@@ -105,6 +105,18 @@ module.exports = {
   // App
   APP_URL: process.env.APP_URL || 'http://localhost:3001',
 
+  // Firebase Admin SDK (FCM — push.service.js#sendToUser(), PR-B del plan de
+  // empaquetado Android). Valores del service account JSON descargado de
+  // Firebase Console → Project Settings → Service Accounts → Generate new
+  // private key — NUNCA el archivo completo commiteado, solo estas 3
+  // variables. FIREBASE_PRIVATE_KEY llega desde Railway como una sola línea
+  // con "\n" literales (no saltos de línea reales); se des-escapa recién acá,
+  // una sola vez, para que quien importe FIREBASE_PRIVATE_KEY de este archivo
+  // ya reciba el PEM real, sin repetir el .replace() en cada consumidor.
+  FIREBASE_PROJECT_ID: process.env.FIREBASE_PROJECT_ID || '',
+  FIREBASE_CLIENT_EMAIL: process.env.FIREBASE_CLIENT_EMAIL || '',
+  FIREBASE_PRIVATE_KEY: (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
+
   // WhatsApp Business API (Meta)
   WHATSAPP_VERIFY_TOKEN: process.env.WHATSAPP_VERIFY_TOKEN || '',
   WHATSAPP_TOKEN:        process.env.WHATSAPP_TOKEN || '',
