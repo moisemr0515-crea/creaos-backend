@@ -537,10 +537,19 @@ const exportLeads = async (req, res, next) => {
 
 const getNotifications = async (req, res, next) => {
   try {
-    const { page, limit, unreadOnly } = req.query;
+    const { page, limit, unreadOnly, category } = req.query;
     const result = await notificationService.getNotifications(
       req.user._id, req.businessId,
-      { page, limit, unreadOnly: unreadOnly === 'true' }
+      {
+        page, limit, unreadOnly: unreadOnly === 'true',
+        // Opcional — acepta un valor único (?category=lead) o una lista
+        // separada por comas (?category=lead,automation), mismo criterio
+        // simple que ALLOWED_ORIGINS en config/env.js. undefined si no vino
+        // el query param, para que getNotifications() no filtre por
+        // categoría y el comportamiento por default quede idéntico al de
+        // antes de este cambio (la campanita existente sigue igual).
+        category: category ? category.split(',').map((c) => c.trim()).filter(Boolean) : undefined,
+      }
     );
     respuestaExito(res, {
       message: 'Notificaciones',

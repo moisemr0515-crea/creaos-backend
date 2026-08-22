@@ -5,13 +5,17 @@ const createNotification = async ({ business, user = null, type = 'info', catego
   return Notification.create({ business, user, type, category, title, message, meta });
 };
 
-const getNotifications = async (userId, businessId, { page = 1, limit = 20, unreadOnly = false } = {}) => {
+const getNotifications = async (userId, businessId, { page = 1, limit = 20, unreadOnly = false, category } = {}) => {
   const skip   = (parseInt(page, 10) - 1) * parseInt(limit, 10);
   const filter = {
     business: businessId,
     $or: [{ user: userId }, { user: null }],
   };
   if (unreadOnly) filter.isRead = false;
+  // Solo filtra si vino category (array no vacío) — sin este param, el
+  // filtro queda igual que antes de este cambio, no rompe la campanita
+  // existente. $in acepta 1 o varios valores por igual.
+  if (category?.length) filter.category = { $in: category };
 
   const [items, total] = await Promise.all([
     Notification.find(filter)
