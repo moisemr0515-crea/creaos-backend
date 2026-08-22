@@ -1,13 +1,18 @@
 const mongoose = require('mongoose');
 
+// Reducido de 7 a 5 keys (4 columnas visibles en el kanban — 'lost' queda
+// oculta del tablero, ver pipeline.tsx del frontend: columns = stages
+// filtradas por !s.lost). new/won/lost conservan key/color/isWon/isLost
+// tal cual estaban. 'negotiation' se renombra a 'negotiating' (fusiona el
+// alcance de las viejas 'interested'/'proposal'/'negotiation' en una sola
+// etapa intermedia) — hereda el color naranja que ya tenía 'negotiation',
+// mismo criterio de continuidad visual que new/won/lost.
 const DEFAULT_STAGES = [
-  { key: 'new',         name: 'Nuevo',       order: 1, color: '#94a3b8', isWon: false, isLost: false, defaultProbability: 5 },
-  { key: 'contacted',   name: 'Contactado',  order: 2, color: '#60a5fa', isWon: false, isLost: false, defaultProbability: 20 },
-  { key: 'interested',  name: 'Interesado',  order: 3, color: '#a78bfa', isWon: false, isLost: false, defaultProbability: 40 },
-  { key: 'proposal',    name: 'Propuesta',   order: 4, color: '#f59e0b', isWon: false, isLost: false, defaultProbability: 60 },
-  { key: 'negotiation', name: 'Negociación', order: 5, color: '#fb923c', isWon: false, isLost: false, defaultProbability: 75 },
-  { key: 'won',         name: 'Ganado',      order: 6, color: '#22c55e', isWon: true,  isLost: false, defaultProbability: 100 },
-  { key: 'lost',        name: 'Perdido',     order: 7, color: '#ef4444', isWon: false, isLost: true,  defaultProbability: 0 },
+  { key: 'new',         name: 'Nuevo',      order: 1, color: '#94a3b8', isWon: false, isLost: false, defaultProbability: 5 },
+  { key: 'contacted',   name: 'Contactado', order: 2, color: '#60a5fa', isWon: false, isLost: false, defaultProbability: 20 },
+  { key: 'negotiating', name: 'Negociando', order: 3, color: '#fb923c', isWon: false, isLost: false, defaultProbability: 60 },
+  { key: 'won',         name: 'Ganado',     order: 4, color: '#22c55e', isWon: true,  isLost: false, defaultProbability: 100 },
+  { key: 'lost',        name: 'Perdido',    order: 5, color: '#ef4444', isWon: false, isLost: true,  defaultProbability: 0 },
 ];
 
 const stageSchema = new mongoose.Schema(

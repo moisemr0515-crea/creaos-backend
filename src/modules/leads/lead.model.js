@@ -15,14 +15,17 @@ const ACTIVITY_TYPES = ['created', 'updated', 'stage_changed', 'assigned', 'note
 // el breakdown fijo del dashboard global de Super Admin (admin/dashboard.service.js),
 // que agrega leads de TODOS los negocios y necesita un eje de comparación común.
 // NO deben usarse para validar/aceptar o rechazar el pipelineStage de un lead.
-const PIPELINE_STAGES = ['new', 'contacted', 'interested', 'proposal', 'negotiation', 'won', 'lost'];
+//
+// Mantenido en sync con pipeline.model.js#DEFAULT_STAGES a propósito — si se
+// desincronizan, un lead en una etapa que ya no está acá desaparece en
+// silencio de getGlobalLeadsFunnel() (el .map() de abajo solo recorre esta
+// lista fija), sin perder el dato, pero sin aparecer en ese gráfico.
+const PIPELINE_STAGES = ['new', 'contacted', 'negotiating', 'won', 'lost'];
 
 const STAGE_LABELS = {
   new: 'Nuevo',
   contacted: 'Contactado',
-  interested: 'Interesado',
-  proposal: 'Propuesta',
-  negotiation: 'Negociación',
+  negotiating: 'Negociando',
   won: 'Ganado',
   lost: 'Perdido',
 };
