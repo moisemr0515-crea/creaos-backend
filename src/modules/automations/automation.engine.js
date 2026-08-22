@@ -9,7 +9,6 @@ const AutomationLog   = require('./automation-log.model');
 const Lead            = require('../leads/lead.model');
 const User            = require('../users/user.model');
 const Conversation    = require('../ai/conversation.model');
-const Pipeline        = require('../pipeline/pipeline.model');
 // Referencia al módulo completo (no se destructura createNotification acá)
 // — misma convención de "referencia viva" que el resto del repo.
 const notificationService = require('../admin/notification.service');
@@ -54,19 +53,60 @@ async function execAssignLead(config, lead) {
   return { assignedTo: user.name };
 }
 
+/**
+ * Reusa lead.service.js#cambiarEtapa() — la misma función que ya usan el
+ * endpoint manual (PUT /leads/:id/stage) y la tool update_lead_stage de
+ * la IA — en vez de la implementación que tenía este archivo antes:
+ * escribía lead.pipelineStage directo, sin pasar por
+ * validarStageEnPipeline() (pipeline.service.js). Si una automatización
+ * apunta a una etapa que ya no existe en el pipeline real del negocio (ej.
+ * se simplificó el pipeline y la automatización quedó con una key vieja),
+ * cambiarEtapa() ahora lanza un AppError 400 claro — runAutomation() (más
+ * abajo en este archivo) lo captura, marca esa acción como 'failed' con el
+ * mensaje real, y el resto de la automatización sigue su curso, en vez de
+ * dejar un string huérfano en pipelineStage en silencio.
+ *
+ * require() DENTRO de la función, no arriba del archivo, a propósito:
+ * lead.service.js ya requiere este archivo (automation.engine.js) arriba
+ * del suyo, para triggerAutomations() — un require de
+ * '../leads/lead.service' arriba de ESTE archivo crearía una dependencia
+ * circular real entre los dos módulos. Los dos usan `module.exports =
+ * {...}` una sola vez al final (no exports.x = ... incremental), así que
+ * cualquiera de los dos lados que cargue primero deja al otro con un
+ * require() a mitad de camino — el objeto exportado en ese instante está
+ * vacío, y tanto una destructuración como una referencia "viva" al objeto
+ * completo capturarían esa versión vacía para siempre (module.exports
+ * se REASIGNA a un objeto nuevo al final de cada archivo, no se muta el
+ * mismo objeto en el lugar). Requerir DENTRO de la función evita el
+ * problema por completo: para cuando esto corre de verdad (una
+ * automatización ejecutándose, muy después del arranque del server), los
+ * dos módulos ya terminaron de cargar hace rato y require() solo devuelve
+ * el objeto cacheado completo — cero riesgo de orden de carga. NO mover
+ * este require arriba del archivo.
+ */
 async function execChangeStage(config, lead) {
   if (!config.stage) throw new Error('change_stage: falta config.stage');
-  const prev          = lead.pipelineStage;
-  lead.pipelineStage  = config.stage;
-  lead.stageChangedAt = new Date();
-  if (lead.pipeline) {
-    const pipeline = await Pipeline.findById(lead.pipeline);
-    const stageCfg = pipeline?.stages.find((s) => s.key === config.stage);
-    if (stageCfg) lead.closeProbability = stageCfg.defaultProbability;
-  }
-  lead.activity.push({ type: 'stage_changed', description: `Etapa cambiada de ${prev} a ${config.stage} (automatización)`, performedBy: null, performedByName: 'Automatización', meta: { from: prev, to: config.stage } });
-  await lead.save();
-  return { from: prev, to: config.stage };
+
+  const leadService = require('../leads/lead.service');
+  const actorAutomatizacion = { _id: undefined, name: 'Automatización' };
+  const etapaAnterior = lead.pipelineStage;
+
+  // triggerAutomation:false — preserva el comportamiento de siempre de
+  // este archivo: una automatización con acción change_stage nunca
+  // disparó otras automatizaciones con trigger lead_stage_changed. Ver el
+  // comentario de cambiarEtapa() (lead.service.js) para el motivo completo
+  // (riesgo de loop infinito entre 2 automatizaciones que se "responden"
+  // mutuamente vía change_stage).
+  await leadService.cambiarEtapa(
+    lead.business,
+    lead._id,
+    actorAutomatizacion,
+    config.stage,
+    undefined,
+    { triggerAutomation: false }
+  );
+
+  return { from: etapaAnterior, to: config.stage };
 }
 
 async function execAddTag(config, lead) {
