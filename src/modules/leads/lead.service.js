@@ -241,7 +241,23 @@ const agregarNota = async (businessId, leadId, actor, content) => {
   return lead.notes[lead.notes.length - 1];
 };
 
-const cambiarEtapa = async (businessId, leadId, actor, stage, reason) => {
+/**
+ * options.triggerAutomation (default true) — lo usa
+ * automation.engine.js#execChangeStage() con `false`: preserva el
+ * comportamiento de siempre de ese archivo (una automatización con acción
+ * change_stage nunca disparó otras automatizaciones con trigger
+ * lead_stage_changed, a diferencia del endpoint manual y de la tool
+ * update_lead_stage de la IA, que sí lo hacen). Reusar cambiarEtapa()
+ * desde ahí sin este flag habría hecho que change_stage empiece a
+ * cascadear en automatizaciones nuevas — un cambio de comportamiento no
+ * pedido, con riesgo real de loop infinito si 2 automatizaciones ya
+ * configuradas terminan "respondiéndose" mutuamente vía change_stage
+ * (A dispara con trigger lead_stage_changed→to:X, acción change_stage→Y;
+ * B dispara con trigger lead_stage_changed→to:Y, acción change_stage→X).
+ * Los otros 2 llamadores (lead.controller.js, ai/tools/index.js) no pasan
+ * este 5to argumento, así que quedan con el default true, sin cambios.
+ */
+const cambiarEtapa = async (businessId, leadId, actor, stage, reason, { triggerAutomation = true } = {}) => {
   const lead = await Lead.findOne({ _id: leadId, business: businessId, isDeleted: false });
   if (!lead) throw new AppError('Lead no encontrado', 404);
 
@@ -268,7 +284,9 @@ const cambiarEtapa = async (businessId, leadId, actor, stage, reason) => {
 
   await lead.save();
 
-  triggerAutomations('lead_stage_changed', lead, { from: etapaAnterior, to: stage }).catch(() => {});
+  if (triggerAutomation) {
+    triggerAutomations('lead_stage_changed', lead, { from: etapaAnterior, to: stage }).catch(() => {});
+  }
 
   return lead;
 };
