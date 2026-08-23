@@ -3,9 +3,11 @@ const Conversation = require('../ai/conversation.model');
 const Pipeline = require('../pipeline/pipeline.model');
 const { obtenerPipelineEfectivo, validarStageEnPipeline } = require('../pipeline/pipeline.service');
 const User = require('../users/user.model');
+const Role = require('../roles/role.model');
 const { AppError } = require('../../middleware/error.middleware');
 const { triggerAutomations } = require('../automations/automation.engine');
 const { normalizeToE164 } = require('../../utils/phone');
+const logger = require('../../utils/logger');
 
 const crearLead = async (businessId, actor, data) => {
   const { note, ...leadData } = data;
@@ -374,6 +376,61 @@ const accionMasiva = async (businessId, actor, { leadIds, action, assignedTo, st
   return resultados;
 };
 
+/**
+ * Resuelve a qué usuario(s) avisar de un evento de un lead (hoy: el
+ * disparador "lead_message" de webhook.service.js — un mensaje entrante
+ * con la IA apagada).
+ *
+ * Si el lead tiene assignedTo, ese usuario específico — comportamiento
+ * histórico, sin cambios. Si NO tiene assignedTo, cae a TODOS los
+ * admins/dueños activos del negocio (roles 'owner'/'admin', del sistema o
+ * custom del negocio si el negocio definió los suyos) — así un negocio
+ * nuevo, o cualquier lead sin nadie asignado todavía, no pierde en
+ * silencio el aviso de un mensaje real de un cliente. Crítico para
+ * lanzar multi-tenant: antes de esto, un lead sin assignedTo nunca
+ * notificaba a nadie.
+ *
+ * 'superadmin' queda afuera del fallback a propósito — es el rol de
+ * operador de la plataforma CREA OS (cross-tenant), no "admin de este
+ * negocio"; incluirlo notificaría a operadores de la plataforma por cada
+ * negocio con el que tengan una cuenta asociada, que no es la intención
+ * de este fallback.
+ *
+ * Nunca lanza — si no hay ni assignedTo ni ningún admin/owner activo en
+ * el negocio (caso raro, no debería pasar en un negocio bien configurado),
+ * loguea un warning claro con el businessId para que sea detectable en
+ * Railway logs, y devuelve un array vacío. El llamador decide qué hacer
+ * con un array vacío (hoy: simplemente no notificar a nadie).
+ *
+ * @returns {Promise<Array<ObjectId>>} 0, 1, o varios userIds
+ */
+const resolveNotificationRecipients = async (lead) => {
+  if (lead.assignedTo) return [lead.assignedTo];
+
+  const roles = await Role.find({
+    slug: { $in: ['owner', 'admin'] },
+    business: { $in: [null, lead.business] },
+  }).select('_id');
+
+  if (!roles.length) {
+    logger.warn(`resolveNotificationRecipients(): no existen roles 'owner'/'admin' aplicables al negocio ${lead.business} — no se pudo notificar`);
+    return [];
+  }
+
+  const admins = await User.find({
+    business: lead.business,
+    isActive: true,
+    role: { $in: roles.map((r) => r._id) },
+  }).select('_id');
+
+  if (!admins.length) {
+    logger.warn(`resolveNotificationRecipients(): sin assignedTo ni ningún admin/owner activo en el negocio ${lead.business} — no se pudo notificar`);
+    return [];
+  }
+
+  return admins.map((u) => u._id);
+};
+
 module.exports = {
   crearLead,
   obtenerLead,
@@ -384,4 +441,5 @@ module.exports = {
   cambiarEtapa,
   asignarLead,
   accionMasiva,
+  resolveNotificationRecipients,
 };
