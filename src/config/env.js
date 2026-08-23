@@ -48,6 +48,16 @@ module.exports = {
   // Frontend
   FRONTEND_URL: process.env.FRONTEND_URL || 'http://localhost:5173',
 
+  // Fase 2.0 (blueprint Meta+Gupshup Embedded Signup) — clave maestra para
+  // cifrar credenciales de WhatsAppChannel por tenant (ver
+  // channels/channelCrypto.js). NUNCA se usa directo para cifrar: cada
+  // canal deriva su propia subclave vía HKDF a partir de esta — así, si
+  // algo más acotado que esta variable se filtra (una subclave derivada
+  // en un log, un dump puntual), el daño queda contenido a un canal, no a
+  // los 100 tenants. 32 bytes en hex (64 caracteres) — generar con
+  // `openssl rand -hex 32`.
+  CHANNEL_CREDENTIALS_KEY: process.env.CHANNEL_CREDENTIALS_KEY,
+
   // Cloudinary (logo, fotos de producto, PDF informativo)
   CLOUDINARY_CLOUD_NAME: process.env.CLOUDINARY_CLOUD_NAME,
   CLOUDINARY_API_KEY: process.env.CLOUDINARY_API_KEY,
