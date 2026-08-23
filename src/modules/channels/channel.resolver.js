@@ -42,10 +42,10 @@ async function trySetCached(key, channel) {
 }
 
 /**
- * @param {{provider: string, phoneNumberId?: string, wabaId?: string}} identifiers
+ * @param {{provider: string, phoneNumberId?: string, wabaId?: string, appName?: string}} identifiers
  * @returns {Promise<import('./whatsappChannel.model')|null>}
  */
-async function resolve({ provider, phoneNumberId, wabaId }) {
+async function resolve({ provider, phoneNumberId, wabaId, appName }) {
   // phoneNumberId es el identificador primario (índice único real del
   // modelo, {provider, phoneNumberId}). wabaId es un fallback deliberado —
   // el formato "legacy" de Gupshup no manda phoneNumberId (§4.3 del
@@ -70,6 +70,27 @@ async function resolve({ provider, phoneNumberId, wabaId }) {
     if (cached) return cached;
 
     const channelDoc = await channelRepository.findByWabaId(provider, wabaId);
+    if (channelDoc) {
+      const channel = channelDoc.toObject();
+      await trySetCached(key, channel);
+      return channel;
+    }
+  }
+
+  // Tercer criterio, solo para el formato "legacy" de Gupshup — ese formato
+  // no manda phoneNumberId NI wabaId, solo `app` (el nombre de la app
+  // configurada en Gupshup). Antes de este fix, un mensaje legacy nunca
+  // llegaba hasta acá con nada resoluble: los 2 `if` de arriba nunca se
+  // activaban (ambos identificadores venían undefined) y resolve() devolvía
+  // null siempre — 100% de los mensajes en formato legacy se perdían en
+  // silencio. Ver channel.repository.js#findByProviderAccountId() para el
+  // resguardo de ambigüedad (2+ canales con el mismo nombre de app).
+  if (appName) {
+    const key = cacheKey(provider, 'appname', appName);
+    const cached = await tryGetCached(key);
+    if (cached) return cached;
+
+    const channelDoc = await channelRepository.findByProviderAccountId(provider, appName);
     if (channelDoc) {
       const channel = channelDoc.toObject();
       await trySetCached(key, channel);
