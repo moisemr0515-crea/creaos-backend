@@ -47,9 +47,15 @@ async function handle(rawPayload) {
 }
 
 async function handleOne(msg) {
-  const { phoneNumberId, wabaId } = msg.channelIdentifiers || {};
+  const { phoneNumberId, wabaId, appName } = msg.channelIdentifiers || {};
 
-  const channel = await channelResolver.resolve({ provider: 'gupshup', phoneNumberId, wabaId });
+  // appName cubre el formato "legacy" de Gupshup (sin phoneNumberId ni
+  // wabaId) — ver channel.resolver.js#resolve() y
+  // channel.repository.js#findByProviderAccountId(). Antes de este fix,
+  // un mensaje legacy siempre resolvía a channel:null acá (appName nunca
+  // se pasaba), así que se perdía en el `if (!channel)` de abajo, en
+  // silencio, para el 100% del tráfico en ese formato.
+  const channel = await channelResolver.resolve({ provider: 'gupshup', phoneNumberId, wabaId, appName });
   if (!channel) {
     logger.warn('[inboundGateway] ningún WhatsAppChannel matchea este payload', { phoneNumberId, wabaId });
     return;
