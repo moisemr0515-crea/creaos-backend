@@ -167,6 +167,11 @@ async function processMetaLead(entry, config) {
       },
     });
 
+    // Fail-soft de plan (auditoría de pricing del 23/ago/2026) — nunca
+    // bloquea la creación, solo marca/avisa si el negocio ya está sobre
+    // su límite de leads activos.
+    leadService.notifyIfOverLeadLimit(lead).catch(() => {});
+
     // Mismo criterio que crearLead()/procesarImportacion(): un lead que
     // llega por publicidad no pasa por ningún flujo que le cree una
     // Conversation por su cuenta (eso solo pasa con un mensaje de
@@ -253,6 +258,10 @@ async function processTikTokLead(payload, config) {
       },
     });
 
+    // Fail-soft de plan (auditoría de pricing del 23/ago/2026) — ver
+    // comentario completo en processMetaLead().
+    leadService.notifyIfOverLeadLimit(lead).catch(() => {});
+
     // Mismo criterio que arriba en processMetaLead() — ver comentario ahí.
     await Conversation.create({
       business:  config.business,
@@ -296,6 +305,11 @@ async function processWhatsAppMessage({ phoneNumberId, from, name, text, msgId }
       whatsappId:  from,
       activity: [{ type: 'created', description: `Mensaje WhatsApp recibido: ${text.slice(0, 100)}` }],
     });
+
+    // Fail-soft de plan (auditoría de pricing del 23/ago/2026) — ver
+    // comentario completo en processMetaLead(). Solo en la rama de lead
+    // NUEVO, no en cada mensaje de un lead ya existente.
+    leadService.notifyIfOverLeadLimit(lead).catch(() => {});
   } else {
     lead.activity.push({ type: 'contacted', description: `WhatsApp: ${text.slice(0, 100)}` });
     lead.lastContactedAt = new Date();
@@ -457,6 +471,11 @@ async function processGupshupMessage({ phone, text, name, mediaType, mediaSource
       tags:       ['whatsapp'],
       activity: [{ type: 'created', description: `Mensaje WhatsApp recibido: ${resumenActividad}` }],
     });
+
+    // Fail-soft de plan (auditoría de pricing del 23/ago/2026) — ver
+    // comentario completo en processMetaLead(). Solo en la rama de lead
+    // NUEVO, no en cada mensaje de un lead ya existente.
+    leadService.notifyIfOverLeadLimit(lead).catch(() => {});
   } else {
     lead.activity.push({ type: 'contacted', description: `WhatsApp: ${resumenActividad}` });
     lead.lastContactedAt = new Date();

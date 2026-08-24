@@ -6,6 +6,7 @@ const InboundEvent = require('../inboundEvent.model');
 const OutboundEvent = require('../outboundEvent.model');
 const Business = require('../../businesses/business.model');
 const Lead = require('../../leads/lead.model');
+const leadService = require('../../leads/lead.service');
 const Conversation = require('../../ai/conversation.model');
 const aiService = require('../../ai/ai.service');
 const notificationService = require('../../admin/notification.service');
@@ -83,6 +84,11 @@ async function ensureLeadAndConversation({ businessId, phone, text, name, mediaT
       tags: ['whatsapp'],
       activity: [{ type: 'created', description: `Mensaje WhatsApp recibido: ${resumenActividad}` }],
     });
+
+    // Fail-soft de plan (auditoría de pricing del 23/ago/2026) — nunca
+    // bloquea, solo marca/avisa. Ver comentario completo en
+    // webhook.service.js#processMetaLead().
+    leadService.notifyIfOverLeadLimit(lead).catch(() => {});
   } else {
     lead.activity.push({ type: 'contacted', description: `WhatsApp: ${resumenActividad}` });
     lead.lastContactedAt = new Date();

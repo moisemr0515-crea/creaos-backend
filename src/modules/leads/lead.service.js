@@ -4,6 +4,9 @@ const Pipeline = require('../pipeline/pipeline.model');
 const { obtenerPipelineEfectivo, validarStageEnPipeline } = require('../pipeline/pipeline.service');
 const User = require('../users/user.model');
 const Role = require('../roles/role.model');
+const Notification = require('../admin/notification.model');
+const notificationService = require('../admin/notification.service');
+const subscriptionService = require('../subscriptions/subscription.service');
 const { AppError } = require('../../middleware/error.middleware');
 const { triggerAutomations } = require('../automations/automation.engine');
 const { normalizeToE164 } = require('../../utils/phone');
@@ -11,6 +14,19 @@ const logger = require('../../utils/logger');
 
 const crearLead = async (businessId, actor, data) => {
   const { note, ...leadData } = data;
+
+  // Bloqueo duro de plan (auditoría de pricing del 23/ago/2026) — este es
+  // el ÚNICO camino de creación que rechaza; los automáticos (WhatsApp
+  // entrante, automatizaciones) son fail-soft, ver notifyIfOverLeadLimit()
+  // más abajo. Va primero, antes de cualquier otra validación, para no
+  // gastar queries en un intento que de todos modos se va a rechazar.
+  const { allowed, current, limit } = await subscriptionService.checkLeadLimit(businessId);
+  if (!allowed) {
+    throw new AppError(
+      `Llegaste al límite de leads activos de tu plan (${current}/${limit}). Cerrá alguna oportunidad o subí de plan para agregar más.`,
+      403
+    );
+  }
 
   // Validación de duplicados por teléfono (Problema 4 — antes no existía
   // ningún chequeo, ver diagnóstico previo). No se fusiona ni se reutiliza
@@ -431,6 +447,69 @@ const resolveNotificationRecipients = async (lead) => {
   return admins.map((u) => u._id);
 };
 
+// No se repite el aviso más seguido que esto mientras el negocio siga
+// excedido — evita que un negocio permanentemente sobre el límite reciba
+// una notificación por cada mensaje nuevo de WhatsApp (podrían ser
+// decenas por día). 24h: suficiente frecuencia para que sea accionable sin
+// ser spam. Se implementa consultando la última notificación de este tipo
+// en vez de guardar un timestamp aparte — mismo criterio que el resto del
+// módulo de notificaciones, sin estado nuevo que mantener sincronizado.
+const RECORDATORIO_LIMITE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Fail-soft — para los caminos AUTOMÁTICOS de creación de leads (WhatsApp
+ * entrante, automatizaciones; ver automation.engine.js, webhook.service.js,
+ * inbound.worker.js). El lead ya se creó SIEMPRE antes de llamar esto —
+ * nunca se pierde una conversación real de WhatsApp por un límite de plan
+ * (a diferencia de crearLead()/import.service.js, que sí bloquean antes de
+ * crear). Se llama fire-and-forget (`.catch(() => {})`), mismo patrón que
+ * triggerAutomations('lead_created', lead) unas líneas más abajo en
+ * crearLead().
+ *
+ * Además de notificar, marca `lead.overQuota = true` — se hace acá (no en
+ * cada uno de los ~6 sitios que crean leads automáticos) para que integrar
+ * esto en un sitio nuevo sea agregar una sola línea, sin duplicar lógica.
+ */
+const notifyIfOverLeadLimit = async (lead) => {
+  const { allowed, current, limit } = await subscriptionService.checkLeadLimit(lead.business);
+  if (allowed) return;
+
+  if (!lead.overQuota) {
+    await Lead.updateOne({ _id: lead._id }, { $set: { overQuota: true } });
+  }
+
+  const ultimoAviso = await Notification.findOne({
+    business: lead.business,
+    category: 'subscription',
+    'meta.event': 'lead_limit_exceeded',
+  }).sort({ createdAt: -1 }).select('createdAt').lean();
+
+  if (ultimoAviso && Date.now() - new Date(ultimoAviso.createdAt).getTime() < RECORDATORIO_LIMITE_MS) {
+    return; // ya se avisó hace menos de 24h — no repetir
+  }
+
+  const destinatarios = await resolveNotificationRecipients(lead);
+  for (const userId of destinatarios) {
+    try {
+      await notificationService.createNotification({
+        business: lead.business,
+        user: userId,
+        type: 'warning',
+        category: 'subscription',
+        title: 'Llegaste al límite de leads activos',
+        message: `Tenés ${current}/${limit} leads activos. Considerá subir de plan o cerrar oportunidades viejas para seguir recibiendo leads nuevos sin límite.`,
+        meta: { leadId: lead._id, current, limit, event: 'lead_limit_exceeded' },
+      });
+    } catch (err) {
+      logger.error('[leads] createNotification() falló para lead_limit_exceeded (no afecta el lead ya creado)', {
+        leadId: lead._id.toString(),
+        userId: userId.toString(),
+        error: err.message,
+      });
+    }
+  }
+};
+
 module.exports = {
   crearLead,
   obtenerLead,
@@ -442,4 +521,5 @@ module.exports = {
   asignarLead,
   accionMasiva,
   resolveNotificationRecipients,
+  notifyIfOverLeadLimit,
 };

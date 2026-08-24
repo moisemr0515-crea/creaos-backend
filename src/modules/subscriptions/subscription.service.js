@@ -5,6 +5,8 @@ const Subscription = require('./subscription.model');
 const Plan         = require('./plan.model');
 const Business     = require('../businesses/business.model');
 const User         = require('../users/user.model');
+const Pipeline     = require('../pipeline/pipeline.model');
+const Lead         = require('../leads/lead.model');
 const { AppError } = require('../../middleware/error.middleware');
 const {
   STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET,
@@ -375,14 +377,63 @@ const cancelSubscription = async (businessId, atPeriodEnd = true) => {
 
 // ─── 9. checkLeadLimit ───────────────────────────────────────────────────────
 
+/**
+ * Reescrita (auditoría de pricing del 23/ago/2026) — ya NO mide "leads
+ * creados este mes" contra `leadsUsedThisMonth` (ese contador nunca se
+ * incrementaba en ningún lado, ver incrementLeadCount() abajo — el límite
+ * nunca se aplicaba en la práctica). Mide "leads ACTIVOS" en vivo, alineado
+ * al copy real de pricing ("gestioná hasta N oportunidades de venta
+ * activas"): cualquier lead no borrado cuyo stage actual no sea de cierre
+ * (won/lost) en el pipeline al que pertenece.
+ *
+ * Conteo en vivo en vez de un contador denormalizado a propósito: un
+ * contador exige acordarse de sumar en cada creación Y restar en cada
+ * borrado/cierre/reapertura, en los ~6 lugares distintos del repo que hoy
+ * crean un Lead — exactamente la clase de bug que esta función reemplaza
+ * (incrementLeadCount() nunca se llamó desde ninguno). Un conteo en vivo no
+ * puede desincronizarse porque no hay nada que sincronizar. Costo real:
+ * un countDocuments() indexado ({business,isDeleted} ya existe, ver
+ * lead.model.js) sobre, como mucho, unos cientos de leads por negocio — de
+ * un dígito de milisegundos, y esto corre una vez por intento de creación
+ * (escritura humana, no un endpoint de lectura de alto tráfico).
+ *
+ * Límite conocido: si un negocio tiene más de un Pipeline activo y dos de
+ * ellos usan la misma `stage.key` con isWon/isLost distinto, el stage se
+ * cuenta como "de cierre" si CUALQUIERA de los pipelines del negocio lo
+ * marca así (unión, no por-pipeline-del-lead). Caso de borde improbable en
+ * la práctica (casi todo negocio tiene 1 solo pipeline) — si aparece uno
+ * real con pipelines múltiples y keys ambiguas, ahí se justifica resolver
+ * el pipeline exacto de cada lead vía agregación; no antes.
+ */
 const checkLeadLimit = async (businessId) => {
   const sub = await getCurrentSubscription(businessId);
-  const limit = sub.plan?.limits?.leadsPerMonth ?? 5;
+  const limit = sub.plan?.limits?.leadsPerMonth ?? 10; // fallback alineado al Starter real (10, no 5 — ver fix/plan-starter-leads-limit-mismatch)
 
-  if (limit === -1) return { allowed: true, current: sub.leadsUsedThisMonth, limit: -1 };
+  if (limit === -1) {
+    const current = await contarLeadsActivos(businessId);
+    return { allowed: true, current, limit: -1 };
+  }
 
-  const allowed = sub.leadsUsedThisMonth < limit;
-  return { allowed, current: sub.leadsUsedThisMonth, limit };
+  const current = await contarLeadsActivos(businessId);
+  return { allowed: current < limit, current, limit };
+};
+
+/**
+ * Cuenta los leads "activos" (no borrados, no en un stage won/lost) de un
+ * negocio, considerando los stages de cierre de TODOS sus pipelines activos
+ * — ver el límite conocido documentado arriba en checkLeadLimit().
+ */
+const contarLeadsActivos = async (businessId) => {
+  const pipelines = await Pipeline.find({ business: businessId, isActive: true }).select('stages').lean();
+  const stagesDeCierre = new Set(
+    pipelines.flatMap((p) => (p.stages || []).filter((s) => s.isWon || s.isLost).map((s) => s.key))
+  );
+
+  return Lead.countDocuments({
+    business: businessId,
+    isDeleted: false,
+    pipelineStage: { $nin: [...stagesDeCierre] },
+  });
 };
 
 // ─── 10. incrementLeadCount ───────────────────────────────────────────────────
@@ -419,5 +470,6 @@ module.exports = {
   handleMercadoPagoWebhook,
   cancelSubscription,
   checkLeadLimit,
-  incrementLeadCount,
+  contarLeadsActivos,
+  incrementLeadCount, // sin callers hoy (ver checkLeadLimit) — se deja por si sirve para reporting de "leads creados por mes" a futuro
 };

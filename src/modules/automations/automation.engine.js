@@ -157,6 +157,15 @@ async function execCreateLead(config, lead) {
     assignedToName:config.assignTo ? undefined : lead.assignedToName,
     activity: [{ type: 'created', description: 'Lead creado por automatización', performedBy: null, performedByName: 'Automatización' }],
   });
+
+  // Fail-soft de plan (auditoría de pricing del 23/ago/2026) — nunca
+  // bloquea, solo marca/avisa. require() dentro de la función a propósito,
+  // mismo motivo documentado arriba en execChangeStage(): dependencia
+  // circular real con lead.service.js (que ya requiere este archivo para
+  // triggerAutomations()). NO mover este require arriba del archivo.
+  const leadService = require('../leads/lead.service');
+  leadService.notifyIfOverLeadLimit(newLead).catch(() => {});
+
   return { createdLeadId: newLead._id };
 }
 
