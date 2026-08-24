@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const dashboardService    = require('./dashboard.service');
 const reportsService      = require('./reports.service');
 const notificationService = require('./notification.service');
+const subscriptionService = require('../subscriptions/subscription.service');
 const Business = require('../businesses/business.model');
 const User     = require('../users/user.model');
 const Role     = require('../roles/role.model');
@@ -418,6 +419,18 @@ const getBusinessUsers = async (req, res, next) => {
 
 const inviteUser = async (req, res, next) => {
   try {
+    // Bloqueo duro de plan (auditoría de pricing del 23/ago/2026, Track 1
+    // #3) — primero que nada, antes de cualquier otra validación, para no
+    // gastar queries en un intento que se va a rechazar igual (mismo
+    // criterio que crearLead() en lead.service.js).
+    const { allowed, current, limit } = await subscriptionService.checkUserLimit(req.businessId);
+    if (!allowed) {
+      throw new AppError(
+        `Llegaste al límite de usuarios de tu plan (${current}/${limit}). Desactivá a alguien o subí de plan para invitar más.`,
+        403
+      );
+    }
+
     const { name, email, roleSlug = 'sales' } = req.body;
     if (!name || !email) throw new AppError('name y email son requeridos', 400);
 
