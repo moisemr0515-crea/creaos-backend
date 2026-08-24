@@ -96,6 +96,14 @@ const leadSchema = new mongoose.Schema(
     isDeleted: { type: Boolean, default: false },
     deletedAt: Date,
     importBatch: String,
+    // true si el lead se creó por un canal automático (WhatsApp entrante,
+    // automatización) mientras el negocio ya estaba sobre su límite de
+    // leads activos del plan — nunca bloquea la creación (ver
+    // lead.service.js#notifyIfOverLeadLimit), solo lo marca para poder
+    // filtrar/reportar después. Un lead creado manualmente o por
+    // importación NUNCA llega a tener este flag en true porque esos dos
+    // caminos rechazan la creación antes (bloqueo duro).
+    overQuota: { type: Boolean, default: false },
   },
   { timestamps: true }
 );

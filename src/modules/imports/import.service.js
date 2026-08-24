@@ -4,6 +4,7 @@ const Lead = require('../leads/lead.model');
 const Conversation = require('../ai/conversation.model');
 const Pipeline = require('../pipeline/pipeline.model');
 const Import = require('./import.model');
+const subscriptionService = require('../subscriptions/subscription.service');
 const { AppError } = require('../../middleware/error.middleware');
 const { normalizeToE164 } = require('../../utils/phone');
 const logger = require('../../utils/logger');
@@ -164,6 +165,27 @@ const procesarImportacion = async (businessId, actorId, { file, columnMapping = 
       ],
     });
     rowNumsAInsertar.push(rowNum);
+  }
+
+  // Bloqueo duro de plan (auditoría de pricing del 23/ago/2026) — rechaza
+  // el archivo ENTERO si excede el cupo restante, antes de insertar nada.
+  // No se trunca ni se inserta parcial: mezclar "rechazado por cuota" con
+  // "rechazado por datos inválidos" en el mismo reporte sería confuso. El
+  // Import queda 'failed' vía la misma lógica de status de abajo (línea
+  // ~230) — no hace falta un status nuevo ni dejarlo colgado en
+  // 'processing'.
+  if (leadsAInsertar.length) {
+    const { current, limit } = await subscriptionService.checkLeadLimit(businessId);
+    if (limit !== -1 && current + leadsAInsertar.length > limit) {
+      const disponibles = Math.max(0, limit - current);
+      errores.push({
+        row: null,
+        field: 'plan',
+        value: String(leadsAInsertar.length),
+        message: `Este archivo tiene ${leadsAInsertar.length} leads válidos, pero tu plan solo permite ${disponibles} más (ya tenés ${current}/${limit} leads activos). Reducí el archivo, cerrá oportunidades viejas, o subí de plan.`,
+      });
+      leadsAInsertar.length = 0; // rechazo total del archivo — no se inserta nada
+    }
   }
 
   let successCount = 0;
