@@ -436,6 +436,27 @@ const contarLeadsActivos = async (businessId) => {
   });
 };
 
+// ─── 9b. checkUserLimit ──────────────────────────────────────────────────────
+
+/**
+ * Enforcement real de Plan.limits.maxUsers (auditoría de pricing del
+ * 23/ago/2026, Track 1 #3) — hasta acá inviteUser() (admin.controller.js)
+ * no leía el plan del negocio en absoluto. Mismo criterio que
+ * checkLeadLimit(): conteo en vivo, no un contador denormalizado — liberar
+ * cupo (desactivar o borrar un usuario) ya funciona solo, sin código nuevo,
+ * porque no hay nada que sincronizar.
+ *
+ * Fallback `?? 1` (no `?? 10` como en leads) a propósito: es el valor real
+ * de Starter, el plan más restrictivo — si el Plan de un negocio no está
+ * bien poblado, fail-closed al mínimo, nunca de más.
+ */
+const checkUserLimit = async (businessId) => {
+  const sub = await getCurrentSubscription(businessId);
+  const limit = sub.plan?.limits?.maxUsers ?? 1;
+  const current = await User.countDocuments({ business: businessId, isActive: true });
+  return { allowed: current < limit, current, limit };
+};
+
 // ─── 10. incrementLeadCount ───────────────────────────────────────────────────
 
 const incrementLeadCount = async (businessId) => {
@@ -471,5 +492,6 @@ module.exports = {
   cancelSubscription,
   checkLeadLimit,
   contarLeadsActivos,
+  checkUserLimit,
   incrementLeadCount, // sin callers hoy (ver checkLeadLimit) — se deja por si sirve para reporting de "leads creados por mes" a futuro
 };
