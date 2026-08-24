@@ -50,7 +50,7 @@ const PLANS = [
     currency:    'USD',
     interval:    'month',
     features:    [
-      '100 leads/mes',
+      '300 leads/mes',
       '3 usuarios',
       'IA Vendedora 24/7',
       'Automatizaciones',
@@ -59,10 +59,14 @@ const PLANS = [
       'Soporte prioritario',
     ],
     limits: {
-      leadsPerMonth:      100,
+      // Track 2 (24/ago/2026): topes subidos según roadmap — leadsPerMonth
+      // 100→300, maxActiveAutomations 20→100. Config real y segura, no
+      // requiere auditoría de población (subir un límite nunca deja a
+      // nadie por encima de él).
+      leadsPerMonth:      300,
       aiEnabled:          true,
       automationsEnabled: true,
-      maxActiveAutomations: 20,
+      maxActiveAutomations: 100,
       whatsappEnabled:    true,
       multiUser:          true,
       maxUsers:           3,
@@ -78,7 +82,7 @@ const PLANS = [
     currency:    'USD',
     interval:    'month',
     features:    [
-      '300 leads/mes',
+      '1000 leads/mes',
       '10 usuarios',
       'IA avanzada con GPT-4o',
       'Automatizaciones ilimitadas',
@@ -88,10 +92,13 @@ const PLANS = [
       'Soporte dedicado',
     ],
     limits: {
-      leadsPerMonth:      300,
+      // Track 2 (24/ago/2026): topes subidos según roadmap — leadsPerMonth
+      // 300→1000, maxActiveAutomations 100→400. Ver mismo comentario en
+      // el plan 'closer' arriba.
+      leadsPerMonth:      1000,
       aiEnabled:          true,
       automationsEnabled: true,
-      maxActiveAutomations: 100,
+      maxActiveAutomations: 400,
       whatsappEnabled:    true,
       multiUser:          true,
       maxUsers:           10,
