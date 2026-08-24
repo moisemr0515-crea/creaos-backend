@@ -21,14 +21,17 @@ const PLANS = [
     currency:    'USD',
     interval:    'month',
     features:    [
-      '5 leads/mes',
+      '10 leads/mes',
       '1 usuario',
       'CRM básico',
       'Pipeline visual',
       'Soporte por email',
     ],
     limits: {
-      leadsPerMonth:      5,
+      // Alineado con el copy de creaosapp.com/plan ("Gestioná hasta 10
+      // oportunidades de venta activas") — antes decía 5 acá, mismatch
+      // encontrado en la auditoría de pricing del 23/ago/2026.
+      leadsPerMonth:      10,
       aiEnabled:          false,
       automationsEnabled: false,
       maxActiveAutomations: 0,
