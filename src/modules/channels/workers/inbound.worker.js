@@ -172,41 +172,50 @@ async function processInboundJob(job) {
     logger.info('[inboundWorker] IA deshabilitada para esta conversación, no se responde', { conversationId: conversation._id.toString() });
 
     // PR-C — mismo disparador ("lead_message") que
-    // webhook.service.js#processGupshupMessage(), duplicado a propósito acá
-    // (ver la nota de diseño arriba de este archivo: ningún helper
-    // compartido entre los dos caminos). Mismo destinatario y mismo
-    // criterio fail-soft por canal.
-    if (lead.assignedTo) {
+    // webhook.service.js#processGupshupMessage(). Portado (Track 1 #5,
+    // auditoría de pricing del 24/ago/2026) — antes solo notificaba a
+    // lead.assignedTo, en silencio si estaba vacío (el caso más común para
+    // un lead nuevo de WhatsApp). Mismo fallback ya validado en producción
+    // del lado legacy: leadService.resolveNotificationRecipients(lead) —
+    // assignedTo si existe, si no, todos los owner/admin activos del
+    // negocio. Cada destinatario y cada canal en su propio try/catch,
+    // fail-soft — un fallo acá nunca debe impedir que se avise al resto.
+    const destinatarios = await leadService.resolveNotificationRecipients(lead);
+    if (destinatarios.length > 0) {
       const previewTexto = event.text.slice(0, 150);
 
-      try {
-        await notificationService.createNotification({
-          business: business._id,
-          user: lead.assignedTo,
-          type: 'info',
-          category: 'lead',
-          title: `Nuevo mensaje de ${lead.name}`,
-          message: previewTexto,
-          meta: { leadId: lead._id, conversationId: conversation._id, event: 'lead_message' },
-        });
-      } catch (err) {
-        logger.error('[inboundWorker] createNotification() falló para lead_message', {
-          leadId: lead._id.toString(),
-          error: err.message,
-        });
-      }
+      for (const userId of destinatarios) {
+        try {
+          await notificationService.createNotification({
+            business: business._id,
+            user: userId,
+            type: 'info',
+            category: 'lead',
+            title: `Nuevo mensaje de ${lead.name}`,
+            message: previewTexto,
+            meta: { leadId: lead._id, conversationId: conversation._id, event: 'lead_message' },
+          });
+        } catch (err) {
+          logger.error('[inboundWorker] createNotification() falló para lead_message', {
+            leadId: lead._id.toString(),
+            userId: userId.toString(),
+            error: err.message,
+          });
+        }
 
-      try {
-        await pushService.sendToUser(lead.assignedTo, {
-          title: `Nuevo mensaje de ${lead.name}`,
-          body: previewTexto,
-          data: { type: 'lead_message', leadId: String(lead._id), conversationId: String(conversation._id) },
-        });
-      } catch (err) {
-        logger.error('[inboundWorker] sendToUser() falló para lead_message', {
-          leadId: lead._id.toString(),
-          error: err.message,
-        });
+        try {
+          await pushService.sendToUser(userId, {
+            title: `Nuevo mensaje de ${lead.name}`,
+            body: previewTexto,
+            data: { type: 'lead_message', leadId: String(lead._id), conversationId: String(conversation._id) },
+          });
+        } catch (err) {
+          logger.error('[inboundWorker] sendToUser() falló para lead_message', {
+            leadId: lead._id.toString(),
+            userId: userId.toString(),
+            error: err.message,
+          });
+        }
       }
     }
 
@@ -246,6 +255,24 @@ async function processInboundJob(job) {
       status: 'pending',
     });
     await enqueueOutbound(outboundEvent._id);
+
+    // Portado de webhook.service.js#processGupshupMessage() (Track 1 #5,
+    // auditoría de pricing del 24/ago/2026). Mismo criterio: fire-and-forget,
+    // no durable a propósito (ver docs/implementation/known-issues.md para
+    // el criterio general de esta sesión sobre qué SÍ necesita BullMQ) — si
+    // el proceso muere a mitad, se pierde sin rastro, y el próximo mensaje
+    // real del lead vuelve a disparar este mismo camino con el historial
+    // más completo. El punto análogo a "el reply ya salió por WhatsApp" del
+    // lado legacy (que espera a channelService.sendMessage() síncrono) es
+    // acá, justo después de encolar el OutboundEvent — este flujo no tiene
+    // un paso de envío síncrono que esperar.
+    aiService.qualifyLead(conversation._id, lead).catch((err) => {
+      logger.error('[inboundWorker] qualifyLead() automático post-respuesta falló (no afecta el reply ya encolado)', {
+        conversationId: conversation._id.toString(),
+        leadId: lead._id.toString(),
+        error: err.message,
+      });
+    });
   }
 
   event.status = 'processed';
