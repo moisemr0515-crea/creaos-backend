@@ -65,7 +65,11 @@ const PLANS = [
       maxActiveAutomations: 20,
       whatsappEnabled:    true,
       multiUser:          true,
-      maxUsers:           3,
+      // Cambio de negocio confirmado por Moises (24/ago/2026) — no es fix
+      // de mismatch, es bajar el límite real: 3→1. Auditoría de población
+      // hecha antes de aplicar: solo CREA OS (cuenta interna) lo superaba,
+      // resuelto aparte subiéndolo a Dominator.
+      maxUsers:           1,
       advancedReports:    false,
     },
     isActive: true,
@@ -94,7 +98,10 @@ const PLANS = [
       maxActiveAutomations: 100,
       whatsappEnabled:    true,
       multiUser:          true,
-      maxUsers:           10,
+      // Cambio de negocio confirmado por Moises (24/ago/2026) — no es fix
+      // de mismatch, es bajar el límite real: 10→3. Ver mismo comentario
+      // en el plan 'closer' arriba.
+      maxUsers:           3,
       advancedReports:    true,
     },
     isActive: true,
