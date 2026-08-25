@@ -36,7 +36,7 @@ describe('channelCredentials.service#resolveCredentials()', () => {
     business = await Business.create({ name: 'Negocio de prueba' });
   });
 
-  test('canal PLATFORM (credentialsReference:"env:...") lee GUPSHUP_API_KEY, sin tocar Mongo ni cambiar de comportamiento', async () => {
+  test('canal PLATFORM (connectionType:"PLATFORM") lee GUPSHUP_API_KEY, sin tocar Mongo ni cambiar de comportamiento', async () => {
     const canalPlatform = await WhatsAppChannel.create({
       tenantId: business._id,
       businessId: business._id,
@@ -46,7 +46,11 @@ describe('channelCredentials.service#resolveCredentials()', () => {
       phoneNumberId: 'pnid-platform',
       status: 'active',
       connectionType: 'PLATFORM',
-      credentialsReference: 'env:GUPSHUP_API_KEY',
+      // credentialsReference queda null a propósito — desde Fase 2.1 ya no es
+      // el discriminador de esta rama (era el prefijo 'env:' como string
+      // libre; ahora el campo es un ObjectId ref real hacia
+      // ChannelCredentials, y ese string ya no es un valor válido). El
+      // discriminador real es connectionType, ver channelCredentials.service.js.
     });
 
     const result = await resolveCredentials(canalPlatform);
@@ -55,6 +59,28 @@ describe('channelCredentials.service#resolveCredentials()', () => {
     // Confirma que ni siquiera se creó/consultó ChannelCredentials para este canal.
     const existentes = await ChannelCredentials.countDocuments({ channel: canalPlatform._id });
     expect(existentes).toBe(0);
+  });
+
+  test('canal PLATFORM con credentialsReference apuntando a un ChannelCredentials real: se ignora igual, connectionType manda', async () => {
+    // credentialsReference es ahora solo informativo/de conveniencia (Fase
+    // 2.1, blueprint §3) — nunca la fuente de verdad de esta rama. Un canal
+    // PLATFORM con ese campo poblado (caso hipotético/de transición) tiene
+    // que seguir yendo por env vars igual, no por ChannelCredentials.
+    const canalPlatform = await WhatsAppChannel.create({
+      tenantId: business._id,
+      businessId: business._id,
+      provider: 'gupshup',
+      providerAccountId: 'CREAOS-conCredsRef',
+      phoneNumber: '+51901781254',
+      phoneNumberId: 'pnid-platform-con-ref',
+      status: 'active',
+      connectionType: 'PLATFORM',
+      credentialsReference: new mongoose.Types.ObjectId(),
+    });
+
+    const result = await resolveCredentials(canalPlatform);
+
+    expect(result).toEqual({ appToken: null, apiKey: 'sk_platform-test-key' });
   });
 
   test('canal DEDICATED con credenciales válidas (appToken + apiKey) descifra correctamente', async () => {
@@ -67,7 +93,7 @@ describe('channelCredentials.service#resolveCredentials()', () => {
       phoneNumberId: 'pnid-dedicated-1',
       status: 'active',
       connectionType: 'DEDICATED',
-      credentialsReference: null, // se setea después de crear ChannelCredentials, en un PR posterior — acá alcanza con no ser "env:..."
+      credentialsReference: null, // se setea después de crear ChannelCredentials, en un PR posterior — acá alcanza con connectionType:'DEDICATED'
     });
 
     const appTokenPlano = 'sk_app-token-real-de-prueba';

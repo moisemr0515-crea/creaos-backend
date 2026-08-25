@@ -78,10 +78,14 @@ const run = async () => {
     status: 'active', // ya está operativo hoy (Caso 6 confirmado en producción)
     onboardingStatus: 'completed',
     connectionType: 'PLATFORM',
-    // Referencias simbólicas, no los secretos en sí — las credenciales reales
-    // siguen viviendo en variables de entorno (GUPSHUP_API_KEY, etc.), igual
-    // que hoy. Este campo es solo para que quede documentado dónde buscarlas.
-    credentialsReference: 'env:GUPSHUP_API_KEY',
+    // Fase 2.1: credentialsReference pasó de String libre a ObjectId ref
+    // hacia ChannelCredentials (whatsappChannel.model.js) — un string ya no
+    // es un valor válido acá. El canal PLATFORM no necesita este campo: el
+    // discriminador que decide "leer de env vars vs. de ChannelCredentials"
+    // es connectionType, no credentialsReference (ver
+    // channelCredentials.service.js#resolveCredentials()). Las credenciales
+    // reales siguen viviendo en variables de entorno (GUPSHUP_API_KEY, etc.).
+    credentialsReference: null,
     webhookReference: `webhookconfig:${webhookConfig._id}`,
     displayName: `${business.name} — Canal de plataforma (compartido/QA)`,
     metadata: {
