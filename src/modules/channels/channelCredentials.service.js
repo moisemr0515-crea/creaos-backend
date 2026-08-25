@@ -21,7 +21,7 @@ const { GUPSHUP_API_KEY } = require('../../config/env');
  * legítima, y solo para el canal PLATFORM (ver nota abajo) — no es un
  * fallo, es que ese campo no existe en el esquema viejo de env vars.
  *
- * @param {{ _id: import('mongoose').Types.ObjectId|string, credentialsReference?: string|null }} channel
+ * @param {{ _id: import('mongoose').Types.ObjectId|string, connectionType: string }} channel
  *   Documento WhatsAppChannel (o su forma plana, .toObject()).
  * @returns {Promise<{ appToken: string|null, apiKey: string }>}
  * @throws {AppError} si el canal DEDICATED no tiene ChannelCredentials, si
@@ -29,7 +29,14 @@ const { GUPSHUP_API_KEY } = require('../../config/env');
  *   corrupto, o una subclave que ya no matchea).
  */
 const resolveCredentials = async (channel) => {
-  if (channel.credentialsReference?.startsWith('env:')) {
+  // Fase 2.1 (blueprint fase-2.1-blueprint-final.md §3): el discriminador
+  // PLATFORM vs. DEDICATED pasa a ser connectionType, no credentialsReference.
+  // Antes se detectaba el canal PLATFORM por el prefijo 'env:' de
+  // credentialsReference — pero ese campo ahora es un ObjectId ref real hacia
+  // ChannelCredentials (whatsappChannel.model.js), así que ese string ya no
+  // existe como valor posible. connectionType ya distinguía exactamente esto
+  // sin ambigüedad, así que pasa a ser la única fuente de verdad de esta rama.
+  if (channel.connectionType === 'PLATFORM') {
     // Compat canal PLATFORM. appToken:null a propósito — GUPSHUP_API_KEY
     // es lo único que gupshup.client.js usa hoy para mandar mensajes; el
     // rol exacto de appToken (¿solo para las Onboarding APIs, no para

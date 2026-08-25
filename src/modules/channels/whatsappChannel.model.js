@@ -39,7 +39,15 @@ const whatsAppChannelSchema = new mongoose.Schema(
     onboardingStatus: { type: String, enum: ONBOARDING_STATUSES, default: 'not_started' },
     connectionType: { type: String, enum: CONNECTION_TYPES, required: true },
 
-    credentialsReference: { type: String, default: null }, // referencia (no el secreto en sí) a dónde viven las credenciales del proveedor
+    // Fase 2.1 (blueprint fase-2.1-blueprint-final.md §1.2/§3): pasa de String
+    // libre a ObjectId ref real hacia ChannelCredentials. El discriminador de
+    // "¿este canal usa env vars (PLATFORM) o ChannelCredentials (DEDICATED)?"
+    // YA NO es este campo (antes: prefijo 'env:') — es connectionType, ver
+    // channelCredentials.service.js#resolveCredentials(). Para canales
+    // PLATFORM este campo queda simplemente null; para DEDICATED, apunta al
+    // ChannelCredentials real. Migración del valor string viejo en
+    // scripts/migrate-credentials-reference.js.
+    credentialsReference: { type: mongoose.Schema.Types.ObjectId, ref: 'ChannelCredentials', default: null },
     webhookReference: { type: String, default: null },
 
     displayName: { type: String, trim: true, default: null },
