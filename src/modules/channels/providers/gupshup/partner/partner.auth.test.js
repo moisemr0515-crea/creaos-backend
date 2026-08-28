@@ -110,8 +110,17 @@ describe('partner.auth', () => {
       let getRedisFresh;
 
       jest.isolateModules(() => {
-        delete process.env.GUPSHUP_PARTNER_EMAIL;
-        delete process.env.GUPSHUP_PARTNER_SECRET;
+        // Vaciar (no `delete`) a propósito: config/env.js vuelve a llamar
+        // dotenv.config() al re-requerirse en este registro aislado, y
+        // dotenv NUNCA pisa una key que ya existe en process.env (aunque
+        // esté vacía) -- pero SÍ la repuebla desde el .env real si la key
+        // fue borrada del todo. Si el .env local tiene credenciales reales
+        // (como las que se agregaron para la verificación en vivo del
+        // hallazgo #1 del contrato), un `delete` haría que este test dejara
+        // de simular el escenario "sin configurar" -- silenciosamente
+        // volvería a tener las credenciales reales y el test fallaría.
+        process.env.GUPSHUP_PARTNER_EMAIL = '';
+        process.env.GUPSHUP_PARTNER_SECRET = '';
 
         jest.doMock('../gupshup.http.client', () => ({
           ...jest.requireActual('../gupshup.http.client'),
