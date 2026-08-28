@@ -174,4 +174,55 @@ describe('partner.apps', () => {
       });
     });
   });
+
+  describe('getEmbedSignupLink()', () => {
+    test('happy path: GET .../onboarding/embed/link con user/lang/regenerate, devuelve link', async () => {
+      httpClient.request.mockResolvedValue({ status: 200, body: { status: 'success', link: 'https://embed.gupshup.io/abc123' }, requestId: 'gsp_x' });
+
+      const result = await partnerApps.getEmbedSignupLink('app-123', { user: 'ana@creaos.com', lang: 'es' }, TOKEN);
+
+      expect(result).toEqual({ link: 'https://embed.gupshup.io/abc123' });
+      expect(httpClient.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: 'GET',
+          path: '/partner/app/app-123/onboarding/embed/link',
+          headers: { token: TOKEN },
+          query: { user: 'ana@creaos.com', lang: 'es', regenerate: false },
+          idempotent: false,
+        })
+      );
+    });
+
+    test('regenerate:true se pasa tal cual cuando se pide explícito', async () => {
+      httpClient.request.mockResolvedValue({ status: 200, body: { status: 'success', link: 'https://embed.gupshup.io/nuevo' }, requestId: 'gsp_x' });
+
+      await partnerApps.getEmbedSignupLink('app-123', { user: 'ana@creaos.com', lang: 'es', regenerate: true }, TOKEN);
+
+      expect(httpClient.request).toHaveBeenCalledWith(
+        expect.objectContaining({ query: { user: 'ana@creaos.com', lang: 'es', regenerate: true } })
+      );
+    });
+
+    test('sin user: AppError 400 local, nunca llama a Gupshup', async () => {
+      await expect(partnerApps.getEmbedSignupLink('app-123', { lang: 'es' }, TOKEN)).rejects.toMatchObject({ statusCode: 400 });
+      expect(httpClient.request).not.toHaveBeenCalled();
+    });
+
+    test('sin lang: AppError 400 local, nunca llama a Gupshup', async () => {
+      await expect(partnerApps.getEmbedSignupLink('app-123', { user: 'ana@creaos.com' }, TOKEN)).rejects.toMatchObject({ statusCode: 400 });
+      expect(httpClient.request).not.toHaveBeenCalled();
+    });
+
+    test('401 Authentication Failed (appId o token incorrecto): se mapea a AppError 401', async () => {
+      httpClient.request.mockRejectedValue(gupshupError(401, { status: 'error', message: 'Authentication Failed' }));
+
+      await expect(partnerApps.getEmbedSignupLink('app-123', { user: 'ana@creaos.com', lang: 'es' }, TOKEN)).rejects.toMatchObject({ statusCode: 401 });
+    });
+
+    test('500 "Max link already sent": se mapea a AppError 502 (falla del proveedor)', async () => {
+      httpClient.request.mockRejectedValue(gupshupError(500, { status: 'error', message: 'Max link already sent' }));
+
+      await expect(partnerApps.getEmbedSignupLink('app-123', { user: 'ana@creaos.com', lang: 'es' }, TOKEN)).rejects.toMatchObject({ statusCode: 502 });
+    });
+  });
 });

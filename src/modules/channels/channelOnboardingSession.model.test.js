@@ -123,6 +123,8 @@ describe('ChannelOnboardingSession (modelo)', () => {
 
     expect(session.gupshup.appId).toBeNull();
     expect(session.gupshup.webhookReference).toBeNull();
+    expect(session.gupshup.embedSignupUrl).toBeNull();
+    expect(session.gupshup.embedSignupUrlGeneratedAt).toBeNull();
 
     expect(session.error.step).toBeNull();
     expect(session.error.message).toBeNull();
