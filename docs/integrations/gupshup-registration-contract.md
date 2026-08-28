@@ -267,3 +267,17 @@ Confirmado entrando directo a `partner.gupshup.io` → Ajustes → Soluciones: e
 - **`obotoembed/whitelist` y `obotoembed/verify` (ya implementados en PR-02, `partner.apps.js#generateEmbedSignupLink()` y `#verifyAndAttachCreditLine()`) quedan documentados como IMPLEMENTADOS PERO RESERVADOS PARA UN FUTURO CASO DE MIGRACIÓN — no se usan ni se deben usar en el flujo principal de PR-05.** Ninguno de los dos se toca ni se borra: siguen ahí, funcionando, para el día que CREA OS necesite migrar un tenant que ya tenía WABA en otro BSP o en modo OBO. **Que quede explícito para quien lea este código en el futuro: que existan y tengan tests en verde no significa que estén integrados al flujo de onboarding activo.**
 - **Solution ID conjunto**: ya existe y está `APPROVED` — no es un prerrequisito pendiente para PR-05, es un hecho ya resuelto del lado de la cuenta de CREA OS.
 - La pregunta de §8 ya cumplió su función — no hace falta reenviarla ni reformularla.
+
+### 9.5 — Pendiente explícito para PR-06 (NO perder esta pregunta)
+
+Al diseñar PR-05 (§10) surgió una pregunta que se decidió **no resolver ahora** — se avanzó con el diseño acotado (opción A) en vez de volver a escribirle a Dali (opción B), a propósito, para no bloquear PR-05. Pero la pregunta sigue siendo real y **hace falta responderla antes de diseñar PR-06 en firme**:
+
+> **El contrato confirmado de `GET .../onboarding/embed/link` no acepta `wabaId` ni `phoneNumberId` como parámetro — solo genera un link para que el customer lo complete del lado de Gupshup. Eso significa que PR-05 (§10) genera el link pero NO tiene ninguna confirmación de que la WABA específica que CREA OS ya resolvió en PR-04 haya quedado efectivamente asociada al `appId` de Gupshup. Pregunta para PR-06: ¿cómo se entera CREA OS de que el customer completó ese link y de que la asociación WABA↔appId ya está lista del lado de Gupshup — webhook (`Set Callback`, mencionado por el Ask AI en §3.1 pero nunca investigado en este documento), polling contra algún endpoint de estado (`Get Waba Info`, `Check Health`), o algo distinto?**
+
+Esta pregunta **no bloqueó PR-05** porque PR-05 solo necesita generar y devolver el link — pero si PR-06 arranca sin resolverla, corre el riesgo de asumir (sin fuente) que "generar el link" equivale a "la WABA ya está lista", que es exactamente el tipo de suposición sin verificar que este documento viene evitando desde el principio.
+
+---
+
+## 10. PR-05 implementado (referencia — el detalle completo vive en el código, no se duplica acá)
+
+Implementado en el branch `feat/gupshup-embed-signup-link`: `partner.apps.js#getEmbedSignupLink()` (nuevo), `POST /api/v1/channels/whatsapp/embedded-signup/complete-gupshup` (nuevo), campos `gupshup.embedSignupUrl`/`embedSignupUrlGeneratedAt` en `ChannelOnboardingSession`. `obotoembed/whitelist`/`verify` quedan intactos, con su JSDoc actualizado para reflejar §9.4. Ver el PR para el diseño completo (shape de funciones, manejo de errores, decisión de reintentos) — no se repite acá para no tener 2 fuentes de verdad sobre lo mismo.
