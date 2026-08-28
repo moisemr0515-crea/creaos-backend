@@ -99,6 +99,14 @@ module.exports = {
   META_APP_SECRET:          process.env.META_APP_SECRET,
   META_GRAPH_API_VERSION:   process.env.META_GRAPH_API_VERSION || 'v19.0',
 
+  // Meta WhatsApp Embedded Signup (Fase 2.1, blueprint maestro §19) — config
+  // ID que se crea en el dashboard de la app de Meta específicamente para el
+  // flujo de Embedded Signup (distinto de META_APP_ID, que ya existe arriba
+  // para otros usos de Meta). Sin default: probablemente no existe todavía
+  // en Railway/local — channel.controller.js#initEmbeddedSignup() lo maneja
+  // como null sin romper la creación de la sesión, ver comentario ahí.
+  META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID: process.env.META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID || '',
+
   // TikTok Ads
   TIKTOK_APP_SECRET: process.env.TIKTOK_APP_SECRET,
 

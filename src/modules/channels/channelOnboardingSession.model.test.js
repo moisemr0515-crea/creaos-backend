@@ -113,6 +113,8 @@ describe('ChannelOnboardingSession (modelo)', () => {
   test('meta/gupshup/error quedan con sus defaults null cuando no se especifican', async () => {
     const session = await ChannelOnboardingSession.create({ tenantId: business._id });
 
+    expect(session.displayName).toBeNull();
+
     expect(session.meta.wabaId).toBeNull();
     expect(session.meta.phoneNumberId).toBeNull();
     expect(session.meta.phoneNumber).toBeNull();
