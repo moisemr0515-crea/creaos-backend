@@ -84,6 +84,12 @@ const channelOnboardingSessionSchema = new mongoose.Schema(
     // channel asignado chocarían entre sí como si fuera un duplicado real.
     channel: { type: mongoose.Schema.Types.ObjectId, ref: 'WhatsAppChannel' },
 
+    // Nombre elegido por el usuario en el paso de init (PR-03, blueprint
+    // maestro §19) — se persiste acá porque WhatsAppChannel todavía no
+    // existe en ese momento; pasa a WhatsAppChannel.displayName recién al
+    // completar el onboarding.
+    displayName: { type: String, trim: true, default: null },
+
     // Datos acumulados durante el flujo, antes de que puedan vivir en
     // WhatsAppChannel.
     meta: {

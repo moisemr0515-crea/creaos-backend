@@ -21,6 +21,7 @@ const adminRoutes        = require('./modules/admin/admin.routes');
 const whatsappRoutes     = require('./modules/whatsapp/whatsapp.routes');
 const missionRoutes      = require('./modules/missions/mission.routes');
 const pushRoutes         = require('./modules/push/push.routes');
+const channelRoutes      = require('./modules/channels/channel.routes');
 
 const app = express();
 
@@ -134,6 +135,7 @@ app.use('/api/v1/admin',              adminRoutes);
 app.use('/api/v1/whatsapp',           whatsappRoutes);
 app.use('/api/v1/missions',           missionRoutes);
 app.use('/api/v1/push',               pushRoutes);
+app.use('/api/v1/channels',           channelRoutes);
 
 // ─── RUTA NO ENCONTRADA ───────────────────────────────────────────────────────
 app.use('*', (req, res) => {
