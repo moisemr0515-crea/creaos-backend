@@ -7,6 +7,8 @@
 const ChannelOnboardingSession = require('./channelOnboardingSession.model');
 const channelCrypto = require('./channelCrypto');
 const metaEmbeddedSignup = require('./providers/meta/metaEmbeddedSignup.service');
+const partnerAuth = require('./providers/gupshup/partner/partner.auth');
+const partnerApps = require('./providers/gupshup/partner/partner.apps');
 const { AppError } = require('../../middleware/error.middleware');
 const { respuestaExito, respuestaError } = require('../../utils/response');
 const logger = require('../../utils/logger');
@@ -63,13 +65,19 @@ function sessionCryptoContext(session) {
  *
  * @param {string} sessionId
  * @param {import('mongoose').Types.ObjectId} tenantId
- * @param {string} expectedStatus
+ * @param {string|string[]} expectedStatus - uno o más estados válidos para
+ *   este paso (ej. `complete-gupshup` acepta `['gupshup_registering',
+ *   'failed']` para poder reintentar tras un fallo transitorio de Gupshup
+ *   sin obligar a reiniciar todo el onboarding — ver esa función para el
+ *   chequeo adicional de que el `failed` sea de este mismo paso).
  * @returns {Promise<import('./channelOnboardingSession.model')>}
  * @throws {AppError} 404 si no existe / no es del tenant.
- * @throws {InvalidSessionStateError} si el estado no es el esperado
- *   (incluye el caso recién expirado, con currentState:'expired').
+ * @throws {InvalidSessionStateError} si el estado no es ninguno de los
+ *   esperados (incluye el caso recién expirado, con currentState:'expired').
  */
 async function loadSessionForStep(sessionId, tenantId, expectedStatus) {
+  const estadosValidos = Array.isArray(expectedStatus) ? expectedStatus : [expectedStatus];
+
   const session = await ChannelOnboardingSession.findOne({ _id: sessionId, tenantId });
   if (!session) {
     throw new AppError('Sesión de onboarding no encontrada', 404);
@@ -80,7 +88,7 @@ async function loadSessionForStep(sessionId, tenantId, expectedStatus) {
     await session.save();
   }
 
-  if (session.status !== expectedStatus) {
+  if (!estadosValidos.includes(session.status)) {
     throw new InvalidSessionStateError(session.status);
   }
 
@@ -93,13 +101,15 @@ async function markSessionFailed(session, step, message) {
   await session.save();
 }
 
-// Shape de éxito compartido por /code y /callback — nunca el documento
-// completo, así ni por descuido puede viajar un token/secret acá.
-function respuestaSesion(res, session, { message } = {}) {
+// Shape de éxito compartido por /code, /callback y /complete-gupshup —
+// nunca el documento completo, así ni por descuido puede viajar un
+// token/secret acá. `extra` es para campos puntuales no sensibles que sí
+// hace falta devolver (ej. embedSignupUrl en /complete-gupshup).
+function respuestaSesion(res, session, { message, extra = {} } = {}) {
   return respuestaExito(res, {
     statusCode: 200,
     message,
-    data: { sessionId: session._id, state: session.state, expiresAt: session.expiresAt },
+    data: { sessionId: session._id, state: session.state, expiresAt: session.expiresAt, ...extra },
   });
 }
 
@@ -310,4 +320,108 @@ const callbackEmbeddedSignup = async (req, res, next) => {
   }
 };
 
-module.exports = { initEmbeddedSignup, codeEmbeddedSignup, callbackEmbeddedSignup };
+// ─── POST /api/v1/channels/whatsapp/embedded-signup/complete-gupshup ─────────
+// PR-05 del blueprint maestro (§55, redefinido esta sesión — ver
+// docs/integrations/gupshup-registration-contract.md §9). Registra la app
+// de Gupshup para esta sesión (ya autorizada por Meta en PR-04, estado
+// gupshup_registering) y genera el link de embed signup real. NO crea
+// WhatsAppChannel/ChannelCredentials — eso es PR-06.
+//
+// Usa GET .../onboarding/embed/link (partnerApps.getEmbedSignupLink) —
+// confirmado como el endpoint correcto para altas 100% nuevas con 2
+// fuentes independientes (un contacto humano de Gupshup + su Ask AI, ver
+// el contrato doc §9). generateEmbedSignupLink()/verifyAndAttachCreditLine()
+// (obotoembed/whitelist+verify) NO se usan acá — quedan reservados para un
+// futuro caso de migración.
+//
+// Pendiente para cuando se diseñe PR-06 (documentado, no resuelto acá):
+// cómo se entera CREA OS de que el customer completó este link del lado de
+// Gupshup — ¿webhook, polling, o alguna otra señal? Ver contrato doc §9,
+// opción (B) que quedó pendiente a propósito.
+
+const APP_NAME_PREFIX = 'creaos';
+
+// Determinístico: el mismo tenant siempre pide el mismo nombre de app — un
+// retry de createApp() choca con 409 "Bot Already Exists" en vez de crear
+// una app duplicada. Puro alfanumérico a propósito: el guion cuenta como
+// "carácter especial" y Gupshup lo rechaza (confirmado en vivo en PR-02) —
+// el tenantId (ObjectId, 24 hex) ya lo garantiza sin necesitar separadores.
+function nombreAppGupshup(tenantId) {
+  return `${APP_NAME_PREFIX}${tenantId}`;
+}
+
+const completeGupshupEmbeddedSignup = async (req, res, next) => {
+  try {
+    const { sessionId } = req.body || {};
+    if (!sessionId || typeof sessionId !== 'string') throw new AppError('sessionId es requerido', 400);
+
+    let session;
+    try {
+      // 'failed' se acepta también acá (a diferencia de /code y /callback)
+      // porque un fallo transitorio de Gupshup en este paso es reintentable
+      // sin rehacer el popup de Meta — pero solo si el fallo fue DE ESTE
+      // paso (chequeo explícito abajo), no de un paso anterior de Meta.
+      session = await loadSessionForStep(sessionId, req.businessId, ['gupshup_registering', 'failed']);
+    } catch (err) {
+      if (err instanceof InvalidSessionStateError) return responderEstadoInvalido(res, err);
+      throw err;
+    }
+
+    if (session.status === 'failed' && session.error?.step !== 'gupshup_registration') {
+      // Falló en un paso anterior (Meta) — ese SÍ requiere reiniciar desde
+      // /init, no es este endpoint el que lo puede resolver.
+      return responderEstadoInvalido(res, new InvalidSessionStateError('failed'));
+    }
+
+    let token;
+    try {
+      token = await partnerAuth.getValidToken();
+
+      if (!session.gupshup.appId) {
+        const { appId } = await partnerApps.createApp({ name: nombreAppGupshup(req.businessId) }, token);
+        session.gupshup.appId = appId;
+        // Se guarda ANTES de seguir — si algo de acá para abajo falla, un
+        // retry no vuelve a crear la app (ver el chequeo `if` de arriba).
+        await session.save();
+      }
+
+      await partnerApps.setContactDetails(
+        session.gupshup.appId,
+        { contactEmail: req.user.email, contactName: req.user.name, contactNumber: session.meta.phoneNumber },
+        token
+      );
+
+      const { link } = await partnerApps.getEmbedSignupLink(session.gupshup.appId, { user: req.user.email, lang: 'es' }, token);
+      session.gupshup.embedSignupUrl = link;
+      session.gupshup.embedSignupUrlGeneratedAt = new Date();
+
+      // Si se llegó hasta acá reintentando desde 'failed' (chequeo de
+      // arriba ya garantizó que ese fallo fue DE ESTE paso), el intento
+      // actual tuvo éxito — se limpia el estado de error y se vuelve a
+      // 'gupshup_registering'. Sin este reset, un retry exitoso dejaría la
+      // sesión marcada 'failed' para siempre a pesar de haber funcionado.
+      session.status = 'gupshup_registering';
+      session.error = { step: null, message: null };
+      await session.save();
+    } catch (err) {
+      await markSessionFailed(session, 'gupshup_registration', err.message);
+      throw err;
+    }
+
+    logger.info('[channel.controller] App de Gupshup registrada, embed signup link generado', {
+      tenantId: String(req.businessId),
+      sessionId: String(session._id),
+      appId: session.gupshup.appId,
+    });
+
+    // Sigue en gupshup_registering — completar el canal real es PR-06.
+    return respuestaSesion(res, session, {
+      message: 'Link de registro de Gupshup generado',
+      extra: { embedSignupUrl: session.gupshup.embedSignupUrl },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+module.exports = { initEmbeddedSignup, codeEmbeddedSignup, callbackEmbeddedSignup, completeGupshupEmbeddedSignup };

@@ -1,13 +1,14 @@
 // Test real (Jest, commiteado) de channel.controller.js — PR-03
 // (initEmbeddedSignup) + PR-04 (codeEmbeddedSignup/callbackEmbeddedSignup)
-// del blueprint maestro
-// (CREA_OS_WhatsApp_Gupshup_Multitenant_Architecture_v1.md §19-22).
+// + PR-05 (completeGupshupEmbeddedSignup) del blueprint maestro
+// (CREA_OS_WhatsApp_Gupshup_Multitenant_Architecture_v1.md §19-22, §55).
 //
 // Se invoca el controller directamente con req/res mockeados (mismo patrón
 // que admin.controller.inviteUser.test.js), contra Mongo real, en una base
-// propia de este archivo. metaEmbeddedSignup.service.js se mockea entero
-// (jest.mock) — nunca pega contra Meta real; ese servicio ya tiene sus
-// propios tests aislados (metaEmbeddedSignup.service.test.js).
+// propia de este archivo. metaEmbeddedSignup.service.js y los módulos del
+// wrapper de Gupshup Partner (partner.auth/partner.apps) se mockean enteros
+// (jest.mock) — nunca pegan contra Meta/Gupshup real; ya tienen sus propios
+// tests aislados.
 //
 // META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID se vacía y CHANNEL_CREDENTIALS_KEY
 // se genera ANTES de requerir config/env.js/channelCrypto.js (misma razón
@@ -19,6 +20,8 @@ process.env.META_APP_ID = process.env.META_APP_ID || 'meta-app-id-de-prueba';
 process.env.CHANNEL_CREDENTIALS_KEY = process.env.CHANNEL_CREDENTIALS_KEY || require('crypto').randomBytes(32).toString('hex');
 
 jest.mock('./providers/meta/metaEmbeddedSignup.service');
+jest.mock('./providers/gupshup/partner/partner.auth');
+jest.mock('./providers/gupshup/partner/partner.apps');
 
 const mongoose = require('mongoose');
 const Business = require('../businesses/business.model');
@@ -26,7 +29,14 @@ const ChannelOnboardingSession = require('./channelOnboardingSession.model');
 const channelCrypto = require('./channelCrypto');
 const logger = require('../../utils/logger');
 const metaEmbeddedSignup = require('./providers/meta/metaEmbeddedSignup.service');
-const { initEmbeddedSignup, codeEmbeddedSignup, callbackEmbeddedSignup } = require('./channel.controller');
+const partnerAuth = require('./providers/gupshup/partner/partner.auth');
+const partnerApps = require('./providers/gupshup/partner/partner.apps');
+const {
+  initEmbeddedSignup,
+  codeEmbeddedSignup,
+  callbackEmbeddedSignup,
+  completeGupshupEmbeddedSignup,
+} = require('./channel.controller');
 
 const MONGO_URI = 'mongodb://localhost:27017/creaos_test_channel_controller';
 
@@ -530,5 +540,253 @@ describe('channel.controller#codeEmbeddedSignup() / #callbackEmbeddedSignup()', 
       expect(final.meta.phoneNumber).toBe('+16315555556');
       expect(channelCrypto.decrypt(final.meta.accessTokenCipher, `onboarding:${final._id}`)).toBe('token-del-flujo-completo');
     });
+  });
+});
+
+describe('channel.controller#completeGupshupEmbeddedSignup()', () => {
+  let business;
+  const requester = { email: 'ana@creaos.test', name: 'Ana Fundadora' };
+
+  beforeAll(async () => {
+    await mongoose.connect(MONGO_URI);
+  });
+
+  afterAll(async () => {
+    await ChannelOnboardingSession.deleteMany({});
+    await Business.deleteMany({});
+    await mongoose.disconnect();
+  });
+
+  beforeEach(async () => {
+    await ChannelOnboardingSession.deleteMany({});
+    business = await Business.create({ name: 'Negocio de prueba' });
+    jest.clearAllMocks();
+  });
+
+  // Helper — sesión ya en 'gupshup_registering', con phoneNumber ya
+  // resuelto (equivalente a lo que deja callbackEmbeddedSignup()).
+  function crearSesionGupshupRegistering(overrides = {}) {
+    return ChannelOnboardingSession.create({
+      tenantId: business._id,
+      status: 'gupshup_registering',
+      meta: { wabaId: 'waba-real', phoneNumberId: 'pnid-real', phoneNumber: '+16315555556' },
+      ...overrides,
+    });
+  }
+
+  test('happy path (primera vez, sin appId todavía): crea la app, setea contacto, genera el link, sesión sigue en gupshup_registering', async () => {
+    const session = await crearSesionGupshupRegistering();
+    partnerAuth.getValidToken.mockResolvedValue('partner-token-real');
+    partnerApps.createApp.mockResolvedValue({ appId: 'gs-app-real' });
+    partnerApps.setContactDetails.mockResolvedValue({ status: 'success' });
+    partnerApps.getEmbedSignupLink.mockResolvedValue({ link: 'https://embed.gupshup.io/xyz' });
+
+    const req = { businessId: business._id, user: requester, body: { sessionId: String(session._id) } };
+    const res = mockRes();
+    const next = jest.fn();
+
+    await completeGupshupEmbeddedSignup(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(200);
+    const body = res.json.mock.calls[0][0];
+    expect(Object.keys(body.data).sort()).toEqual(['embedSignupUrl', 'expiresAt', 'sessionId', 'state']);
+    expect(body.data.embedSignupUrl).toBe('https://embed.gupshup.io/xyz');
+
+    expect(partnerApps.createApp).toHaveBeenCalledWith(
+      { name: `creaos${business._id}` },
+      'partner-token-real'
+    );
+    expect(partnerApps.setContactDetails).toHaveBeenCalledWith(
+      'gs-app-real',
+      { contactEmail: 'ana@creaos.test', contactName: 'Ana Fundadora', contactNumber: '+16315555556' },
+      'partner-token-real'
+    );
+    expect(partnerApps.getEmbedSignupLink).toHaveBeenCalledWith(
+      'gs-app-real',
+      { user: 'ana@creaos.test', lang: 'es' },
+      'partner-token-real'
+    );
+
+    const refrescada = await ChannelOnboardingSession.findById(session._id);
+    expect(refrescada.status).toBe('gupshup_registering'); // sin transición nueva -- PR-06 la completa
+    expect(refrescada.gupshup.appId).toBe('gs-app-real');
+    expect(refrescada.gupshup.embedSignupUrl).toBe('https://embed.gupshup.io/xyz');
+    expect(refrescada.gupshup.embedSignupUrlGeneratedAt).toBeInstanceOf(Date);
+  });
+
+  test('nombre de app determinístico: NO lleva guiones ni separadores (el tenantId ObjectId alcanza para unicidad)', async () => {
+    const session = await crearSesionGupshupRegistering();
+    partnerAuth.getValidToken.mockResolvedValue('token');
+    partnerApps.createApp.mockResolvedValue({ appId: 'gs-app-real' });
+    partnerApps.setContactDetails.mockResolvedValue({ status: 'success' });
+    partnerApps.getEmbedSignupLink.mockResolvedValue({ link: 'https://embed.gupshup.io/xyz' });
+
+    await completeGupshupEmbeddedSignup(
+      { businessId: business._id, user: requester, body: { sessionId: String(session._id) } },
+      mockRes(),
+      jest.fn()
+    );
+
+    const [{ name }] = partnerApps.createApp.mock.calls[0];
+    expect(name).not.toMatch(/-/);
+    expect(name.startsWith('creaos')).toBe(true);
+  });
+
+  test('ya tiene appId de un intento previo: NO vuelve a llamar createApp(), solo setContactDetails + getEmbedSignupLink', async () => {
+    const session = await crearSesionGupshupRegistering({ gupshup: { appId: 'gs-app-ya-creada' } });
+    partnerAuth.getValidToken.mockResolvedValue('token');
+    partnerApps.setContactDetails.mockResolvedValue({ status: 'success' });
+    partnerApps.getEmbedSignupLink.mockResolvedValue({ link: 'https://embed.gupshup.io/xyz' });
+
+    await completeGupshupEmbeddedSignup(
+      { businessId: business._id, user: requester, body: { sessionId: String(session._id) } },
+      mockRes(),
+      jest.fn()
+    );
+
+    expect(partnerApps.createApp).not.toHaveBeenCalled();
+    expect(partnerApps.setContactDetails).toHaveBeenCalledWith('gs-app-ya-creada', expect.any(Object), 'token');
+  });
+
+  test('sessionId inexistente: 404, no llama a Gupshup para nada', async () => {
+    const req = { businessId: business._id, user: requester, body: { sessionId: new mongoose.Types.ObjectId().toString() } };
+    const res = mockRes();
+    const next = jest.fn();
+
+    await completeGupshupEmbeddedSignup(req, res, next);
+
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 404 }));
+    expect(partnerAuth.getValidToken).not.toHaveBeenCalled();
+  });
+
+  test('aislamiento: sesión de OTRO tenant devuelve 404', async () => {
+    const otroNegocio = await Business.create({ name: 'Otro negocio' });
+    const sesionAjena = await crearSesionGupshupRegistering({ tenantId: otroNegocio._id });
+
+    const req = { businessId: business._id, user: requester, body: { sessionId: String(sesionAjena._id) } };
+    const res = mockRes();
+    const next = jest.fn();
+
+    await completeGupshupEmbeddedSignup(req, res, next);
+
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 404 }));
+  });
+
+  test('estado incorrecto (todavía en meta_authorized, falta /callback): 409 INVALID_SESSION_STATE', async () => {
+    const session = await ChannelOnboardingSession.create({ tenantId: business._id, status: 'meta_authorized' });
+
+    const req = { businessId: business._id, user: requester, body: { sessionId: String(session._id) } };
+    const res = mockRes();
+    const next = jest.fn();
+
+    await completeGupshupEmbeddedSignup(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(409);
+    const body = res.json.mock.calls[0][0];
+    expect(body.errors).toEqual({ code: 'INVALID_SESSION_STATE', currentState: 'meta_authorized' });
+    expect(partnerAuth.getValidToken).not.toHaveBeenCalled();
+  });
+
+  test('sesión expirada: 409 INVALID_SESSION_STATE currentState:"expired"', async () => {
+    const session = await crearSesionGupshupRegistering();
+    await ChannelOnboardingSession.updateOne({ _id: session._id }, { expiresAt: new Date(Date.now() - 1000) });
+
+    const req = { businessId: business._id, user: requester, body: { sessionId: String(session._id) } };
+    const res = mockRes();
+    const next = jest.fn();
+
+    await completeGupshupEmbeddedSignup(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json.mock.calls[0][0].errors).toEqual({ code: 'INVALID_SESSION_STATE', currentState: 'expired' });
+  });
+
+  test('error de Gupshup al crear la app: se propaga, sesión queda failed con error.step:"gupshup_registration"', async () => {
+    const session = await crearSesionGupshupRegistering();
+    partnerAuth.getValidToken.mockResolvedValue('token');
+    const errorDeGupshup = Object.assign(new Error('Bot Already Exists'), { statusCode: 409 });
+    partnerApps.createApp.mockRejectedValue(errorDeGupshup);
+
+    const req = { businessId: business._id, user: requester, body: { sessionId: String(session._id) } };
+    const res = mockRes();
+    const next = jest.fn();
+
+    await completeGupshupEmbeddedSignup(req, res, next);
+
+    expect(next).toHaveBeenCalledWith(errorDeGupshup);
+
+    const refrescada = await ChannelOnboardingSession.findById(session._id);
+    expect(refrescada.status).toBe('failed');
+    expect(refrescada.error.step).toBe('gupshup_registration');
+    expect(refrescada.error.message).toBe('Bot Already Exists');
+  });
+
+  test('reintento tras un fallo DE ESTE MISMO paso: la sesión "failed" con error.step:"gupshup_registration" SÍ se puede reintentar, y no repite createApp() si el appId ya había quedado guardado', async () => {
+    const session = await crearSesionGupshupRegistering({
+      status: 'failed',
+      error: { step: 'gupshup_registration', message: 'Internal Server Error' },
+      gupshup: { appId: 'gs-app-de-intento-anterior' },
+    });
+    partnerAuth.getValidToken.mockResolvedValue('token');
+    partnerApps.setContactDetails.mockResolvedValue({ status: 'success' });
+    partnerApps.getEmbedSignupLink.mockResolvedValue({ link: 'https://embed.gupshup.io/reintento' });
+
+    const req = { businessId: business._id, user: requester, body: { sessionId: String(session._id) } };
+    const res = mockRes();
+    const next = jest.fn();
+
+    await completeGupshupEmbeddedSignup(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(partnerApps.createApp).not.toHaveBeenCalled();
+
+    const refrescada = await ChannelOnboardingSession.findById(session._id);
+    expect(refrescada.status).toBe('gupshup_registering');
+    expect(refrescada.gupshup.embedSignupUrl).toBe('https://embed.gupshup.io/reintento');
+  });
+
+  test('sesión "failed" de un paso ANTERIOR (Meta, no Gupshup): NO se puede reintentar acá, 409 INVALID_SESSION_STATE', async () => {
+    const session = await crearSesionGupshupRegistering({
+      status: 'failed',
+      error: { step: 'phone_resolution', message: 'phoneNumberId no encontrado' },
+    });
+
+    const req = { businessId: business._id, user: requester, body: { sessionId: String(session._id) } };
+    const res = mockRes();
+    const next = jest.fn();
+
+    await completeGupshupEmbeddedSignup(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json.mock.calls[0][0].errors).toEqual({ code: 'INVALID_SESSION_STATE', currentState: 'failed' });
+    expect(partnerAuth.getValidToken).not.toHaveBeenCalled();
+  });
+
+  test('sessionId faltante: 400, no toca Gupshup', async () => {
+    const req = { businessId: business._id, user: requester, body: {} };
+    const res = mockRes();
+    const next = jest.fn();
+
+    await completeGupshupEmbeddedSignup(req, res, next);
+
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 400 }));
+    expect(partnerAuth.getValidToken).not.toHaveBeenCalled();
+  });
+
+  test('la respuesta NUNCA expone el token de partner ni datos de ChannelCredentials', async () => {
+    const session = await crearSesionGupshupRegistering();
+    partnerAuth.getValidToken.mockResolvedValue('partner-token-super-secreto');
+    partnerApps.createApp.mockResolvedValue({ appId: 'gs-app-real' });
+    partnerApps.setContactDetails.mockResolvedValue({ status: 'success' });
+    partnerApps.getEmbedSignupLink.mockResolvedValue({ link: 'https://embed.gupshup.io/xyz' });
+
+    const req = { businessId: business._id, user: requester, body: { sessionId: String(session._id) } };
+    const res = mockRes();
+    await completeGupshupEmbeddedSignup(req, res, jest.fn());
+
+    const serializado = JSON.stringify(res.json.mock.calls[0][0]);
+    expect(serializado).not.toMatch(/partner-token-super-secreto|accessTokenCipher|ciphertext/i);
   });
 });

@@ -103,6 +103,15 @@ const channelOnboardingSessionSchema = new mongoose.Schema(
     gupshup: {
       appId: { type: String, default: null }, // -> WhatsAppChannel.providerAppId al completar
       webhookReference: { type: String, default: null }, // -> WhatsAppChannel.webhookReference al completar
+      // PR-05 (blueprint maestro §55, redefinido esta sesión — ver
+      // docs/integrations/gupshup-registration-contract.md §9): link real
+      // de GET /partner/app/{appId}/onboarding/embed/link, que el usuario
+      // completa del lado de Gupshup para terminar de asociar la WABA a
+      // este appId. Válido 5 días (documentado por Gupshup) — de ahí
+      // embedSignupUrlGeneratedAt, para saber si conviene pedir uno nuevo
+      // antes de que Gupshup rechace un link vencido.
+      embedSignupUrl: { type: String, default: null },
+      embedSignupUrlGeneratedAt: { type: Date, default: null },
     },
 
     error: {
