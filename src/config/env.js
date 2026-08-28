@@ -149,6 +149,15 @@ module.exports = {
   // X-Gupshup-Webhook-Token — Gupshup no ofrece Basic Auth, solo un header personalizado libre.
   GUPSHUP_WEBHOOK_HEADER: process.env.GUPSHUP_WEBHOOK_HEADER || 'x-gupshup-webhook-token', GUPSHUP_WEBHOOK_TOKEN: process.env.GUPSHUP_WEBHOOK_TOKEN || '',
 
+  // Gupshup Partner API (control plane — onboarding de tenants nuevos vía
+  // Embedded Signup, distinto del apikey de mensajería de arriba). Credenciales
+  // de servidor del Partner Portal (email + client secret), NO por-tenant.
+  // Sin default: si faltan, partner.auth.js#getValidToken() falla ruidoso
+  // recién cuando algo intenta loguear, no bloquea el arranque del servidor
+  // (la mensajería existente no depende de esto).
+  GUPSHUP_PARTNER_EMAIL:  process.env.GUPSHUP_PARTNER_EMAIL || '',
+  GUPSHUP_PARTNER_SECRET: process.env.GUPSHUP_PARTNER_SECRET || '',
+
   // Feature flag temporal (Implementation Blueprint, Decisión 3) — corte del
   // webhook de Gupshup hacia el nuevo Inbound Gateway (sub-fase 1.c en
   // adelante). Default OFF: si la variable no existe (estado actual en
