@@ -7,6 +7,8 @@
 
 **Adelanto del resultado**: la pregunta original quedó respondida con alta confianza (**NO necesita nada de eso**, ver §2) — pero la investigación encontró algo más importante y no anticipado: **hay evidencia real de que `obotoembed/whitelist`/`verify` (los endpoints que ya implementó PR-02) podrían no ser los correctos para el caso de CREA OS.** Ver §3, marcado como el hallazgo más importante de este documento.
 
+**✅ ACTUALIZACIÓN — gap cerrado con fuentes directas (ver §9)**: la contradicción de §3/§6 quedó resuelta, ya no por interpretación de IA sino por confirmación escrita de un contacto humano de Gupshup (Dali) + verificación directa en el propio Partner Portal. Conclusión: **`GET /partner/app/{appId}/onboarding/embed/link` (Generate Embed Signed Link) es el endpoint correcto para altas nuevas. `obotoembed/whitelist`/`verify` (PR-02) quedan reservados para un futuro caso de migración — no se usan en el flujo principal de PR-05.** Ver §9 para el detalle completo con las 3 fuentes.
+
 ---
 
 ## 0. Auditoría del código y contrato ya existentes en el repo
@@ -138,11 +140,9 @@ Solo se pudo obtener información de estos artículos vía **snippets de WebSear
 1. `obotoembed/whitelist` y `obotoembed/verify` **no necesitan el access token de Meta, ni wabaId, ni phoneNumberId** — solo `appId` + token de partner. Confirmado por WebFetch directo del spec + Ask AI de Gupshup, coincidentes.
 2. Existe un prerrequisito de **"Solution ID conjunto"** (CREA OS + Gupshup, registrado en Meta Developer Portal + aprobado en el Partner Portal de Gupshup) que no estaba documentado en ningún blueprint anterior — y que probablemente es el mecanismo real detrás del punto 1.
 
-### Gap sin resolver — el más importante
-3. **No está confirmado si `obotoembed/whitelist`/`verify` (ya implementados en PR-02) son siquiera los endpoints correctos para el caso de CREA OS** (tenant nuevo, sin WABA previa en Gupshup) — vs. `Generate Embed Signed Link` (`GET .../onboarding/embed/link`, en la categoría general de onboarding, no en "OBO to Embed flow"). Evidencia real de ambos lados:
-   - A favor de que `whitelist`/`verify` SÍ sirven para onboarding nuevo: son los únicos endpoints que devuelven un `embedSignupUrl` (nombre que sugiere directamente el flujo de Meta Embedded Signup) y que mencionan explícitamente "embedded onboarding flow" en su descripción.
-   - En contra: viven bajo una categoría llamada literalmente "OBO to Embed flow" (migración), y el propio Ask AI de Gupshup, preguntado directo, dijo que la documentación general de onboarding para tenants nuevos apunta a `Generate Embed Signed Link`, no a estos 2.
-4. **No está confirmado si CREA OS ya tiene un Solution ID conjunto aprobado con Gupshup** — depende de acceso al Partner Portal/Meta Developer Portal que no está disponible desde este entorno.
+### ~~Gap sin resolver~~ — RESUELTO, ver §9
+3. ~~No está confirmado si `obotoembed/whitelist`/`verify`...~~ **Resuelto (§9): son para migración, no para altas nuevas. El endpoint correcto es `Generate Embed Signed Link`.**
+4. ~~No está confirmado si CREA OS ya tiene un Solution ID conjunto aprobado...~~ **Resuelto (§9): sí, `1608486337515105` ("MyrelCompany Gupshup OD"), estado APPROVED, verificado directo en el Partner Portal.**
 
 ### ¿Amerita contactar a Dali?
 
@@ -230,3 +230,40 @@ Si Dali confirma que `Generate Embed Signed Link` es el endpoint correcto, esto 
 > Cualquier documentación interna, ejemplo de código, o llamada rápida que nos ayude a confirmar esto nos desbloquea para terminar de construir el flujo de alta automática. ¡Gracias!
 
 Esta versión reemplaza a la de §6 como la pregunta a enviar — la de §6 queda como registro histórico de cómo evolucionó la pregunta a lo largo de la investigación.
+
+**Nota (ver §9): esta pregunta ya fue enviada y respondida — se deja intacta como registro de qué exactamente se preguntó, no como una acción pendiente.**
+
+---
+
+## 9. CONFIRMACIÓN FINAL — 3 fuentes independientes, gap cerrado (28 ago 2026)
+
+A diferencia de todo lo anterior en este documento (interpretación de un asistente de IA sobre su propia documentación), esta sección se apoya en **una fuente humana directa** más una **verificación propia de primera mano** — el nivel de confianza más alto que este documento va a tener en ningún otro punto.
+
+### 9.1 — Dali (contacto humano de Gupshup, por WhatsApp Business) — fuente humana directa
+
+Confirmó por escrito:
+- El flujo correcto para un alta 100% nueva es la **Opción B: `GET /partner/app/{appId}/onboarding/embed/link`** (Generate Embed Signed Link).
+- El Solution ID se revisa en `partner.gupshup.io` → **Ajustes → Soluciones**.
+
+**Naturaleza de esta fuente**: humana, directa, por escrito — no es una inferencia de IA sobre documentación pública. Es la fuente de mayor peso de todo este documento.
+
+### 9.2 — Ask AI de Gupshup, consultado por separado el mismo día
+
+Confirmó lo mismo, citando documentación oficial: para altas nuevas usar `Generate Embed Signed Link`; `obotoembed/whitelist` + `verify` son específicamente para el flujo "OBO to Embed" (migración desde otro BSP, o desde un número que ya estaba en modo OBO) — no para onboarding fresco. También citó el prerrequisito de Solution ID aprobado + wallet de Gupshup, consistente con §4.
+
+**Naturaleza de esta fuente**: la misma que en §2/§3/§7 (interpretación de IA sobre documentación) — pero ahora **coincide con una fuente humana independiente (§9.1)**, lo que la corrobora en vez de dejarla como la única base de la conclusión.
+
+### 9.3 — Verificación propia, directa, en el Partner Portal
+
+Confirmado entrando directo a `partner.gupshup.io` → Ajustes → Soluciones: el Solution ID de CREA OS (**"MyrelCompany Gupshup OD"**, ID `1608486337515105`) figura con **Estado: APPROVED**.
+
+**Naturaleza de esta fuente**: observación directa de primera mano sobre el propio Partner Portal — no es documentación pública ni interpretación de IA, es el estado real de la cuenta de CREA OS.
+
+### 9.4 — Conclusión y qué cambia en el repo
+
+**No hay ningún bloqueante externo restante** para diseñar PR-05 en firme:
+
+- **Endpoint correcto para PR-05**: `GET /partner/app/{appId}/onboarding/embed/link` (Generate Embed Signed Link) — confirmado por 2 fuentes independientes (§9.1 humana + §9.2 IA), consistente con la evidencia estructural ya reunida en §3.2/§7.
+- **`obotoembed/whitelist` y `obotoembed/verify` (ya implementados en PR-02, `partner.apps.js#generateEmbedSignupLink()` y `#verifyAndAttachCreditLine()`) quedan documentados como IMPLEMENTADOS PERO RESERVADOS PARA UN FUTURO CASO DE MIGRACIÓN — no se usan ni se deben usar en el flujo principal de PR-05.** Ninguno de los dos se toca ni se borra: siguen ahí, funcionando, para el día que CREA OS necesite migrar un tenant que ya tenía WABA en otro BSP o en modo OBO. **Que quede explícito para quien lea este código en el futuro: que existan y tengan tests en verde no significa que estén integrados al flujo de onboarding activo.**
+- **Solution ID conjunto**: ya existe y está `APPROVED` — no es un prerrequisito pendiente para PR-05, es un hecho ya resuelto del lado de la cuenta de CREA OS.
+- La pregunta de §8 ya cumplió su función — no hace falta reenviarla ni reformularla.
