@@ -1,17 +1,21 @@
 # Contrato del Partner API de Gupshup — verificado
 
-**Última verificación:** 28 de agosto de 2026.
-**Método de verificación:** consulta a la herramienta "Ask AI" de `partner-docs.gupshup.io` (páginas de referencia individuales de cada endpoint, incluyendo su spec OpenAPI subyacente) + prueba manual real de `POST /partner/account/login` con las credenciales de servidor de CREA OS.
+**Última verificación:** 28 de agosto de 2026 (verificación documental) + 28 de agosto de 2026 (prueba real en vivo de `login()` + `createApp()`, ver hallazgo #1 abajo).
+**Método de verificación:** consulta a la herramienta "Ask AI" de `partner-docs.gupshup.io` (páginas de referencia individuales de cada endpoint, incluyendo su spec OpenAPI subyacente) + prueba manual real de `POST /partner/account/login` y `POST /partner/app` con las credenciales de servidor de CREA OS.
 **Regla de ingeniería (blueprint maestro §74):** cuando exista diferencia entre un documento histórico del repo y el Partner Portal vigente, gana el contrato vigente del portal — este documento se actualiza antes de codificar, no al revés.
 **Alcance de este documento:** los endpoints que consume `src/modules/channels/providers/gupshup/partner/partner.auth.js` y `partner.apps.js` (PR-02). `partner.customers.js`, `partner.waba.js`, `partner.webhooks.js` y `partner.health.js` quedan para PRs posteriores — cuando se implementen, este documento se extiende, no se reescribe.
 
 ---
 
-## ⚠️ Hallazgo importante: el Partner API NO usa un header de auth uniforme
+## ✅ Hallazgo #1 — CONFIRMADO EN VIVO: el header `token` es correcto (al menos para login + createApp)
 
-Confirmado en múltiples endpoints: la documentación de Gupshup se contradice a sí misma entre su **tabla de parámetros en prosa** (que en varios endpoints dice `Authorization`) y su **spec OpenAPI** subyacente (que en esos mismos endpoints dice `token`) — la página de "Link App with Partner", por ejemplo, muestra ambas cosas en la misma página.
+Confirmado en múltiples endpoints (documentalmente): la documentación de Gupshup se contradice a sí misma entre su **tabla de parámetros en prosa** (que en varios endpoints dice `Authorization`) y su **spec OpenAPI** subyacente (que en esos mismos endpoints dice `token`) — la página de "Link App with Partner", por ejemplo, muestra ambas cosas en la misma página.
 
-**Decisión tomada para PR-02**: se usa el header `token` en los 5 endpoints de `partner.apps.js`, por ser lo único consistente en el spec OpenAPI de los 5. Esto **no está confirmado con una llamada real** contra `/partner/app`, `/partner/app/{appId}/onboarding/contact`, `/partner/app/{appId}/obotoembed/whitelist`, `/partner/account/api/appLink` ni `/partner/app/{appId}/obotoembed/verify` — la única llamada real hecha para esta verificación fue el login. **Antes de usar estas funciones contra producción, correr al menos una prueba real de `createApp()` contra el sandbox/cuenta de prueba y confirmar que el header `token` funciona; si Gupshup devuelve 401, el header real es `Authorization` para ese endpoint puntual — corregir ahí y en este documento.**
+**Prueba real hecha el 28 ago 2026** contra la cuenta real de CREA OS: `partnerAuth.login()` → 200 OK, token recibido. Con ese token, `partnerApps.createApp({ name: 'creaostest1787901518878' }, token)` con el header `token` (no `Authorization`) → **200 OK, `appId: 0e4adec5-f2f8-45c7-9fa9-9f72bad7b5f5`**. Si el header real hubiera sido `Authorization`, Gupshup habría respondido `401 Authentication Failed` (documentado en la tabla de errores de `createApp`) en vez de procesar la creación — la respuesta 200 con `appId` real confirma sin ambigüedad que `token` es el header correcto para este endpoint.
+
+**Sigue sin confirmarse en vivo** (solo por consistencia del spec OpenAPI, igual que antes): `PUT /partner/app/{appId}/onboarding/contact`, `POST /partner/app/{appId}/obotoembed/whitelist`, `POST /partner/account/api/appLink`, `GET /partner/app/{appId}/obotoembed/verify`. Dado que `createApp` (mismo header, misma familia `/partner/app*`) ya confirmó `token`, la confianza en que el resto también use `token` subió considerablemente — pero no está probado 1:1, especialmente `POST /partner/account/api/appLink` que vive bajo `/partner/account/*`, no `/partner/app/*` (misma familia de paths que login, que no lleva ningún header de auth propio — no hay una prueba real todavía de ningún endpoint bajo `/partner/account/*` que sí requiera auth).
+
+**Hallazgo adicional de esta prueba, no documentado antes**: el nombre de prueba inicial `creaos-test-<timestamp>` (con guiones) fue rechazado por Gupshup con `400 "Invalid characters used in app name"` — confirma que **el guion (`-`) cuenta como "carácter especial"** para esta validación. Un nombre alfanumérico puro (`creaostest<timestamp>`) sí fue aceptado. Esto refina (sin reemplazar del todo) la falta de precisión documentada sobre el charset exacto — de mínima, ahora se sabe que guiones no están permitidos.
 
 ## ⚠️ Segundo hallazgo: dos endpoints de "embed link" distintos, fácil confundirlos
 
@@ -57,16 +61,16 @@ La respuesta real de `POST /partner/account/login` no trae ningún campo de expi
 | **HTTP method** | `POST` |
 | **Path** | `/partner/app` |
 | **Base host** | `https://partner.gupshup.io` |
-| **Authentication** | Header `token` = JWT de partner (ver hallazgo #1 — no confirmado en vivo) |
-| **Request** | `Content-Type: application/x-www-form-urlencoded`. Body: `name` (string, requerido, 6-150 caracteres, sin caracteres especiales — charset exacto no documentado con precisión), `templateMessaging` (boolean, opcional, default `false`), `disableOptinPrefUrl` (boolean, opcional) |
-| **Response (200)** | `{ appId }` |
-| **Errors** | `400` `"Invalid characters used in app name"` · `400` `"App name should be between 6 to 150 characters in length"` · `409` `"Bot Already Exists"` (nombre ya usado — único en TODA la cuenta de Gupshup, no solo CREA OS) · `429` `"Too Many Requests"` · `500` `"Unable to create App"` |
+| **Authentication** | Header `token` = JWT de partner — **✅ confirmado en vivo el 28 ago 2026** (ver hallazgo #1) |
+| **Request** | `Content-Type: application/x-www-form-urlencoded`. Body: `name` (string, requerido, 6-150 caracteres, sin caracteres especiales — **confirmado que el guion `-` cuenta como carácter especial y es rechazado**; el resto del charset exacto sigue sin documentación precisa), `templateMessaging` (boolean, opcional, default `false`), `disableOptinPrefUrl` (boolean, opcional) |
+| **Response (200)** | `{ appId }` — **confirmado en vivo**, ver app de prueba real al final de este documento |
+| **Errors** | `400` `"Invalid characters used in app name"` (✅ visto en vivo, ver hallazgo #1) · `400` `"App name should be between 6 to 150 characters in length"` · `409` `"Bot Already Exists"` (nombre ya usado — único en TODA la cuenta de Gupshup, no solo CREA OS) · `429` `"Too Many Requests"` · `500` `"Unable to create App"` |
 | **Retry policy** | Ninguno (`idempotent:false` en el wrapper) — reintentar un `createApp` ante un 5xx/timeout arriesga crear la app duplicada si el primer intento sí llegó a procesarse del lado de Gupshup |
 | **Idempotency** | No hay idempotency key soportada por el endpoint — la única protección real es el 409 por nombre duplicado |
 | **Sandbox/Live** | Mismo endpoint para ambos |
 | **Rate limits** | 10 requests / 60 segundos |
 | **Source documentation** | https://partner-docs.gupshup.io/reference/post_partner-app |
-| **Last verified** | 2026-08-28 — vía Ask AI sobre la página de referencia (no probado en vivo) |
+| **Last verified** | 2026-08-28 — vía Ask AI **+ prueba real en vivo** (login + createApp exitosos) |
 
 ---
 
@@ -157,6 +161,22 @@ La respuesta real de `POST /partner/account/login` no trae ningún campo de expi
 
 ## Pendiente antes de ir a producción con estas 6 llamadas
 
-1. Probar en vivo (contra sandbox o la cuenta real de CREA OS) al menos `createApp()` para confirmar el header `token` — es el único punto de este contrato con riesgo real de estar mal, dada la inconsistencia documentada por el propio Gupshup.
-2. Confirmar el rate limit de 10 req/60s puntualmente para `appLink` (asumido por consistencia con el resto de la familia, no visto explícito en su página).
-3. `partner.customers.js`, `partner.waba.js`, `partner.webhooks.js`, `partner.health.js` — sin investigar todavía, quedan para los PRs que los introduzcan.
+1. ~~Probar en vivo `createApp()` para confirmar el header `token`~~ — **hecho el 28 ago 2026, ver hallazgo #1 y la app de prueba registrada abajo.**
+2. Probar en vivo `setContactDetails()`, `generateEmbedSignupLink()`, `linkAppWithPartner()` y `verifyAndAttachCreditLine()` — todavía sin probar contra la cuenta real, solo confirmados documentalmente (vía Ask AI). La confianza en `token` como header subió tras confirmar `createApp`, pero no reemplaza una prueba real de cada uno, en especial `linkAppWithPartner` (vive bajo `/partner/account/*`, no `/partner/app/*`).
+3. Confirmar el rate limit de 10 req/60s puntualmente para `appLink` (asumido por consistencia con el resto de la familia, no visto explícito en su página).
+4. `partner.customers.js`, `partner.waba.js`, `partner.webhooks.js`, `partner.health.js` — sin investigar todavía, quedan para los PRs que los introduzcan.
+
+---
+
+## App de prueba creada durante la verificación en vivo (28 ago 2026)
+
+Creada para confirmar el hallazgo #1 (header `token`). No se hizo nada más con ella — queda documentada acá para que quien la vea en el dashboard de Gupshup sepa qué es, y para decidir si se borra o se reusa más adelante.
+
+| Campo | Valor |
+|---|---|
+| `appId` | `0e4adec5-f2f8-45c7-9fa9-9f72bad7b5f5` |
+| `name` | `creaostest1787901518878` |
+| Creada vía | `partner.apps.js#createApp()`, llamada real (script temporal, no commiteado) |
+| Fecha | 2026-08-28 |
+| Estado | No usada para nada más — no tiene WABA ni número asociado, no está en ningún flujo de CREA OS |
+| Acción pendiente | Ninguna tomada — decidir borrarla o reusarla queda para quien lea esto |
