@@ -7,9 +7,13 @@
 // webhook.service.js ya importa ai.service.js (para procesar el mensaje
 // entrante con la IA) — este módulo es el punto neutral que evita eso.
 const logger = require('../../utils/logger');
+// PR-07a: GUPSHUP_APP_NAME/GUPSHUP_PHONE_NUMBER dejaron de leerse acá para
+// las funciones de ENVÍO (ahora reciben apiKey/source/appName por parámetro,
+// resueltos por canal en gupshupProvider.js) — quedan solo las 3 que sigue
+// necesitando estaConfigurado()/listTemplates() (status y listado del canal
+// PLATFORM, sin cambios en este PR).
 const {
   GUPSHUP_API_KEY,
-  GUPSHUP_APP_NAME,
   GUPSHUP_PHONE_NUMBER,
   GUPSHUP_WABA_ID,
   GUPSHUP_APP_ID,
@@ -17,30 +21,38 @@ const {
 
 /**
  * Envía un mensaje de texto por WhatsApp vía la API de Gupshup.
- * Único número compartido por ahora (GUPSHUP_PHONE_NUMBER) — no recibe un
- * origen configurable por negocio. Cuando exista el número dedicado por
- * negocio (v1.2, ticket #264467), el cambio queda acotado a esta función.
+ *
+ * PR-07a (Plan Maestro §3/§5): `apiKey`/`source`/`appName` YA NO se leen de
+ * las env vars globales de este módulo — las resuelve gupshupProvider.js por
+ * canal (PLATFORM: env vars vía channelCredentials.service.js#resolveCredentials(),
+ * mismo valor de siempre; DEDICATED: credenciales reales del tenant,
+ * cifradas en ChannelCredentials) y las pasa acá. Este archivo queda ciego a
+ * esa distinción a propósito — solo ejecuta la llamada HTTP con lo que le dan.
+ *
+ * @param {string} to
+ * @param {string} message
+ * @param {{ apiKey: string, source: string, appName: string }} credentials
  */
-async function sendWhatsAppMessage(to, message) {
+async function sendWhatsAppMessage(to, message, { apiKey, source, appName } = {}) {
   logger.info('[gupshup] enviando mensaje via Gupshup API', {
     to,
-    hasApiKey: Boolean(GUPSHUP_API_KEY),
-    source: GUPSHUP_PHONE_NUMBER,
-    appName: GUPSHUP_APP_NAME,
+    hasApiKey: Boolean(apiKey),
+    source,
+    appName,
   });
 
   const body = new URLSearchParams({
     channel: 'whatsapp',
-    source: GUPSHUP_PHONE_NUMBER,
+    source,
     destination: to,
     message: JSON.stringify({ type: 'text', text: message }),
-    'src.name': GUPSHUP_APP_NAME,
+    'src.name': appName,
   });
 
   const response = await fetch('https://api.gupshup.io/wa/api/v1/msg', {
     method: 'POST',
     headers: {
-      apikey: GUPSHUP_API_KEY,
+      apikey: apiKey,
       'Content-Type': 'application/x-www-form-urlencoded',
     },
     body: body.toString(),
@@ -83,6 +95,13 @@ const estaConfigurado = () =>
  * ya estaba en la familia correcta desde el principio — se probó aparte y
  * respondió 202 sin cambios.
  *
+ * GAP CONOCIDO, fuera de alcance de PR-07a a propósito (no es una función de
+ * "envío" — es lectura/listado, y el PR se acotó explícitamente a envío):
+ * sigue leyendo GUPSHUP_APP_ID/GUPSHUP_API_KEY globales, así que para un
+ * canal DEDICATED devolvería siempre las plantillas de la app de Gupshup de
+ * CREA OS, no las del tenant. Mismo bug de fondo que sendWhatsAppMessage()
+ * tenía antes de este PR — queda documentado para un PR de seguimiento.
+ *
  * @returns {Promise<Array>} lista cruda de plantillas tal como las devuelve Gupshup
  */
 async function listTemplates() {
@@ -111,30 +130,35 @@ async function listTemplates() {
  * Envía un mensaje de plantilla aprobada (WhatsApp Business template) —
  * a diferencia de sendWhatsAppMessage() (texto libre), esto NO requiere que
  * la ventana de 24h esté abierta; es justamente el mecanismo para reabrirla.
+ *
+ * PR-07a: mismo criterio que sendWhatsAppMessage() — `apiKey`/`source`/
+ * `appName` llegan resueltos por canal, ya no de env vars globales.
+ *
  * @param {string} to
  * @param {{ id: string, params?: string[] }} template — id de la plantilla en
  *   Gupshup y los valores para sus variables {{1}}, {{2}}, ... en orden.
+ * @param {{ apiKey: string, source: string, appName: string }} credentials
  */
-async function sendTemplateMessage(to, template) {
+async function sendTemplateMessage(to, template, { apiKey, source, appName } = {}) {
   logger.info('[gupshup] enviando plantilla via Gupshup API', {
     to,
     templateId: template?.id,
-    hasApiKey: Boolean(GUPSHUP_API_KEY),
-    source: GUPSHUP_PHONE_NUMBER,
+    hasApiKey: Boolean(apiKey),
+    source,
   });
 
   const body = new URLSearchParams({
     channel: 'whatsapp',
-    source: GUPSHUP_PHONE_NUMBER,
+    source,
     destination: to,
-    'src.name': GUPSHUP_APP_NAME,
+    'src.name': appName,
     template: JSON.stringify({ id: template.id, params: template.params || [] }),
   });
 
   const response = await fetch('https://api.gupshup.io/wa/api/v1/template/msg', {
     method: 'POST',
     headers: {
-      apikey: GUPSHUP_API_KEY,
+      apikey: apiKey,
       'Content-Type': 'application/x-www-form-urlencoded',
     },
     body: body.toString(),
@@ -175,15 +199,19 @@ async function sendTemplateMessage(to, template) {
  * absoluto, a diferencia de un mensaje de texto normal que sí recibe
  * "delivered" en segundos.
  *
+ * PR-07a: mismo criterio que sendWhatsAppMessage() — `apiKey`/`source`/
+ * `appName` llegan resueltos por canal, ya no de env vars globales.
+ *
  * @param {string} to
  * @param {{ url: string, type: 'image'|'video', caption?: string }} media
+ * @param {{ apiKey: string, source: string, appName: string }} credentials
  */
-async function sendMediaMessage(to, media) {
+async function sendMediaMessage(to, media, { apiKey, source, appName } = {}) {
   logger.info('[gupshup] enviando media via Gupshup API', {
     to,
     mediaType: media?.type,
-    hasApiKey: Boolean(GUPSHUP_API_KEY),
-    source: GUPSHUP_PHONE_NUMBER,
+    hasApiKey: Boolean(apiKey),
+    source,
   });
 
   const messagePayload =
@@ -202,16 +230,16 @@ async function sendMediaMessage(to, media) {
 
   const body = new URLSearchParams({
     channel: 'whatsapp',
-    source: GUPSHUP_PHONE_NUMBER,
+    source,
     destination: to,
-    'src.name': GUPSHUP_APP_NAME,
+    'src.name': appName,
     message: JSON.stringify(messagePayload),
   });
 
   const response = await fetch('https://api.gupshup.io/wa/api/v1/msg', {
     method: 'POST',
     headers: {
-      apikey: GUPSHUP_API_KEY,
+      apikey: apiKey,
       'Content-Type': 'application/x-www-form-urlencoded',
     },
     body: body.toString(),
@@ -236,14 +264,19 @@ async function sendMediaMessage(to, media) {
  * re-alojar en Cloudinary de inmediato (ver ai.service.js#
  * saveInboundMessage()), nunca guardar esta URL tal cual para uso futuro.
  *
+ * PR-07a: la media entrante de un canal DEDICATED la sirve filemanager.gupshup.io
+ * autenticado con el apikey DE ESA app, no el de PLATFORM — mismo criterio
+ * que el resto de este archivo, `apiKey` llega resuelto por canal.
+ *
  * @param {string} mediaUrl la URL que vino en el payload entrante (msg.image.url / msg.video.url)
+ * @param {{ apiKey: string }} credentials
  * @returns {Promise<{ buffer: Buffer, contentType: string|null }>}
  */
-async function downloadMedia(mediaUrl) {
+async function downloadMedia(mediaUrl, { apiKey } = {}) {
   logger.info('[gupshup] descargando media entrante', { mediaUrl });
 
   const response = await fetch(mediaUrl, {
-    headers: { apikey: GUPSHUP_API_KEY },
+    headers: { apikey: apiKey },
   });
 
   if (!response.ok) {

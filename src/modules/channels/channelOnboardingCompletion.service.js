@@ -18,6 +18,7 @@ const ChannelCredentials = require('./channelCredentials.model');
 const channelCrypto = require('./channelCrypto');
 const partnerAuth = require('./providers/gupshup/partner/partner.auth');
 const partnerApps = require('./providers/gupshup/partner/partner.apps');
+const { nombreAppGupshup } = require('./channel.controller');
 const logger = require('../../utils/logger');
 
 /**
@@ -116,6 +117,16 @@ async function handleGupshupAccountVerified(gsAppId) {
       phoneNumberId: session.meta.phoneNumberId,
       wabaId: session.meta.wabaId,
       providerAppId: session.gupshup.appId,
+      // PR-07a: el NOMBRE de la app en Gupshup (no su GUID) — mismo campo
+      // que el seed de PLATFORM puebla con GUPSHUP_APP_NAME (ver
+      // scripts/seed-whatsapp-channel-platform.js). Sin esto, el envío
+      // saliente por este canal (gupshupProvider.js/gupshup.client.js) no
+      // tiene forma de armar `src.name`. Determinístico: es el mismo nombre
+      // con el que se creó la app en Gupshup (partnerApps.createApp(),
+      // PR-05) — nombreAppGupshup() reutilizada tal cual, no se duplica la
+      // convención de naming en dos lugares. Confirmado en producción antes
+      // de este PR: 0 canales DEDICATED existentes, no hace falta backfill.
+      providerAccountId: nombreAppGupshup(session.tenantId),
       webhookReference: session.gupshup.webhookReference,
       displayName: session.displayName,
     });
