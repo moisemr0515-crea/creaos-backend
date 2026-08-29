@@ -68,3 +68,57 @@ No hay "alcance propuesto para el PR" único acá — depende de qué se decida:
 - **Sacar la feature de la UI** mientras no haya presupuesto de producto para la lógica real, para no seguir mostrando un control que no hace nada.
 
 Queda para retomar junto con el resto de Track 5.
+
+---
+
+## 2026-08-28 — El "Business Brain" real es 5 campos de `Business` (de ~20) — moneda, ticket promedio y fotos de producto nunca llegan a la IA
+
+**Estado:** Abierto — diagnóstico completo, sin implementar. Necesita decisión de producto (Track 5), no un fix chico.
+**Prioridad:** Media-alta — no rompe nada activo, pero la IA vendedora opera con una fracción mínima del perfil que el negocio completa, con al menos un caso (moneda) que puede llevar a cotizar mal sin que nada lo detecte.
+**Detectado en:** auditoría explícita pedida sobre qué tan real es el "Business Brain" (Plan Maestro §17), continuación del mismo criterio que el hallazgo de Nivel/Personalidad del 24/ago.
+**Archivos involucrados:** [`ai.service.js#buildSystemPrompt()`](../../src/modules/ai/ai.service.js), [`inbound.worker.js`](../../src/modules/channels/workers/inbound.worker.js), [`business.model.js`](../../src/modules/businesses/business.model.js), [`business.service.js#subirFotos()/subirPdf()`](../../src/modules/businesses/business.service.js).
+
+### Problema
+
+**1. La función que arma el prompt real es `buildSystemPrompt(business, lead, leadQualification)`** (`ai.service.js:209`), llamada desde `generateReply()` (`ai.service.js:354`). Recibe un objeto `business` — pero de sus ~20 campos, solo lee 5:
+
+| Campo de `Business` | ¿Llega al contexto de la IA? | Archivo:línea |
+|---|---|---|
+| `name` | **Sí** | `business.model.js:7-13` → `ai.service.js:223` |
+| `productDescription` ("Qué vende") | **Sí** | `business.model.js:94-99` → `ai.service.js:211` |
+| `targetCustomer` ("Cliente ideal") | **Sí** | `business.model.js:107-112` → `ai.service.js:212` |
+| `pdfSummary` (resumen del PDF, generado 1 vez al subirlo) | **Sí** (prioritario) | `business.model.js:46-50` → `ai.service.js:215-216` |
+| `pdfExtractedText` (texto crudo del PDF, truncado a 5000) | **Sí** (solo fallback si no hay `pdfSummary`) | `business.model.js:38-42` → `ai.service.js:215-216` |
+| `aiInstructions` ("Instrucciones para tu IA") | **Sí** | `business.model.js:120-125` → `ai.service.js:219-221` |
+| **`currency`** (moneda del negocio) | **No** | `business.model.js:65-70` — ningún grep en `ai.service.js` |
+| **`averageTicket`** (ticket promedio) | **No** | `business.model.js:101-105` — solo se usa para marcar `onboardingCompleted` (`business.service.js:58`), nunca se lee en `ai/` |
+| **`photos`** (hasta 2 fotos de producto) | **No** | `business.model.js:25-32` — único uso en todo `src/` fuera de subir/borrar es `business.service.js:170` (borrado del anterior); cero referencias en `ai/` |
+| `pdfUrl` (link crudo al PDF) | No directamente (pero alimenta `pdfExtractedText`/`pdfSummary`, que sí llegan) | `business.model.js:34-37` |
+| `industry` | No | `business.model.js:55-59` |
+| `country` | No | `business.model.js:60-64` |
+| `phone` / `email` / `website` | No | `business.model.js:71-86` |
+| `whatsappNumber` (distinto del canal real de envío) | No | `business.model.js:88-92` |
+| `slug` / `logo` | No (ni tendría sentido) | `business.model.js:15-23` |
+| `settings.language` | No — el idioma de respuesta se infiere del mensaje del lead (`ai.service.js:235`: "Responde siempre en el mismo idioma que el usuario"), nunca de `business.settings.language` | `business.model.js:157` |
+| `onboardingCompleted` / `aiSalesEnabled` / `plan` / `planStatus` / `trialEndsAt` / `isActive` / `createdBy` | No — correcto que no lleguen, son flags de control/facturación, no contenido comercial | — |
+
+**2. Hallazgo aparte, no menor: en producción hoy (`WHATSAPP_CHANNEL_CORE_ENABLED=true`, confirmado en Railway), el camino real de un mensaje de WhatsApp NO pasa `business` completo.** Pasa por `inbound.worker.js` → `DefaultAgentRuntime.process()` → `generateReply(conversationId, businessContext, lead)`, donde `businessContext` (`inbound.worker.js:228-235`) es un objeto armado a mano con exactamente estos 6 campos: `name`, `productDescription`, `targetCustomer`, `pdfSummary`, `pdfExtractedText`, `aiInstructions` — ni uno más. Hoy da igual (son los mismos 5 que `buildSystemPrompt()` ya filtra), pero es una trampa real para el día que se agregue un campo nuevo a `buildSystemPrompt()`: **hay que tocar los 2 lugares** (`buildSystemPrompt()` Y el objeto `businessContext` de `inbound.worker.js`), o el fix va a funcionar en el camino legacy (`webhook.service.js:609`, que sí pasa el documento `Business` completo, pero que HOY no corre en producción con el flag activo) y va a fallar en silencio en el tráfico real.
+
+**3. PDF: SÍ tiene un mecanismo real, no es decorativo.** `business.service.js#subirPdf()` (línea 179) extrae el texto del PDF (`PDFParse`), lo limpia, genera un resumen vía IA (`generarResumenPdf()`) y guarda ambos (`pdfExtractedText`/`pdfSummary`) — y esos 2 campos sí llegan al prompt (tabla arriba). Es el único de los 2 tipos de archivo que funciona como se esperaría.
+
+**4. Fotos de producto: 100% decorativas para la IA — confirmado, no es una sospecha.** `subirFotos()` (línea 148) solo sube a Cloudinary y guarda las URLs en `Business.photos`. Ni una URL, ni una referencia, ni visión sobre la imagen llega a `buildSystemPrompt()` ni a ningún tool (`ai/tools/index.js` solo define `escalate_to_human`/`update_lead_stage`, ninguno toca `business.photos`). Un `grep` de `photos` en todo `src/` fuera del propio módulo `businesses/` da cero resultados.
+
+### Impacto concreto (pedido explícito: no quedarse en "faltan campos")
+
+- **Moneda:** un negocio cambia `currency` de `PEN` a `USD` en su perfil (campo real, editable, en `camposPermitidos` de `business.service.js:64`). La IA nunca supo la moneda en primer lugar — no hay ningún punto donde `business.currency` se lea. Si el negocio nunca escribió precios en `aiInstructions`/`productDescription` (texto libre), la IA simplemente no menciona montos nunca y el cambio es invisible. Si SÍ los escribió (ej. "planes desde S/300"), ese texto queda congelado en Soles para siempre — cambiar el selector de moneda en el perfil no actualiza nada de lo que la IA dice, y nada en el sistema avisa de este desfase.
+- **Ticket promedio:** un negocio de consultoría define `averageTicket: 200` (USD). Un lead pregunta por un paquete claramente premium/atípico. La IA no tiene ninguna referencia numérica de qué es "normal" para ese negocio — no puede calibrar si está frente a una oportunidad de upsell grande o un lead desalineado con el ticket típico, ni ajustar el tono de negociación en consecuencia (Plan Maestro §17 lo lista como parte del Business Brain precisamente para esto). El campo existe, se guarda, se valida (`business.routes.js:59`) — y no hace nada más.
+- **Fotos de producto:** un lead pregunta "¿cómo se ve el producto?" o pide una foto. El negocio subió 2 fotos reales esperando que sirvan de referencia — la IA no tiene forma de saber que existen, no puede describirlas, y no puede enviarlas (no hay ningún tool/flujo que despache `business.photos` como media saliente). La única foto que un lead puede llegar a recibir es la que un agente humano suba manualmente en el momento, no algo que la IA use de forma autónoma.
+
+### Decisión pendiente (no técnica, de producto)
+
+No hay un único "alcance propuesto" — depende de qué se priorice:
+- **Ampliar `buildSystemPrompt()`** con `currency` (ej. "Cotiza siempre en {currency}") y `averageTicket` (ej. como ancla de calibración, no como precio fijo) — cambio acotado, mismo patrón que los 5 campos que ya funcionan. Requiere tocar `inbound.worker.js#businessContext` en el mismo PR (punto 2 arriba) para que el fix sea real en producción, no solo en el camino legacy.
+- **Fotos:** decisión más grande — ¿vale la pena visión (describir la foto al modelo) o alcanza con un tool que las mande como media saliente cuando el lead las pide? Dos soluciones muy distintas en costo/complejidad para el mismo síntoma.
+- **No tocar nada todavía** si Track 5 no lo prioriza — el hallazgo queda documentado para cuando se decida.
+
+Queda para retomar junto con el resto de Track 5.
