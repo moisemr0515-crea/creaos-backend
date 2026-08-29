@@ -225,4 +225,27 @@ describe('partner.apps', () => {
       await expect(partnerApps.getEmbedSignupLink('app-123', { user: 'ana@creaos.com', lang: 'es' }, TOKEN)).rejects.toMatchObject({ statusCode: 502 });
     });
   });
+
+  describe('getAppAccessToken()', () => {
+    test('happy path: GET /partner/app/{appId}/token, devuelve { apikey } tomado de body.token.token', async () => {
+      httpClient.request.mockResolvedValue({
+        status: 200,
+        body: { status: 'success', token: { token: 'apikey-real-de-la-app', authoriserId: 'x', requestorId: 'y', createdOn: 1, modifiedOn: 1, expiresOn: 2, active: true } },
+        requestId: 'gsp_x',
+      });
+
+      const result = await partnerApps.getAppAccessToken('app-123', TOKEN);
+
+      expect(result).toEqual({ apikey: 'apikey-real-de-la-app' });
+      expect(httpClient.request).toHaveBeenCalledWith(
+        expect.objectContaining({ method: 'GET', path: '/partner/app/app-123/token', headers: { token: TOKEN } })
+      );
+    });
+
+    test('401 Authentication Failed: se mapea a AppError 401', async () => {
+      httpClient.request.mockRejectedValue(gupshupError(401, { message: 'Authentication Failed' }));
+
+      await expect(partnerApps.getAppAccessToken('app-123', TOKEN)).rejects.toMatchObject({ statusCode: 401 });
+    });
+  });
 });

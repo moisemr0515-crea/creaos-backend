@@ -73,6 +73,36 @@ describe('gupshup.http.client#request()', () => {
     infoSpy.mockRestore();
   });
 
+  test('nunca loguea el header apikey en texto plano (PR-06, Subscription API)', async () => {
+    const infoSpy = jest.spyOn(logger, 'info').mockImplementation(() => {});
+    global.fetch.mockResolvedValueOnce(mockResponse({ status: 200, body: {} }));
+
+    await request({ method: 'POST', path: '/wa/app/x/subscription', baseUrl: 'https://api.gupshup.io', headers: { apikey: 'apikey-secreto' } });
+
+    const llamadaConHeaders = infoSpy.mock.calls.find(([, meta]) => meta?.headers);
+    expect(llamadaConHeaders[1].headers.apikey).toBe('[REDACTED]');
+
+    infoSpy.mockRestore();
+  });
+
+  test('baseUrl override: arma la URL contra otro host, no partner.gupshup.io (PR-06, Subscription API)', async () => {
+    global.fetch.mockResolvedValueOnce(mockResponse({ status: 200, body: {} }));
+
+    await request({ method: 'POST', path: '/wa/app/x/subscription', baseUrl: 'https://api.gupshup.io' });
+
+    const [urlArg] = global.fetch.mock.calls[0];
+    expect(urlArg.toString()).toBe('https://api.gupshup.io/wa/app/x/subscription');
+  });
+
+  test('sin baseUrl explícito, sigue usando el host de partner.gupshup.io de siempre', async () => {
+    global.fetch.mockResolvedValueOnce(mockResponse({ status: 200, body: {} }));
+
+    await request({ method: 'GET', path: '/partner/app/x' });
+
+    const [urlArg] = global.fetch.mock.calls[0];
+    expect(urlArg.toString()).toBe('https://partner.gupshup.io/partner/app/x');
+  });
+
   test('400 (client_error): nunca reintenta, propaga GupshupHttpError con body', async () => {
     global.fetch.mockResolvedValueOnce(mockResponse({ status: 400, body: { message: 'Invalid characters used in app name' } }));
 

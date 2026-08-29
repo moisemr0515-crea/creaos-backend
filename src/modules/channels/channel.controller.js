@@ -9,10 +9,19 @@ const channelCrypto = require('./channelCrypto');
 const metaEmbeddedSignup = require('./providers/meta/metaEmbeddedSignup.service');
 const partnerAuth = require('./providers/gupshup/partner/partner.auth');
 const partnerApps = require('./providers/gupshup/partner/partner.apps');
+const partnerSubscriptions = require('./providers/gupshup/partner/partner.subscriptions');
 const { AppError } = require('../../middleware/error.middleware');
 const { respuestaExito, respuestaError } = require('../../utils/response');
 const logger = require('../../utils/logger');
-const { META_APP_ID, META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID } = require('../../config/env');
+const { META_APP_ID, META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID, BACKEND_PUBLIC_URL } = require('../../config/env');
+// Marcador propio para session.gupshup.webhookReference — la Subscription
+// API de Gupshup no devuelve ningún ID de suscripción documentado (ver
+// docs/integrations/gupshup-registration-contract.md §11.2), así que este
+// campo no guarda un ID real de Gupshup, solo constancia de "ya nos
+// suscribimos". channelOnboardingCompletion.service.js (PR-06) lo copia tal
+// cual a WhatsAppChannel.webhookReference al completar el onboarding — no
+// necesita conocer este valor puntual, solo hace passthrough.
+const GUPSHUP_ACCOUNT_SUBSCRIPTION_MARKER = 'gupshup:account-subscribed';
 
 const DISPLAY_NAME_MAX_LENGTH = 100;
 
@@ -322,10 +331,14 @@ const callbackEmbeddedSignup = async (req, res, next) => {
 
 // ─── POST /api/v1/channels/whatsapp/embedded-signup/complete-gupshup ─────────
 // PR-05 del blueprint maestro (§55, redefinido esta sesión — ver
-// docs/integrations/gupshup-registration-contract.md §9). Registra la app
-// de Gupshup para esta sesión (ya autorizada por Meta en PR-04, estado
-// gupshup_registering) y genera el link de embed signup real. NO crea
-// WhatsAppChannel/ChannelCredentials — eso es PR-06.
+// docs/integrations/gupshup-registration-contract.md §9), extendido en PR-06
+// (§11) con la suscripción al webhook de eventos ACCOUNT. Registra la app de
+// Gupshup para esta sesión (ya autorizada por Meta en PR-04, estado
+// gupshup_registering), se suscribe a la Subscription API en modo ACCOUNT
+// (necesario para que el webhook ACCOUNT_VERIFIED llegue después), y genera
+// el link de embed signup real. NO crea WhatsAppChannel/ChannelCredentials
+// acá — eso ocurre reactivamente cuando llega ese webhook, ver
+// channelOnboardingCompletion.service.js.
 //
 // Usa GET .../onboarding/embed/link (partnerApps.getEmbedSignupLink) —
 // confirmado como el endpoint correcto para altas 100% nuevas con 2
@@ -333,11 +346,6 @@ const callbackEmbeddedSignup = async (req, res, next) => {
 // el contrato doc §9). generateEmbedSignupLink()/verifyAndAttachCreditLine()
 // (obotoembed/whitelist+verify) NO se usan acá — quedan reservados para un
 // futuro caso de migración.
-//
-// Pendiente para cuando se diseñe PR-06 (documentado, no resuelto acá):
-// cómo se entera CREA OS de que el customer completó este link del lado de
-// Gupshup — ¿webhook, polling, o alguna otra señal? Ver contrato doc §9,
-// opción (B) que quedó pendiente a propósito.
 
 const APP_NAME_PREFIX = 'creaos';
 
@@ -346,6 +354,18 @@ const APP_NAME_PREFIX = 'creaos';
 // una app duplicada. Puro alfanumérico a propósito: el guion cuenta como
 // "carácter especial" y Gupshup lo rechaza (confirmado en vivo en PR-02) —
 // el tenantId (ObjectId, 24 hex) ya lo garantiza sin necesitar separadores.
+//
+// LIMITACIÓN CONOCIDA (identificada en el diseño de PR-06, no arreglada a
+// propósito — decisión explícita, no un descuido): el nombre depende SOLO de
+// tenantId, no de la sesión. initEmbeddedSignup() permite a propósito varias
+// ChannelOnboardingSession concurrentes sin terminar por tenant (Decisión 8
+// del blueprint). Si el mismo tenant tiene 2 sesiones concurrentes que
+// ambas llegan a este paso, la segunda en llamar createApp() va a chocar con
+// 409 "Bot Already Exists" (mapeado normalmente por partner.errors.js) —
+// solo la primera puede completar el registro de Gupshup para ese tenant a
+// la vez. No bloqueante para PR-06 (una sola sesión activa por tenant es el
+// caso normal), pero documentado para no reintroducir esta pregunta más
+// adelante sin contexto.
 function nombreAppGupshup(tenantId) {
   return `${APP_NAME_PREFIX}${tenantId}`;
 }
@@ -382,6 +402,29 @@ const completeGupshupEmbeddedSignup = async (req, res, next) => {
         session.gupshup.appId = appId;
         // Se guarda ANTES de seguir — si algo de acá para abajo falla, un
         // retry no vuelve a crear la app (ver el chequeo `if` de arriba).
+        await session.save();
+      }
+
+      if (!session.gupshup.webhookReference) {
+        // Suscribe esta app al modo ACCOUNT de la Subscription API de
+        // Gupshup — sin esto, el webhook ACCOUNT_VERIFIED que completa el
+        // onboarding (PR-06, channelOnboardingCompletion.service.js) nunca
+        // llega. Confirmado por fuente directa que hace falta el apikey DE
+        // ESTA app (no el token de partner) — ver
+        // docs/integrations/gupshup-registration-contract.md §11.
+        if (!BACKEND_PUBLIC_URL) {
+          throw new AppError('BACKEND_PUBLIC_URL no está configurado — no se puede suscribir el webhook de eventos ACCOUNT de Gupshup', 500);
+        }
+
+        const { apikey } = await partnerApps.getAppAccessToken(session.gupshup.appId, token);
+        await partnerSubscriptions.subscribeToEvents(session.gupshup.appId, apikey, {
+          url: `${BACKEND_PUBLIC_URL}/api/v1/webhooks/gupshup`,
+          tag: 'creaos-account-events',
+          modes: ['ACCOUNT'],
+        });
+        session.gupshup.webhookReference = GUPSHUP_ACCOUNT_SUBSCRIPTION_MARKER;
+        // Mismo criterio que appId arriba — se guarda antes de seguir, así
+        // un retry no vuelve a pegarle a la Subscription API de más.
         await session.save();
       }
 
