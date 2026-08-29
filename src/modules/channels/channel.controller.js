@@ -467,4 +467,15 @@ const completeGupshupEmbeddedSignup = async (req, res, next) => {
   }
 };
 
-module.exports = { initEmbeddedSignup, codeEmbeddedSignup, callbackEmbeddedSignup, completeGupshupEmbeddedSignup };
+module.exports = {
+  initEmbeddedSignup,
+  codeEmbeddedSignup,
+  callbackEmbeddedSignup,
+  completeGupshupEmbeddedSignup,
+  // Exportada para PR-07a (channelOnboardingCompletion.service.js) — es la
+  // MISMA función determinística usada acá para crear la app en Gupshup
+  // (PR-05), reutilizada para poblar WhatsAppChannel.providerAccountId al
+  // crear el canal DEDICATED real, en vez de duplicar la convención de
+  // nombre en dos lugares.
+  nombreAppGupshup,
+};

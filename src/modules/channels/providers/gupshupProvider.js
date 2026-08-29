@@ -3,7 +3,31 @@ const IChannelProvider = require('../channelProvider.interface');
 // para que la llamada use siempre la referencia viva del export — permite
 // mockearlo en tests sin tocar el módulo real (ver _tmp-test-fase-1b.js).
 const gupshupClient = require('../../webhooks/gupshup.client');
+const channelCredentialsService = require('../channelCredentials.service');
 const { GUPSHUP_PHONE_NUMBER } = require('../../../config/env');
+
+/**
+ * PR-07a (Plan Maestro §3/§5): arma el objeto `{apiKey, source, appName}`
+ * que gupshup.client.js necesita para mandar/descargar por ESTE canal —
+ * PLATFORM o DEDICATED, sin distinción acá (resolveCredentials() ya
+ * encapsula esa rama). `source`/`appName` NO son secretos — viven en el
+ * propio WhatsAppChannel (`phoneNumber`/`providerAccountId`), no hace falta
+ * resolveCredentials() para ellos.
+ *
+ * Errores de resolveCredentials() (canal DEDICATED sin ChannelCredentials,
+ * apiKeys revocadas, dato cifrado ilegible — todos AppError fail-loud) se
+ * propagan tal cual, sin capturar acá — el fail-soft ya existe una capa
+ * arriba, en cada call site de channelService (ai.service.js/webhook.service.js/
+ * outbound.worker.js), que ya envuelve sendMessage()/sendTemplate()/sendMedia()
+ * en try/catch y marca el mensaje/evento como fallido sin relanzar.
+ *
+ * @param {import('../whatsappChannel.model')} channel
+ * @returns {Promise<{ apiKey: string, source: string, appName: string }>}
+ */
+async function resolverCredencialesDeEnvio(channel) {
+  const { apiKey } = await channelCredentialsService.resolveCredentials(channel);
+  return { apiKey, source: channel.phoneNumber, appName: channel.providerAccountId };
+}
 
 // Tipos de media ENTRANTE soportados por normalizeInboundEvent() — mismo
 // alcance que el envío saliente (ai.service.js#sendMediaMessage) y que
@@ -24,12 +48,12 @@ class GupshupProvider extends IChannelProvider {
    * @param {string} text
    */
   async sendMessage(channel, to, text) {
-    // gupshup.client.js#sendWhatsAppMessage() todavía usa el número
-    // compartido (GUPSHUP_PHONE_NUMBER) internamente, no el `channel` que
-    // recibe acá — se acepta el parámetro para cumplir el contrato y
-    // porque cuando exista un número dedicado por tenant (Fase 2), el
-    // cambio queda acotado a gupshup.client.js, no a este wrapper.
-    return gupshupClient.sendWhatsAppMessage(to, text);
+    // PR-07a: `channel` ya no se ignora — resuelve las credenciales REALES
+    // de este canal (PLATFORM: env vars de siempre; DEDICATED: apikey del
+    // tenant, cifrada en ChannelCredentials desde PR-06) y arma el origen/
+    // nombre de app a partir del propio documento, no de env vars globales.
+    const credenciales = await resolverCredencialesDeEnvio(channel);
+    return gupshupClient.sendWhatsAppMessage(to, text, credenciales);
   }
 
   /**
@@ -38,15 +62,18 @@ class GupshupProvider extends IChannelProvider {
    * @param {{ id: string, params?: string[] }} template
    */
   async sendTemplate(channel, to, template) {
-    // Mismo criterio que sendMessage(): el `channel` se acepta por contrato,
-    // gupshup.client.js todavía resuelve el origen (GUPSHUP_PHONE_NUMBER) y
-    // la app (GUPSHUP_APP_ID) de forma global, no por canal.
-    return gupshupClient.sendTemplateMessage(to, template);
+    // Mismo criterio que sendMessage() (PR-07a).
+    const credenciales = await resolverCredencialesDeEnvio(channel);
+    return gupshupClient.sendTemplateMessage(to, template, credenciales);
   }
 
   /**
-   * @param {import('../whatsappChannel.model')} _channel — no usado hoy,
-   *   mismo motivo que sendTemplate()/getChannelStatus().
+   * GAP CONOCIDO, fuera de alcance de PR-07a a propósito (no es una función
+   * de "envío" — es lectura/listado): sigue sin usar `channel`, mismo motivo
+   * que gupshup.client.js#listTemplates() (GUPSHUP_APP_ID global) — un canal
+   * DEDICATED vería siempre las plantillas de la app de CREA OS.
+   *
+   * @param {import('../whatsappChannel.model')} _channel — no usado hoy.
    * @returns {Promise<Array>}
    */
   async listTemplates(_channel) {
@@ -59,18 +86,24 @@ class GupshupProvider extends IChannelProvider {
    * @param {{ url: string, type: 'image'|'video', caption?: string }} media
    */
   async sendMedia(channel, to, media) {
-    // Mismo criterio que sendMessage()/sendTemplate(): el `channel` se
-    // acepta por contrato, gupshup.client.js todavía resuelve el origen de
-    // forma global, no por canal.
-    return gupshupClient.sendMediaMessage(to, media);
+    // Mismo criterio que sendMessage()/sendTemplate() (PR-07a).
+    const credenciales = await resolverCredencialesDeEnvio(channel);
+    return gupshupClient.sendMediaMessage(to, media, credenciales);
   }
 
   /**
-   * @param {import('../whatsappChannel.model')} _channel — no usado hoy, mismo motivo que el resto.
+   * PR-07a: la media entrante de un canal DEDICATED vive detrás del apikey
+   * DE ESA app, no el de PLATFORM — mismo criterio que el resto de este
+   * archivo. Solo necesita `apiKey` (no `source`/`appName`, que gupshup.client.js#
+   * downloadMedia() no usa), pero se reutiliza resolverCredencialesDeEnvio()
+   * tal cual para no duplicar la llamada a resolveCredentials().
+   *
+   * @param {import('../whatsappChannel.model')} channel
    * @param {string} mediaUrl
    */
-  async downloadMedia(_channel, mediaUrl) {
-    return gupshupClient.downloadMedia(mediaUrl);
+  async downloadMedia(channel, mediaUrl) {
+    const { apiKey } = await resolverCredencialesDeEnvio(channel);
+    return gupshupClient.downloadMedia(mediaUrl, { apiKey });
   }
 
   /**

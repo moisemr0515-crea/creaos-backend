@@ -175,6 +175,7 @@ describe('channelOnboardingCompletion#handleGupshupAccountVerified()', () => {
     expect(channel.phoneNumber).toBe('+16315555556');
     expect(channel.phoneNumberId).toBe('pnid-real');
     expect(channel.wabaId).toBe('waba-real');
+    expect(channel.providerAccountId).toBe(`creaos${business._id}`); // PR-07a: nombreAppGupshup(tenantId), mismo nombre con el que se creó la app en Gupshup (PR-05)
     expect(channel.webhookReference).toBe('gupshup:account-subscribed');
     expect(channel.displayName).toBe('Línea de ventas');
     expect(channel.credentialsReference).not.toBeNull();
