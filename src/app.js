@@ -56,6 +56,23 @@ const esOrigenLovable = (origin) => {
   }
 };
 
+// Previews dinámicos de Vercel del frontend crea-os-ignite — Vercel genera
+// una URL nueva por rama/commit (crea-os-ignite-git-<rama>-<team>.vercel.app
+// o crea-os-ignite-<hash>-<team>.vercel.app), así que no hay un string fijo
+// que agregar a ALLOWED_ORIGINS. Mismo patrón que esOrigenLovable() arriba.
+// A propósito NO alcanza con el sufijo `.vercel.app` solo — eso aceptaría
+// CORS de cualquier proyecto de cualquier cuenta de Vercel, no solo los
+// previews de este frontend. El prefijo `crea-os-ignite-` acota el match al
+// proyecto real.
+const esOrigenVercelPreview = (origin) => {
+  try {
+    const { protocol, hostname } = new URL(origin);
+    return protocol === 'https:' && hostname.startsWith('crea-os-ignite-') && hostname.endsWith('.vercel.app');
+  } catch {
+    return false;
+  }
+};
+
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -68,7 +85,7 @@ app.use(
 
       const origenesPermitidos = [FRONTEND_URL, ...ALLOWED_ORIGINS];
 
-      if (esLocalhostDev || esOrigenLovable(origin) || origenesPermitidos.includes(origin)) {
+      if (esLocalhostDev || esOrigenLovable(origin) || esOrigenVercelPreview(origin) || origenesPermitidos.includes(origin)) {
         callback(null, true);
       } else {
         callback(new Error(`CORS: Origen no permitido → ${origin}`));
