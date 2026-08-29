@@ -166,6 +166,15 @@ module.exports = {
   GUPSHUP_PARTNER_EMAIL:  process.env.GUPSHUP_PARTNER_EMAIL || '',
   GUPSHUP_PARTNER_SECRET: process.env.GUPSHUP_PARTNER_SECRET || '',
 
+  // URL pública de ESTE backend (no la del frontend — eso es APP_URL/FRONTEND_URL
+  // arriba) — PR-06 del blueprint maestro la necesita para armar la URL de
+  // callback (`${BACKEND_PUBLIC_URL}/api/v1/webhooks/gupshup`) que se manda al
+  // suscribirse a eventos ACCOUNT de una app de Gupshup (ver
+  // channel.controller.js#completeGupshupEmbeddedSignup() y
+  // partner.subscriptions.js). Sin default: si falta, ese paso puntual falla
+  // ruidoso (AppError 500) en vez de suscribir un callback vacío/inválido.
+  BACKEND_PUBLIC_URL: process.env.BACKEND_PUBLIC_URL || '',
+
   // Feature flag temporal (Implementation Blueprint, Decisión 3) — corte del
   // webhook de Gupshup hacia el nuevo Inbound Gateway (sub-fase 1.c en
   // adelante). Default OFF: si la variable no existe (estado actual en

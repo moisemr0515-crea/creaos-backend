@@ -225,6 +225,39 @@ async function getEmbedSignupLink(appId, { user, lang, regenerate = false } = {}
   }, `getEmbedSignupLink de app ${appId}`);
 }
 
+/**
+ * GET /partner/app/{appId}/token — "Get Access Token for an App": el apikey
+ * de mensajería de ESTA app puntual (distinto del `token` de partner que usa
+ * el resto de este archivo). Confirmado por fuente directa el 28 ago 2026
+ * (WebFetch de partner-docs.gupshup.io/reference/get_partner-app-appid-token,
+ * ver docs/integrations/gupshup-registration-contract.md §11.5→resuelto) e
+ * idempotente del lado de Gupshup (corroborado por WebSearch): devuelve el
+ * token existente si ya hay uno para esta app, o genera uno nuevo — nunca
+ * "gasta" nada por llamarlo de más.
+ *
+ * PR-06 lo usa para 2 cosas (probablemente sea el mismo valor para ambas,
+ * no se confirmó en vivo si Gupshup podría devolver algo distinto entre
+ * llamadas): (1) autenticar la Subscription API (partner.subscriptions.js),
+ * (2) cifrar y guardar en ChannelCredentials.apiKeys[] para el canal
+ * DEDICATED real (channelOnboardingCompletion.service.js).
+ *
+ * @param {string} appId
+ * @param {string} token - JWT de partner (partner.auth.js#getValidToken())
+ * @returns {Promise<{ apikey: string }>}
+ */
+async function getAppAccessToken(appId, token) {
+  return runOrMap(async () => {
+    const { body } = await httpClient.request({
+      method: 'GET',
+      path: `/partner/app/${appId}/token`,
+      headers: authHeader(token),
+      // idempotent: true (default de GET) — es una lectura, y Gupshup mismo
+      // documenta que devuelve el token existente si ya hay uno (ver arriba).
+    });
+    return { apikey: body.token.token };
+  }, `getAppAccessToken de app ${appId}`);
+}
+
 module.exports = {
   createApp,
   setContactDetails,
@@ -232,6 +265,7 @@ module.exports = {
   linkAppWithPartner,
   verifyAndAttachCreditLine,
   getEmbedSignupLink,
+  getAppAccessToken,
   APP_NAME_MIN_LENGTH,
   APP_NAME_MAX_LENGTH,
 };

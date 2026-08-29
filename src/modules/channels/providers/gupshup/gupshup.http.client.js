@@ -22,11 +22,12 @@ const DEFAULT_TIMEOUT_MS = 15000;
 const DEFAULT_MAX_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 500;
 
-// Se redactan ambos nombres de header sin importar cuál use el caller — el
-// JWT de partner viaja como 'token' O como 'Authorization' según el
-// endpoint (ver nota arriba), nunca se loguea ninguno de los dos en texto
-// plano.
-const HEADERS_SENSIBLES = new Set(['token', 'authorization']);
+// Se redactan sin importar cuál use el caller — el JWT de partner viaja como
+// 'token' O como 'Authorization' según el endpoint (ver nota arriba). 'apikey'
+// se suma acá por partner.subscriptions.js (Subscription API, PR-06): ese
+// header lleva el apikey real de mensajería de una app específica, no un JWT
+// de partner, pero es igual de sensible — nunca se loguea ninguno en texto plano.
+const HEADERS_SENSIBLES = new Set(['token', 'authorization', 'apikey']);
 
 function redactHeaders(headers = {}) {
   const redacted = {};
@@ -66,6 +67,10 @@ class GupshupHttpError extends Error {
  * @param {object} opts
  * @param {'GET'|'POST'|'PUT'|'DELETE'} opts.method
  * @param {string} opts.path - ej. '/partner/account/login'
+ * @param {string} [opts.baseUrl] - default: BASE_URL (partner.gupshup.io).
+ *   partner.subscriptions.js (PR-06) lo pasa explícito porque la Subscription
+ *   API vive en api.gupshup.io, un host completamente distinto — confirmado
+ *   en docs/integrations/gupshup-registration-contract.md §11.2.
  * @param {Object<string,string>} [opts.headers]
  * @param {Object<string,string|boolean|undefined>|null} [opts.form] - body x-www-form-urlencoded
  * @param {Object<string,string>|null} [opts.query]
@@ -83,6 +88,7 @@ class GupshupHttpError extends Error {
 async function request({
   method,
   path,
+  baseUrl = BASE_URL,
   headers = {},
   form = null,
   query = null,
@@ -91,7 +97,7 @@ async function request({
   idempotent = method === 'GET',
 }) {
   const requestId = `gsp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-  const url = new URL(path, BASE_URL);
+  const url = new URL(path, baseUrl);
   if (query) {
     for (const [key, value] of Object.entries(query)) {
       if (value !== undefined && value !== null) url.searchParams.set(key, String(value));

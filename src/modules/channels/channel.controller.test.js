@@ -18,10 +18,15 @@
 process.env.META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID = '';
 process.env.META_APP_ID = process.env.META_APP_ID || 'meta-app-id-de-prueba';
 process.env.CHANNEL_CREDENTIALS_KEY = process.env.CHANNEL_CREDENTIALS_KEY || require('crypto').randomBytes(32).toString('hex');
+// PR-06: completeGupshupEmbeddedSignup() ahora también se suscribe a eventos
+// ACCOUNT (necesita BACKEND_PUBLIC_URL configurado) — mismo motivo que las
+// otras env vars de acá arriba, seteada ANTES de requerir config/env.js.
+process.env.BACKEND_PUBLIC_URL = process.env.BACKEND_PUBLIC_URL || 'https://backend.creaos.test';
 
 jest.mock('./providers/meta/metaEmbeddedSignup.service');
 jest.mock('./providers/gupshup/partner/partner.auth');
 jest.mock('./providers/gupshup/partner/partner.apps');
+jest.mock('./providers/gupshup/partner/partner.subscriptions');
 
 const mongoose = require('mongoose');
 const Business = require('../businesses/business.model');
@@ -31,6 +36,7 @@ const logger = require('../../utils/logger');
 const metaEmbeddedSignup = require('./providers/meta/metaEmbeddedSignup.service');
 const partnerAuth = require('./providers/gupshup/partner/partner.auth');
 const partnerApps = require('./providers/gupshup/partner/partner.apps');
+const partnerSubscriptions = require('./providers/gupshup/partner/partner.subscriptions');
 const {
   initEmbeddedSignup,
   codeEmbeddedSignup,
@@ -561,6 +567,10 @@ describe('channel.controller#completeGupshupEmbeddedSignup()', () => {
     await ChannelOnboardingSession.deleteMany({});
     business = await Business.create({ name: 'Negocio de prueba' });
     jest.clearAllMocks();
+    // Default feliz para los 2 pasos nuevos de PR-06 — los tests que
+    // necesitan otro comportamiento lo pisan explícito.
+    partnerApps.getAppAccessToken.mockResolvedValue({ apikey: 'apikey-real-de-la-app' });
+    partnerSubscriptions.subscribeToEvents.mockResolvedValue({ status: 'success' });
   });
 
   // Helper — sesión ya en 'gupshup_registering', con phoneNumber ya
@@ -597,6 +607,12 @@ describe('channel.controller#completeGupshupEmbeddedSignup()', () => {
       { name: `creaos${business._id}` },
       'partner-token-real'
     );
+    expect(partnerApps.getAppAccessToken).toHaveBeenCalledWith('gs-app-real', 'partner-token-real');
+    expect(partnerSubscriptions.subscribeToEvents).toHaveBeenCalledWith(
+      'gs-app-real',
+      'apikey-real-de-la-app',
+      { url: 'https://backend.creaos.test/api/v1/webhooks/gupshup', tag: 'creaos-account-events', modes: ['ACCOUNT'] }
+    );
     expect(partnerApps.setContactDetails).toHaveBeenCalledWith(
       'gs-app-real',
       { contactEmail: 'ana@creaos.test', contactName: 'Ana Fundadora', contactNumber: '+16315555556' },
@@ -609,8 +625,9 @@ describe('channel.controller#completeGupshupEmbeddedSignup()', () => {
     );
 
     const refrescada = await ChannelOnboardingSession.findById(session._id);
-    expect(refrescada.status).toBe('gupshup_registering'); // sin transición nueva -- PR-06 la completa
+    expect(refrescada.status).toBe('gupshup_registering'); // sin transición nueva -- PR-06 la completa reactivamente al llegar el webhook
     expect(refrescada.gupshup.appId).toBe('gs-app-real');
+    expect(refrescada.gupshup.webhookReference).toBe('gupshup:account-subscribed');
     expect(refrescada.gupshup.embedSignupUrl).toBe('https://embed.gupshup.io/xyz');
     expect(refrescada.gupshup.embedSignupUrlGeneratedAt).toBeInstanceOf(Date);
   });
@@ -633,7 +650,7 @@ describe('channel.controller#completeGupshupEmbeddedSignup()', () => {
     expect(name.startsWith('creaos')).toBe(true);
   });
 
-  test('ya tiene appId de un intento previo: NO vuelve a llamar createApp(), solo setContactDetails + getEmbedSignupLink', async () => {
+  test('ya tiene appId de un intento previo (pero sin webhookReference todavía): NO vuelve a llamar createApp(), SÍ se suscribe a eventos ACCOUNT', async () => {
     const session = await crearSesionGupshupRegistering({ gupshup: { appId: 'gs-app-ya-creada' } });
     partnerAuth.getValidToken.mockResolvedValue('token');
     partnerApps.setContactDetails.mockResolvedValue({ status: 'success' });
@@ -646,7 +663,61 @@ describe('channel.controller#completeGupshupEmbeddedSignup()', () => {
     );
 
     expect(partnerApps.createApp).not.toHaveBeenCalled();
+    expect(partnerApps.getAppAccessToken).toHaveBeenCalledWith('gs-app-ya-creada', 'token');
+    expect(partnerSubscriptions.subscribeToEvents).toHaveBeenCalledTimes(1);
     expect(partnerApps.setContactDetails).toHaveBeenCalledWith('gs-app-ya-creada', expect.any(Object), 'token');
+  });
+
+  test('ya tiene webhookReference de un intento previo: NO vuelve a llamar getAppAccessToken()/subscribeToEvents()', async () => {
+    const session = await crearSesionGupshupRegistering({
+      gupshup: { appId: 'gs-app-ya-creada', webhookReference: 'gupshup:account-subscribed' },
+    });
+    partnerAuth.getValidToken.mockResolvedValue('token');
+    partnerApps.setContactDetails.mockResolvedValue({ status: 'success' });
+    partnerApps.getEmbedSignupLink.mockResolvedValue({ link: 'https://embed.gupshup.io/xyz' });
+
+    await completeGupshupEmbeddedSignup(
+      { businessId: business._id, user: requester, body: { sessionId: String(session._id) } },
+      mockRes(),
+      jest.fn()
+    );
+
+    expect(partnerApps.createApp).not.toHaveBeenCalled();
+    expect(partnerApps.getAppAccessToken).not.toHaveBeenCalled();
+    expect(partnerSubscriptions.subscribeToEvents).not.toHaveBeenCalled();
+    expect(partnerApps.setContactDetails).toHaveBeenCalledWith('gs-app-ya-creada', expect.any(Object), 'token');
+  });
+
+  // NOTA: el guard de "BACKEND_PUBLIC_URL no configurado" (channel.controller.js,
+  // justo antes de armar la URL de suscripción) NO tiene un test dedicado acá
+  // a propósito — a diferencia de GUPSHUP_PARTNER_EMAIL en partner.auth.test.js,
+  // que se testea recargando el módulo con jest.isolateModules(), la cadena de
+  // requires de channel.controller.js incluye modelos Mongoose (Channel
+  // OnboardingSession.model.js) — recargarla en un registro aislado da una
+  // instancia de mongoose desconectada, así que el guard quedaría probado
+  // contra un doble falso silencioso (la sesión nunca se persistiría de
+  // verdad). El guard sigue el mismo patrón exacto, ya testeado, de
+  // GUPSHUP_PARTNER_EMAIL/SECRET en partner.auth.js#getValidToken().
+
+  test('error de Gupshup al suscribirse a eventos ACCOUNT: se propaga, sesión queda failed con error.step:"gupshup_registration"', async () => {
+    const session = await crearSesionGupshupRegistering({ gupshup: { appId: 'gs-app-ya-creada' } });
+    partnerAuth.getValidToken.mockResolvedValue('token');
+    const errorDeGupshup = Object.assign(new Error('Authentication Failed'), { statusCode: 401 });
+    partnerSubscriptions.subscribeToEvents.mockRejectedValue(errorDeGupshup);
+
+    const req = { businessId: business._id, user: requester, body: { sessionId: String(session._id) } };
+    const res = mockRes();
+    const next = jest.fn();
+
+    await completeGupshupEmbeddedSignup(req, res, next);
+
+    expect(next).toHaveBeenCalledWith(errorDeGupshup);
+    expect(partnerApps.setContactDetails).not.toHaveBeenCalled();
+
+    const refrescada = await ChannelOnboardingSession.findById(session._id);
+    expect(refrescada.status).toBe('failed');
+    expect(refrescada.error.step).toBe('gupshup_registration');
+    expect(refrescada.gupshup.webhookReference).toBeNull();
   });
 
   test('sessionId inexistente: 404, no llama a Gupshup para nada', async () => {

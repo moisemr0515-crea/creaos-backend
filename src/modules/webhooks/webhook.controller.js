@@ -6,6 +6,7 @@ const { AppError } = require('../../middleware/error.middleware');
 const { respuestaExito } = require('../../utils/response');
 const { WHATSAPP_VERIFY_TOKEN, WHATSAPP_APP_SECRET, META_APP_SECRET, FRONTEND_URL, WHATSAPP_CHANNEL_CORE_ENABLED } = require('../../config/env');
 const inboundGateway = require('../channels/inbound.gateway');
+const channelOnboardingCompletion = require('../channels/channelOnboardingCompletion.service');
 const logger = require('../../utils/logger');
 
 // ─── Public: Meta webhook verification (GET) ─────────────────────────────────
@@ -220,6 +221,22 @@ const gupshupWebhook = async (req, res, next) => {
     res.status(200).json({ received: true });
 
     const payload = req.body;
+
+    // PR-06 del blueprint maestro: el evento de Go-Live (`account-event` /
+    // ACCOUNT_VERIFIED) que confirma que un customer terminó el Embed Signup
+    // del lado de Gupshup. Se intercepta ACÁ, antes que cualquiera de los 2
+    // caminos de mensajería de abajo — es un evento de ciclo de vida del
+    // canal, no un mensaje, y ambos caminos lo descartarían en silencio si
+    // llegara hasta ellos (`change.field !== 'messages'`). No depende de
+    // WHATSAPP_CHANNEL_CORE_ENABLED — corre siempre. Ver
+    // channelOnboardingCompletion.service.js y
+    // docs/integrations/gupshup-registration-contract.md §11.
+    if (channelOnboardingCompletion.isAccountVerifiedEvent(payload)) {
+      channelOnboardingCompletion.handleGupshupAccountVerified(payload.gs_app_id).catch((err) =>
+        logger.error('[webhook] channelOnboardingCompletion.handleGupshupAccountVerified error:', { message: err.message, stack: err.stack })
+      );
+      return;
+    }
 
     // Feature flag temporal (Blueprint, Decisión 3, sub-fase 1.c) — default
     // OFF. Con el flag apagado (estado actual), todo el código de abajo de
