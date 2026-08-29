@@ -268,16 +268,97 @@ Confirmado entrando directo a `partner.gupshup.io` → Ajustes → Soluciones: e
 - **Solution ID conjunto**: ya existe y está `APPROVED` — no es un prerrequisito pendiente para PR-05, es un hecho ya resuelto del lado de la cuenta de CREA OS.
 - La pregunta de §8 ya cumplió su función — no hace falta reenviarla ni reformularla.
 
-### 9.5 — Pendiente explícito para PR-06 (NO perder esta pregunta)
+### ~~9.5 — Pendiente explícito para PR-06~~ — RESUELTO (ver §11)
 
-Al diseñar PR-05 (§10) surgió una pregunta que se decidió **no resolver ahora** — se avanzó con el diseño acotado (opción A) en vez de volver a escribirle a Dali (opción B), a propósito, para no bloquear PR-05. Pero la pregunta sigue siendo real y **hace falta responderla antes de diseñar PR-06 en firme**:
-
-> **El contrato confirmado de `GET .../onboarding/embed/link` no acepta `wabaId` ni `phoneNumberId` como parámetro — solo genera un link para que el customer lo complete del lado de Gupshup. Eso significa que PR-05 (§10) genera el link pero NO tiene ninguna confirmación de que la WABA específica que CREA OS ya resolvió en PR-04 haya quedado efectivamente asociada al `appId` de Gupshup. Pregunta para PR-06: ¿cómo se entera CREA OS de que el customer completó ese link y de que la asociación WABA↔appId ya está lista del lado de Gupshup — webhook (`Set Callback`, mencionado por el Ask AI en §3.1 pero nunca investigado en este documento), polling contra algún endpoint de estado (`Get Waba Info`, `Check Health`), o algo distinto?**
-
-Esta pregunta **no bloqueó PR-05** porque PR-05 solo necesita generar y devolver el link — pero si PR-06 arranca sin resolverla, corre el riesgo de asumir (sin fuente) que "generar el link" equivale a "la WABA ya está lista", que es exactamente el tipo de suposición sin verificar que este documento viene evitando desde el principio.
+~~Pregunta pendiente: cómo se entera CREA OS de que el customer completó el embed signup link.~~ **Resuelto**: es un webhook (evento `account-event` / `ACCOUNT_VERIFIED`, vía la Subscription API en modo `ACCOUNT`), no polling. Ver §11 para el detalle completo con fuentes.
 
 ---
 
 ## 10. PR-05 implementado (referencia — el detalle completo vive en el código, no se duplica acá)
 
 Implementado en el branch `feat/gupshup-embed-signup-link`: `partner.apps.js#getEmbedSignupLink()` (nuevo), `POST /api/v1/channels/whatsapp/embedded-signup/complete-gupshup` (nuevo), campos `gupshup.embedSignupUrl`/`embedSignupUrlGeneratedAt` en `ChannelOnboardingSession`. `obotoembed/whitelist`/`verify` quedan intactos, con su JSDoc actualizado para reflejar §9.4. Ver el PR para el diseño completo (shape de funciones, manejo de errores, decisión de reintentos) — no se repite acá para no tener 2 fuentes de verdad sobre lo mismo.
+
+---
+
+## 11. Investigación adicional — cómo saber que el registro en Gupshup terminó (insumo para PR-06)
+
+**Fecha:** misma sesión, continuación de §9.5. **Método:** auditoría del repo + WebFetch directo a `partner-docs.gupshup.io`/`docs.gupshup.io` + Ask AI (2 conversaciones, ambas por navegador, sin login) + WebSearch independiente para corroborar. **Ninguna llamada real a Gupshup** — sigue siendo investigación documental.
+
+### 11.1 — Auditoría del repo (punto 1 pedido)
+
+- **`webhookReference`** existe en `WhatsAppChannel.model.js` y `ChannelOnboardingSession.gupshup.webhookReference` — pero **nadie lo escribe ni lo lee en ningún lugar del código**, confirmado por grep. Es un campo reservado desde el diseño original (`fase-2.1-blueprint-final.md` §1.1) para exactamente este propósito, nunca implementado.
+- **`POST /api/v1/webhooks/gupshup` ya existe** (`webhook.controller.js#gupshupWebhook`) — pero es 100% mensajería entrante. Tres lugares distintos del código (`gupshupProvider.js:111`, `webhook.service.js:339`, `webhook.controller.js:182`) tienen la misma línea: `if (change.field !== 'messages') continue;` — **cualquier evento que no sea de tipo `messages` se descarta en silencio hoy**. Esto importa mucho para lo que sigue (§11.3).
+- **`gs_app_id`** ya se extrae del payload entrante en 3 lugares (`gupshupProvider.js:175`, `webhook.service.js:408`, `webhook.controller.js:244`) — se usa hoy para resolver el canal de mensajería, pero la extracción en sí ya existe y es directamente reutilizable.
+- **Ni `meta-embedded-signup-contract.md` ni la versión anterior de este documento mencionan un webhook de Gupshup** — confirmado por grep, es territorio no investigado hasta ahora (punto 4 pedido).
+
+### 11.2 — Confirmado por fuente directa (no interpretación de IA): el mecanismo es Subscription API, modo `ACCOUNT` existe
+
+`POST https://api.gupshup.io/wa/app/{appId}/subscription` — nótese el host: `api.gupshup.io`, no `partner.gupshup.io` (distinto de todo lo demás en `partner.apps.js`).
+
+| Campo | Valor |
+|---|---|
+| **Auth** | Header `apikey` — el apikey **de la app específica**, no el `token` de partner. Este apikey todavía no se obtiene en ningún punto del flujo actual (ver gap en §11.5). |
+| **Body** (form-urlencoded) | `url` (el callback), `tag`, `version`, `modes` (array de valores), `doCheck` |
+| **Valores válidos de `modes`** | `NONE, SENT, DELIVERED, READ, DELETED, OTHERS, COPY, MESSAGE, TEMPLATE, ACCOUNT, BILLING` — **`ACCOUNT` confirmado explícito, código numérico 256, posición 8 de la lista** |
+
+**Fuente**: https://docs.gupshup.io/reference/addsubscriptionforapp — WebFetch directo, **no es interpretación de IA sobre su propia documentación, es el contrato tal cual está publicado**.
+
+Esto también explica un hallazgo aparte: la API vieja "Set Callback" (`PUT /partner/app/{appId}/callback`, bajo `partner-docs.gupshup.io`) está **deprecada** — Gupshup pide migrar a esta Subscription API. Encontrado independiente vía WebSearch: *"Gupshup is deprecating the 'Set callback URL' and 'Update Inbound Events on App's Callback' APIs, requesting users to start using the subscription API instead."*
+
+### 11.3 — El evento y su payload — Ask AI (2 conversaciones) + corroboración independiente por WebSearch
+
+Se le preguntó al Ask AI de `partner-docs.gupshup.io`, textual:
+
+> *"After a customer completes the Generate Embed Signed Link flow and associates their WABA with our app, how does the Tech Provider (partner) get notified — is there a webhook, or do we need to poll an endpoint to check the association status?"*
+
+Respuesta (transcripta):
+
+> *"After the customer finishes the embedded onboarding flow, the partner can be notified via a callback/webhook. [...] You can configure the live-event callback to receive notifications about the app's live events. This callback informs you when an app goes live through the embedded link. So the expected pattern is webhook-based notification, not polling."*
+
+Repregunta directa pidiendo el evento exacto:
+
+> *"Yes, please identify which callback event indicates the WABA/app association is complete, and what payload to expect. Also is this 'live-event callback' affected by the deprecation of Set Callback in favor of the Subscription API?"*
+
+Respuesta (transcripta completa):
+
+> *"Yes — the callback that indicates the onboarding/association is complete is the Go-Live Event. Subscribe your callback to ACCOUNT mode, then when onboarding completes you'll receive an account-event with status: ACCOUNT_VERIFIED. This is explicitly described as: sent whenever an app completes onboarding; used to inform you when an app goes live through the embedded link.*
+>
+> *Payload to expect (V3-style):*
+> ```json
+> {
+>   "entry": [{
+>     "changes": [{
+>       "field": "account-event",
+>       "value": { "payload": { "status": "ACCOUNT_VERIFIED" }, "type": "status-event" }
+>     }],
+>     "id": "731055023430007",
+>     "time": 1778737735857
+>   }],
+>   "gs_app_id": "4b886a79-6bc4-4fd6-8612-8104d0da1a94",
+>   "object": "whatsapp_business_account"
+> }
+> ```
+>
+> *So yes: for this event, you should rely on the Subscription API rather than the older Set Callback approach."*
+
+**Corroboración independiente** (WebSearch, no la misma conversación de Ask AI, resumiendo contenido indexado real): *"The `status-event` is triggered when the status of the WABA changes, with one possible value being `ACCOUNT_VERIFIED`, which indicates the app upgraded from Sandbox to Live."* y *"The webhook payload includes a type field with value 'account-event'."* — coincide con lo que dijo el Ask AI, por una vía de recuperación distinta.
+
+**Corroboración adicional, directa** (WebFetch de `docs.gupshup.io/docs/subscriptions-and-notifications`, página real no interpretada por el chat): confirma que `"account-event"` es un tipo de evento real documentado, agrupando sub-tipos `tier-events, pndn-events, review-events, status-events, capability-events` — `status-events` coincide con el `"type": "status-event"` del payload que reportó el Ask AI.
+
+**Nivel de confianza**: el **tipo de mecanismo** (webhook vía Subscription API, modo `ACCOUNT`) está confirmado por fuente directa (§11.2) + 2 corroboraciones independientes. El **payload exacto byte-a-byte** (nombres de campo, valor exacto de `status`) viene del Ask AI, corroborado pero no visto en una página estática propia — **no se probó en vivo**.
+
+### 11.4 — Hallazgo arquitectónico: el mismo webhook que ya existe
+
+`object: "whatsapp_business_account"` + `entry[].changes[].field` es **exactamente el mismo formato "v3"** que `POST /api/v1/webhooks/gupshup` ya sabe parsear hoy — el mismo endpoint, ya en producción, recibiendo mensajería. La única razón por la que un evento `account-event` no dispara nada hoy es que el código explícitamente lo descarta (`if (change.field !== 'messages') continue`, 3 lugares, §11.1). Esto es una buena noticia para PR-06: **no hace falta un endpoint nuevo, ni una URL de callback nueva** — el mecanismo de entrega ya existe y ya funciona; lo que falta es (a) suscribirse en modo `ACCOUNT` para cada app nueva, y (b) que el código deje de ignorar `change.field === 'account-event'`.
+
+### 11.5 — Gap que queda (menor, no bloqueante)
+
+Para llamar a la Subscription API (§11.2) hace falta el **apikey de la app específica** — no el `token` de partner que usa el resto de `partner.apps.js`. Ese apikey todavía no se obtiene en ningún punto del flujo (`createApp()` solo devuelve `{appId}`). Candidato visto en investigaciones anteriores pero nunca confirmado en detalle: `GET /partner/app/{appId}/token` ("Get Access Token for an App"). Es plausible que este mismo apikey sea el que, más adelante, haya que cifrar y guardar en `ChannelCredentials` para el canal DEDICATED real (PR-06/07) — es decir, resolver este gap probablemente sirve para dos cosas a la vez, no es trabajo aparte. **No se investigó el contrato exacto de ese endpoint en esta sesión** — queda para cuando se diseñe PR-06 en firme.
+
+### 11.6 — ¿Hace falta escribirle a Dali?
+
+**No de forma bloqueante.** A diferencia de la investigación de §9 (donde la única fuente disponible era interpretación de IA con matices explícitos de "no estoy seguro"), acá el mecanismo central (Subscription API, modo `ACCOUNT`) está confirmado por una página de documentación real, no por el chat. Lo que sigue sin probarse en vivo es el detalle fino del payload y el contrato exacto de `GET /partner/app/{appId}/token` — suficiente para diseñar PR-06, no suficiente para mergearlo sin una prueba real primero.
+
+Si de todos modos se quiere una confirmación humana antes de diseñar PR-06 (opcional, no obligatoria):
+
+> Hola Dali — una consulta más rápida sobre el flujo de alta de WhatsApp. Cuando un customer termina el Embed Signed Link y su WABA queda asociada a nuestra app, ¿el mecanismo correcto para enterarnos es suscribirnos en modo `ACCOUNT` vía `POST /wa/app/{appId}/subscription` y esperar un evento `account-event`/`ACCOUNT_VERIFIED` en nuestro webhook ya configurado? Y una segunda: para llamar a esa Subscription API hace falta el apikey de la app puntual — ¿ese apikey se obtiene con `GET /partner/app/{appId}/token`, o hay otro endpoint? ¡Gracias!
