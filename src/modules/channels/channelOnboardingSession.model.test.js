@@ -45,8 +45,11 @@ describe('ChannelOnboardingSession (modelo)', () => {
     expect(session.status).toBe('initiated');
   });
 
-  test('acepta cada uno de los 6 valores documentados del enum', async () => {
-    const STATUSES = ['initiated', 'meta_authorized', 'gupshup_registering', 'completed', 'failed', 'expired'];
+  test('acepta cada uno de los 9 valores documentados del enum (6 originales + 3 de reclamo atómico)', async () => {
+    const STATUSES = [
+      'initiated', 'exchanging_code', 'meta_authorized', 'resolving_number',
+      'gupshup_registering', 'completing', 'completed', 'failed', 'expired',
+    ];
 
     for (const status of STATUSES) {
       const session = await ChannelOnboardingSession.create({ tenantId: business._id, status });

@@ -27,15 +27,28 @@ const DISPLAY_NAME_MAX_LENGTH = 100;
 
 // Estados de ChannelOnboardingSession que cuentan como "sin terminar" (ver
 // STATUSES en channelOnboardingSession.model.js) — completed/failed/expired
-// no compiten por nada, no hace falta ni contarlos.
-const ESTADOS_SIN_TERMINAR = ['initiated', 'meta_authorized', 'gupshup_registering'];
+// no compiten por nada, no hace falta ni contarlos. Incluye los 3 estados de
+// reclamo atómico (exchanging_code/resolving_number/completing) — una
+// sesión a mitad de un reclamo también está "sin terminar", y también debe
+// poder vencer por expiración perezosa si queda huérfana ahí por un crash
+// del proceso a mitad de camino (ver claimSessionForStep()).
+const ESTADOS_SIN_TERMINAR = [
+  'initiated', 'exchanging_code', 'meta_authorized', 'resolving_number', 'gupshup_registering', 'completing',
+];
 
 // Mensajes por estado cuando NO coincide con el esperado por el paso actual
-// (PR-04, blueprint maestro §21-22).
+// (PR-04, blueprint maestro §21-22). exchanging_code/resolving_number/
+// completing casi nunca deberían mostrarse de verdad a un usuario — son
+// estados de milisegundos (el tiempo de una sola llamada HTTP externa) — pero
+// tienen mensaje propio por completitud, para el caso borde de que otro
+// request choque justo en esa ventana.
 const MENSAJES_ESTADO_INVALIDO = {
   initiated: 'Falta completar el paso anterior (/code) antes de continuar.',
+  exchanging_code: 'Tu conexión con Meta está en proceso — esperá un momento y probá de nuevo.',
   meta_authorized: 'La sesión ya avanzó más allá de este paso.',
+  resolving_number: 'Estamos confirmando los datos de tu WhatsApp Business — esperá un momento y probá de nuevo.',
   gupshup_registering: 'La sesión ya avanzó más allá de este paso.',
+  completing: 'Estamos terminando de configurar tu canal de WhatsApp — esperá un momento.',
   completed: 'La sesión ya se completó.',
   failed: 'La sesión falló — hay que reiniciar el onboarding desde /init.',
   expired: 'La sesión expiró — hay que reiniciar el onboarding desde /init.',
@@ -102,6 +115,84 @@ async function loadSessionForStep(sessionId, tenantId, expectedStatus) {
   }
 
   return session;
+}
+
+/**
+ * Variante atómica de loadSessionForStep() — usada por /code y /callback
+ * (fix de idempotencia/race condition; NO por /complete-gupshup, que acepta
+ * un array de estados y tiene su propia lógica de reintento ya probada
+ * desde PR-05 — queda fuera de este fix a propósito, menor riesgo de
+ * regresión). Mismo patrón que outbound.worker.js:31-35
+ * (findOneAndUpdate({_id,status:'pending'},{status:'processing'})): reclama
+ * la sesión con un solo findOneAndUpdate filtrando por el estado esperado,
+ * en vez de leer y comparar en memoria antes de guardar.
+ *
+ * Elimina la ventana entre "leer el estado" y "guardar" donde 2 requests
+ * concurrentes para la MISMA sesión (reintento de red por timeout, doble
+ * click sobre "Conectar WhatsApp", etc.) podían pasar ambas el chequeo de
+ * loadSessionForStep() y terminar pisándose el resultado en el `save()`
+ * final — con el reclamo atómico, el que pierde la carrera nunca llega a
+ * hacer ningún save() (ve `null`, tira InvalidSessionStateError de una),
+ * así que no hay forma de que corrompa el resultado del que ganó.
+ *
+ * @param {string} sessionId
+ * @param {import('mongoose').Types.ObjectId} tenantId
+ * @param {string} expectedStatus - un único estado esperado (a diferencia
+ *   de loadSessionForStep(), acá no hace falta un array — /code y /callback
+ *   siempre esperan exactamente un estado previo).
+ * @param {string} claimStatus - estado transitorio al que se mueve
+ *   atómicamente la sesión si gana la carrera (ej. 'exchanging_code'). El
+ *   caller es responsable de moverlo al estado final real en caso de éxito,
+ *   o a 'failed' vía markSessionFailed() en caso de error, antes de
+ *   terminar. Dejar una sesión en `claimStatus` para siempre ante un crash
+ *   del proceso a mitad de camino es un caso borde aceptado — mismo
+ *   criterio que la limitación ya documentada en
+ *   channelOnboardingCompletion.service.js para el estado 'completing'.
+ * @returns {Promise<import('./channelOnboardingSession.model')>} el
+ *   documento YA en `claimStatus`.
+ * @throws {AppError} 404 si no existe / no es del tenant.
+ * @throws {InvalidSessionStateError} si existe pero no está en
+ *   `expectedStatus` — cubre tanto "genuinamente en otro estado" como
+ *   "perdió la carrera contra otro request concurrente para esta misma
+ *   sesión". Los 2 casos son indistinguibles desde acá a propósito: la
+ *   respuesta correcta es la misma en ambos, 409 con el estado actual.
+ */
+async function claimSessionForStep(sessionId, tenantId, expectedStatus, claimStatus) {
+  const session = await ChannelOnboardingSession.findOne({ _id: sessionId, tenantId });
+  if (!session) {
+    throw new AppError('Sesión de onboarding no encontrada', 404);
+  }
+
+  // Expiración perezosa PRIMERO, igual que loadSessionForStep() — antes de
+  // intentar reclamar, para no reclamar una sesión que en realidad ya
+  // venció. Esta lectura/guardado no necesita ser atómico: el reclamo real
+  // de abajo sí lo es, y evalúa el estado vigente en Mongo en el momento
+  // exacto del update, no el que se leyó acá arriba — 2 requests
+  // concurrentes leyendo este `if` a la vez no reabren la ventana de la
+  // carrera, porque ninguno de los 2 puede ganar el reclamo si el otro ya
+  // lo ganó primero.
+  if (ESTADOS_SIN_TERMINAR.includes(session.status) && session.expiresAt < new Date()) {
+    session.status = 'expired';
+    await session.save();
+  }
+
+  const reclamada = await ChannelOnboardingSession.findOneAndUpdate(
+    { _id: sessionId, tenantId, status: expectedStatus },
+    { $set: { status: claimStatus } },
+    { new: true }
+  );
+
+  if (!reclamada) {
+    // Se relee para reportar el estado REAL en el 409 (pudo haber expirado
+    // recién arriba, o perdido la carrera contra otro request concurrente,
+    // o genuinamente estar en otro estado) — mismo shape de error que
+    // loadSessionForStep(). `select('status')` alcanza, no hace falta el
+    // documento completo solo para leer un campo.
+    const actual = await ChannelOnboardingSession.findOne({ _id: sessionId, tenantId }).select('status');
+    throw new InvalidSessionStateError(actual ? actual.status : 'desconocido');
+  }
+
+  return reclamada;
 }
 
 async function markSessionFailed(session, step, message) {
@@ -230,7 +321,13 @@ const codeEmbeddedSignup = async (req, res, next) => {
 
     let session;
     try {
-      session = await loadSessionForStep(sessionId, req.businessId, 'initiated');
+      // Reclamo atómico (fix de idempotencia/race condition) — si 2 POST
+      // /code llegan casi simultáneos para el mismo sessionId (reintento de
+      // red por timeout, doble click), solo uno gana el `initiated` →
+      // `exchanging_code` y sigue de acá para abajo; el otro tira
+      // InvalidSessionStateError de una, sin haber llamado a Meta ni tocado
+      // la sesión — no hay forma de que se pisen entre sí.
+      session = await claimSessionForStep(sessionId, req.businessId, 'initiated', 'exchanging_code');
     } catch (err) {
       if (err instanceof InvalidSessionStateError) return responderEstadoInvalido(res, err);
       throw err;
@@ -281,7 +378,9 @@ const callbackEmbeddedSignup = async (req, res, next) => {
 
     let session;
     try {
-      session = await loadSessionForStep(sessionId, req.businessId, 'meta_authorized');
+      // Mismo reclamo atómico que /code — 2 POST /callback concurrentes
+      // para el mismo sessionId solo pueden avanzar uno de a la vez.
+      session = await claimSessionForStep(sessionId, req.businessId, 'meta_authorized', 'resolving_number');
     } catch (err) {
       if (err instanceof InvalidSessionStateError) return responderEstadoInvalido(res, err);
       throw err;

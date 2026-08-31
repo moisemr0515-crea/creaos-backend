@@ -22,8 +22,18 @@ const crypto = require('crypto');
 
 const STATUSES = [
   'initiated', // init() creó la sesión, esperando que el usuario complete el popup de Meta
+  // Fix de idempotencia/race condition (ver channel.controller.js#claimSessionForStep()
+  // y channelOnboardingCompletion.service.js#handleGupshupAccountVerified()):
+  // los 3 estados marcados "reclamo atómico" de abajo son transitorios — nadie
+  // los deja así a propósito, existen solo para que 2 requests concurrentes
+  // sobre la MISMA sesión (reintento de red, doble entrega de un webhook,
+  // doble click) no puedan pisarse el resultado. Mismo patrón que
+  // OutboundEvent.status:'processing' en outbound.worker.js.
+  'exchanging_code', // reclamo atómico de /code: canjeando el code de Meta, todavía no confirmado
   'meta_authorized', // callback recibido: code canjeado, WABA + número ya elegidos en Meta
+  'resolving_number', // reclamo atómico de /callback: resolviendo el phoneNumber real con Meta
   'gupshup_registering', // complete-onboarding en curso: registrando el número en Gupshup Partner API
+  'completing', // reclamo atómico del webhook ACCOUNT_VERIFIED: creando WhatsAppChannel/ChannelCredentials
   'completed', // WhatsAppChannel + ChannelCredentials creados, canal operativo
   'failed', // algún paso falló de forma terminal (no reintentable sin volver a init)
   'expired', // el usuario nunca volvió del popup de Meta dentro de la ventana esperada
