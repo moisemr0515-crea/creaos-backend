@@ -126,7 +126,7 @@ describe('channelOnboardingCompletion#handleGupshupAccountVerified()', () => {
     await handleGupshupAccountVerified('gs-app-real');
 
     expect(infoSpy).toHaveBeenCalledWith(
-      '[channelOnboardingCompletion] account-event para una sesión que ya no está en gupshup_registering, no-op',
+      '[channelOnboardingCompletion] account-event para una sesión que ya no está en gupshup_registering (o ya la reclamó otra entrega concurrente del mismo webhook), no-op',
       expect.objectContaining({ sessionId: String(session._id), currentStatus: 'completed' })
     );
     expect(await WhatsAppChannel.countDocuments({})).toBe(0);
@@ -195,6 +195,36 @@ describe('channelOnboardingCompletion#handleGupshupAccountVerified()', () => {
     expect(refrescada.error.step).toBeNull();
     // El token de Meta ya no tiene uso — se limpia por higiene.
     expect(refrescada.meta.accessTokenCipher).toBeNull();
+  });
+
+  test('CONCURRENCIA (fix de idempotencia/race condition): 2 entregas casi simultáneas del mismo webhook — solo una crea el canal, la otra hace no-op limpio sin corromper el resultado de la ganadora', async () => {
+    await crearSesionListaParaWebhook();
+    partnerAuth.getValidToken.mockResolvedValue('partner-token-real');
+    partnerApps.getAppAccessToken.mockResolvedValue({ apikey: 'apikey-real-de-la-app' });
+
+    // Promise.all() sobre 2 llamadas reales (no mockeadas entre sí) — el
+    // reclamo atómico (findOneAndUpdate) es lo único que decide cuál gana,
+    // corre contra Mongo real, no es una carrera simulada/artificial.
+    await Promise.all([
+      handleGupshupAccountVerified('gs-app-real'),
+      handleGupshupAccountVerified('gs-app-real'),
+    ]);
+
+    // (c) nunca queda un WhatsAppChannel duplicado, sin importar cuál ganó.
+    expect(await WhatsAppChannel.countDocuments({ providerAppId: 'gs-app-real' })).toBe(1);
+    expect(await ChannelCredentials.countDocuments({})).toBe(1);
+
+    // (a) la ganadora completó la sesión de verdad.
+    const refrescada = await ChannelOnboardingSession.findOne({ 'gupshup.appId': 'gs-app-real' });
+    expect(refrescada.status).toBe('completed');
+    expect(refrescada.channel).not.toBeNull();
+    expect(refrescada.error.step).toBeNull();
+
+    // (b) la que pierde nunca llega a trabajar — con el diseño anterior
+    // (findOne + save), ambas hubieran llamado a getAppAccessToken() y la
+    // perdedora hubiera podido pisar el resultado de la ganadora en el
+    // save() final. Acá se ejecuta UNA sola vez.
+    expect(partnerApps.getAppAccessToken).toHaveBeenCalledTimes(1);
   });
 
   test('error de Gupshup al pedir el apikey de la app: la sesión queda failed con error.step:"channel_creation", no crea ningún canal', async () => {

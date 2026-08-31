@@ -401,6 +401,55 @@ describe('channel.controller#codeEmbeddedSignup() / #callbackEmbeddedSignup()', 
 
       expect(metaEmbeddedSignup.exchangeCode).not.toHaveBeenCalled();
     });
+
+    test('CONCURRENCIA (fix de idempotencia/race condition): 2 POST /code simultáneos para la misma sesión — solo uno canjea el code con Meta, el otro recibe 409 sin corromper el resultado del ganador', async () => {
+      const session = await crearSesionInitiated();
+      // El code de OAuth de Meta es de un solo uso por protocolo — si el
+      // reclamo atómico fallara y los 2 requests llegaran a llamar a Meta,
+      // la segunda llamada real fallaría así ("code ya usado"). La
+      // aserción real de este test es que esa segunda llamada NUNCA ocurre
+      // (exchangeCode se llama una sola vez) — el reclamo atómico rechaza
+      // al perdedor ANTES de que llegue a tocar Meta.
+      metaEmbeddedSignup.exchangeCode
+        .mockResolvedValueOnce('token-real-de-meta')
+        .mockRejectedValue(Object.assign(new Error('This authorization code has been used.'), { statusCode: 400 }));
+
+      const req1 = { businessId: business._id, body: { sessionId: String(session._id), code: 'code-real' } };
+      const req2 = { businessId: business._id, body: { sessionId: String(session._id), code: 'code-real' } };
+      const res1 = mockRes();
+      const res2 = mockRes();
+
+      await Promise.all([
+        codeEmbeddedSignup(req1, res1, jest.fn()),
+        codeEmbeddedSignup(req2, res2, jest.fn()),
+      ]);
+
+      // (a)/(b) exactamente un 200 y un 409 entre los 2 — sin importar cuál ganó.
+      const status1 = res1.status.mock.calls[0]?.[0];
+      const status2 = res2.status.mock.calls[0]?.[0];
+      expect([status1, status2].sort()).toEqual([200, 409]);
+
+      const [resPerdedora] = [res1, res2].filter((r) => r.status.mock.calls[0]?.[0] === 409);
+      const errores = resPerdedora.json.mock.calls[0][0].errors;
+      expect(errores.code).toBe('INVALID_SESSION_STATE');
+      // El estado que ve el perdedor depende de cuán rápido ya avanzó el
+      // ganador en el instante exacto de la re-lectura (real, no
+      // determinístico) — cualquiera de los 2 es correcto: 'exchanging_code'
+      // si todavía no terminó, 'meta_authorized' si ya terminó.
+      expect(['exchanging_code', 'meta_authorized']).toContain(errores.currentState);
+
+      // exchangeCode() se llamó UNA sola vez — el perdedor nunca llegó a
+      // tocar Meta en absoluto, mucho menos con el code ya usado.
+      expect(metaEmbeddedSignup.exchangeCode).toHaveBeenCalledTimes(1);
+
+      // (c) el estado final de la sesión es el de éxito real, nunca
+      // 'failed' por la carrera — el perdedor nunca hizo ningún save().
+      const refrescada = await ChannelOnboardingSession.findById(session._id);
+      expect(refrescada.status).toBe('meta_authorized');
+      expect(refrescada.error.step).toBeNull();
+      const descifrado = channelCrypto.decrypt(refrescada.meta.accessTokenCipher, `onboarding:${session._id}`);
+      expect(descifrado).toBe('token-real-de-meta');
+    });
   });
 
   describe('callbackEmbeddedSignup()', () => {
@@ -511,6 +560,39 @@ describe('channel.controller#codeEmbeddedSignup() / #callbackEmbeddedSignup()', 
       await callbackEmbeddedSignup({ businessId: business._id, body: { wabaId: 'w', phoneNumberId: 'p' } }, res, next);
       expect(next).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 400 }));
       expect(metaEmbeddedSignup.resolvePhoneNumber).not.toHaveBeenCalled();
+    });
+
+    test('CONCURRENCIA (fix de idempotencia/race condition): 2 POST /callback simultáneos para la misma sesión — solo uno resuelve el phoneNumber, el otro recibe 409 sin corromper el resultado del ganador', async () => {
+      const session = await crearSesionMetaAuthorized();
+      metaEmbeddedSignup.resolvePhoneNumber.mockResolvedValue({ phoneNumber: '+16315555556', verifiedName: 'CREA OS' });
+
+      const req1 = { businessId: business._id, body: { sessionId: String(session._id), wabaId: 'waba-real', phoneNumberId: 'pnid-real' } };
+      const req2 = { businessId: business._id, body: { sessionId: String(session._id), wabaId: 'waba-real', phoneNumberId: 'pnid-real' } };
+      const res1 = mockRes();
+      const res2 = mockRes();
+
+      await Promise.all([
+        callbackEmbeddedSignup(req1, res1, jest.fn()),
+        callbackEmbeddedSignup(req2, res2, jest.fn()),
+      ]);
+
+      const status1 = res1.status.mock.calls[0]?.[0];
+      const status2 = res2.status.mock.calls[0]?.[0];
+      expect([status1, status2].sort()).toEqual([200, 409]);
+
+      const [resPerdedora] = [res1, res2].filter((r) => r.status.mock.calls[0]?.[0] === 409);
+      const errores = resPerdedora.json.mock.calls[0][0].errors;
+      expect(errores.code).toBe('INVALID_SESSION_STATE');
+      expect(['resolving_number', 'gupshup_registering']).toContain(errores.currentState);
+
+      // resolvePhoneNumber() se llamó UNA sola vez — el perdedor nunca
+      // llegó a llamar a Meta.
+      expect(metaEmbeddedSignup.resolvePhoneNumber).toHaveBeenCalledTimes(1);
+
+      const refrescada = await ChannelOnboardingSession.findById(session._id);
+      expect(refrescada.status).toBe('gupshup_registering');
+      expect(refrescada.error.step).toBeNull();
+      expect(refrescada.meta.phoneNumber).toBe('+16315555556');
     });
   });
 
