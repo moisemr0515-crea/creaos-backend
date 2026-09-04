@@ -44,28 +44,37 @@ Para contraste, los otros 2 call sites de `generateReply()` sí tienen algo de c
 
 ---
 
-## 2026-09-04 — Incidente real de Embedded Signup: 401 de Gupshup deslogueaba al usuario, y la Subscription API rechazó el apikey recién creado
+## 2026-09-04 — Incidente real de Embedded Signup: 401 de Gupshup deslogueaba al usuario; endpoint de suscripción equivocado; ahora bloqueado por "Invalid URL Passed"
 
-**Estado:** Resuelto en este mismo PR (fix/gupshup-401-mapping-and-subscription-backoff) — se deja esta entrada porque una de las 2 causas (abajo) se corrigió con una HIPÓTESIS NO CONFIRMADA con soporte de Gupshup, para que si vuelve a fallar quien lo investigue tenga el contexto completo sin repetir el diagnóstico desde cero.
-**Prioridad:** Alta (bloqueaba completar un Embedded Signup real) — resuelta.
-**Detectado en:** primer intento real de Embedded Signup en producción, tenant "Nutriva Corp" (`6a9340ae5af267a3ffd8b1b5`).
+**Estado:** Parcialmente resuelto — 2 de 3 causas encontradas ya tienen fix mergeado o en PR. La 3ra (abajo, "Invalid URL Passed") queda ABIERTA, con evidencia ya reunida para escalar a soporte de Gupshup si hace falta.
+**Prioridad:** Alta (bloquea completar un Embedded Signup real de punta a punta).
+**Detectado en:** primer intento real de Embedded Signup en producción, tenant "Nutriva Corp" (`6a9340ae5af267a3ffd8b1b5`), sesión `6a9ae932fe38b2ca69042e03`.
 **Archivos involucrados:** [`partner.errors.js`](../../src/modules/channels/providers/gupshup/partner/partner.errors.js), [`partner.subscriptions.js`](../../src/modules/channels/providers/gupshup/partner/partner.subscriptions.js), [`error.middleware.js`](../../src/middleware/error.middleware.js), [`auth.middleware.js`](../../src/middleware/auth.middleware.js), [`client.ts` (crea-os-ignite)](../../../crea-os-ignite/src/lib/api/client.ts).
 
-### Problema (2 causas independientes, encadenadas)
+### Causa 1 (RESUELTA, mergeada) — 401 de Gupshup deslogueaba al usuario
 
-1. **`POST /wa/app/{appId}/subscription` (Subscription API de Gupshup) respondió 401** segundos después de que `createApp()` y `GET /partner/app/{appId}/token` devolvieran 200 para la MISMA app recién creada. HIPÓTESIS NO CONFIRMADA CON SOPORTE DE GUPSHUP: la Subscription API (`api.gupshup.io`) y el Partner API de control plane (`partner.gupshup.io`) son sistemas separados — es plausible que el apikey de una app recién creada tarde un momento en propagarse al primero aunque el segundo ya lo reconozca. Mitigado con un backoff progresivo (1s/3s/5s) en `partner.subscriptions.js`, pero no hay confirmación oficial de que esa sea la causa real ni de cuánto puede tardar en el peor caso.
-2. **Ese 401 (de Gupshup, nada que ver con la sesión del usuario) se reenviaba tal cual como HTTP 401** al frontend. `apiFetch()` (`client.ts`) trataba CUALQUIER 401 en un endpoint no-auth como "tu sesión expiró": intentaba refrescar el token, reintentaba la petición, volvía a fallar con el mismo 401 (porque el problema era de Gupshup, no del usuario), y deslogueaba a la fuerza. El usuario tuvo que volver a loguearse a mitad del flujo de Embedded Signup.
+Un 401 de Gupshup (nada que ver con la sesión del usuario) se reenviaba tal cual como HTTP 401 al frontend. `apiFetch()` (`client.ts`) trataba CUALQUIER 401 en un endpoint no-auth como "tu sesión expiró" y deslogueaba a la fuerza. Fix: `partner.errors.js` ya no mapea ningún error de Gupshup a 401 (pasa a 502); `AppError` ganó un `code` opcional, `auth.middleware.js` marca sus 401 con `AUTH_SESSION_INVALID_CODE`; `client.ts` solo desloguea si el 401 trae ese código exacto. Mergeado en PR #75.
 
-### Fix aplicado
+### Causa 2 (RESUELTA, PR abierto) — endpoint de suscripción equivocado
 
-- `partner.errors.js` ya no mapea ningún error de Gupshup a HTTP 401 — pasa a 502 (mismo criterio que sus 500). Esto por sí solo ya vuelve inequívoco cualquier 401 real del backend (solo lo emite `auth.middleware.js`/`auth.service.js`).
-- Además, `AppError` ganó un `code` opcional; `auth.middleware.js` marca sus 401 con `AUTH_SESSION_INVALID_CODE` — señal estructural explícita, no dependiente de que nadie recuerde no volver a mapear un error de tercero a 401 en el futuro.
-- `client.ts` solo desloguea/dispara `crea:unauthorized` cuando el 401 trae ese `code` exacto — cualquier otro 401 se trata como un error de negocio normal.
-- `partner.subscriptions.js#subscribeToEvents()` reintenta con backoff progresivo (1s, 3s, 5s) únicamente ante un 401 de Gupshup — cualquier otro código (400/403/409/429/500) falla en el primer intento, sin reintentar ciegamente.
+`POST https://api.gupshup.io/wa/app/{appId}/subscription` (Subscription API "self-serve", tier de mensajería) respondía 401 de forma CONSISTENTE — probado en vivo con backoff de hasta 9s, y hasta horas después del intento original, descartando la hipótesis de "propagación lenta" documentada antes acá. Causa real: ese endpoint es para apps YA live con WABA verificado (como el canal PLATFORM); nuestra app nueva nunca llegó a ese punto. El endpoint correcto es `POST https://partner.gupshup.io/partner/app/{appId}/subscription` ("Set subscription for an app", Partner Portal), con nota textual propia: *"Subscriptions can now be set for sandbox apps as well."* — pensado exactamente para este caso. Fix con header `Authorization` (no `apikey`), `modes` sin corchetes, `version: 3`. Probado en vivo contra la sesión real: **el 401 desapareció** (confirmado, ver Causa 3).
 
-### Si vuelve a pasar
+### Causa 3 (ABIERTA) — "Invalid URL Passed"
 
-Si el backoff de 1s/3s/5s no alcanza (sigue fallando con 401 después de agotar los 3 reintentos), o si Gupshup confirma/descarta la hipótesis de propagación, es en `partner.subscriptions.js` (constante `SUBSCRIPTION_401_RETRY_DELAYS_MS`) donde hay que ajustar — y valdría la pena escalarlo directo con soporte de Gupshup en vez de seguir ajustando delays a ciegas.
+Con el endpoint corregido, la llamada ya NO da 401 — ahora Gupshup responde `400 {"status":"error","message":"Invalid URL Passed"}` para el campo `url` (nuestro callback: `https://creaos-backend-production.up.railway.app/api/v1/webhooks/gupshup`).
+
+Descartado activamente, probado en vivo contra producción (todas las variantes fallan con el MISMO mensaje):
+- No es nuestro dominio: `https://example.com/webhook` (dominio ajeno, genérico, reconocido) falla igual.
+- No es el path: la URL sin ningún path (`https://creaos-backend-production.up.railway.app` a secas) falla igual.
+- No es encoding: probado tanto con `URLSearchParams` (percent-encoded, `%3A%2F%2F`) como con el body armado a mano sin encodear (`https://` literal) — mismo error en ambos casos.
+- No es el `version` (2 vs 3): ambos fallan igual.
+- No es form-urlencoded vs JSON: mandar el body como JSON da un error DISTINTO y más específico (`"Required request parameter 'modes' for method parameter type String is not present"`, estilo Spring Boot) — confirma que el endpoint sí espera form-urlencoded (lo que ya mandamos) y que con form-urlencoded correcto, `url`/`tag`/`modes` SÍ se parsean — el rechazo es una validación de negocio sobre el contenido de `url`, no un problema de formato del request.
+
+**Hipótesis no confirmada:** puede ser un prerrequisito no documentado (ej. dominio de callback debe estar pre-registrado/verificado en algún lado del Partner Portal antes de poder suscribirse — similar en espíritu al "Solution ID" que sí hizo falta para otro paso, ver `gupshup-registration-contract.md` §4), o un bug real del lado de Gupshup en su soporte de "sandbox apps" recién anunciado. La documentación pública no menciona nada de esto — el campo `url` solo dice "Should be a valid URL" en su tabla de parámetros.
+
+### Si hace falta escalar a soporte de Gupshup
+
+Ya está toda la evidencia reunida para un ticket concreto: request/response exactos de cada variante probada, confirmación de que el mismo problema ocurre con un dominio ajeno reconocido (`example.com`), y que no es un tema de encoding/formato. Pregunta puntual sugerida: *"Al llamar a `POST /partner/app/{appId}/subscription` (Set subscription for an app) para una app 'sandbox' (sin WABA asociado todavía, siguiendo la nota de que 'subscriptions can now be set for sandbox apps as well'), recibimos 400 'Invalid URL Passed' incluso con `url=https://example.com/webhook` — ¿hay algún prerrequisito de dominio/callback no documentado para este caso?"*
 
 ---
 
