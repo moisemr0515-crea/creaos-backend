@@ -21,9 +21,10 @@ describe('partner.errors#mapPartnerError()', () => {
     expect(err.message).toMatch(/parámetros inválidos/);
   });
 
-  test('401 -> AppError 401', () => {
+  test('401 -> AppError 502, NUNCA 401 (ver comentario en partner.errors.js — evita el falso "sesión expirada" en el frontend)', () => {
     const err = mapPartnerError(httpError(401, { message: 'Authentication Failed' }), 'login de partner');
-    expect(err.statusCode).toBe(401);
+    expect(err.statusCode).toBe(502);
+    expect(err.statusCode).not.toBe(401);
     expect(err.message).toMatch(/autenticación fallida/i);
   });
 

@@ -24,7 +24,16 @@ function mapPartnerError(err, context = 'operación de Gupshup Partner API') {
       return new AppError(`Gupshup Partner API rechazó la solicitud (${context}): ${mensajeGupshup || 'parámetros inválidos'}`, 400);
 
     case 401:
-      return new AppError(`Gupshup Partner API: autenticación fallida (${context}) — token de partner inválido, vencido, o header de auth incorrecto para este endpoint`, 401);
+      // NUNCA 401 acá — a propósito, incidente del 04/sep/2026 (ver
+      // docs/implementation/known-issues.md y AUTH_SESSION_INVALID_CODE en
+      // error.middleware.js). Un 401 de Gupshup (sus credenciales de partner,
+      // no las del usuario de CREA OS) reenviado tal cual como HTTP 401 es
+      // indistinguible, para el frontend, de "tu sesión de CREA OS expiró" —
+      // apiFetch() (crea-os-ignite/src/lib/api/client.ts) deslogueaba al
+      // usuario por un problema que no tenía nada que ver con su sesión. 502
+      // (Bad Gateway) sigue el mismo criterio que el case 500 de abajo: la
+      // falla es del lado del proveedor, no nuestra ni del usuario.
+      return new AppError(`Gupshup Partner API: autenticación fallida (${context}) — token de partner inválido, vencido, o header de auth incorrecto para este endpoint`, 502);
 
     case 403:
       return new AppError(`Gupshup Partner API: acceso denegado (${context})`, 403);

@@ -87,20 +87,90 @@ describe('partner.subscriptions', () => {
       expect(httpClient.request).not.toHaveBeenCalled();
     });
 
-    test('401 Authentication Failed: se mapea a AppError 401', async () => {
-      httpClient.request.mockRejectedValue(gupshupError(401, { message: 'Authentication Failed' }));
-
-      await expect(
-        partnerSubscriptions.subscribeToEvents('app-123', APIKEY, { url: 'https://x.io/wh', tag: 'x', modes: ['ACCOUNT'] })
-      ).rejects.toMatchObject({ statusCode: 401 });
-    });
-
     test('500 de Gupshup: se mapea a AppError 502 (falla del proveedor)', async () => {
       httpClient.request.mockRejectedValue(gupshupError(500, { message: 'Internal Server Error' }));
 
       await expect(
         partnerSubscriptions.subscribeToEvents('app-123', APIKEY, { url: 'https://x.io/wh', tag: 'x', modes: ['ACCOUNT'] })
       ).rejects.toMatchObject({ statusCode: 502 });
+    });
+  });
+
+  // Incidente del 04/sep/2026 (ver docs/implementation/known-issues.md y el
+  // comentario de SUBSCRIPTION_401_RETRY_DELAYS_MS en partner.subscriptions.js):
+  // un 401 justo después de createApp() puede ser Gupshup todavía propagando
+  // el apikey de la app recién creada — se reintenta con backoff progresivo
+  // ANTES de darlo por un fallo real.
+  describe('subscribeToEvents() — backoff ante 401 (hipótesis de propagación de Gupshup, no confirmada con su soporte)', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    // Corre subscribeToEvents() y va destrabando cada delay pendiente en
+    // orden — evita que la promesa quede colgada esperando un setTimeout
+    // que las fake timers nunca disparan solas.
+    async function ejecutarDestrabandoDelays(promesa) {
+      for (const ms of partnerSubscriptions.SUBSCRIPTION_401_RETRY_DELAYS_MS) {
+        await jest.advanceTimersByTimeAsync(ms);
+      }
+      return promesa;
+    }
+
+    test('401 UNA vez y luego éxito: reintenta y devuelve el body, sin propagar ningún error', async () => {
+      httpClient.request
+        .mockRejectedValueOnce(gupshupError(401, { message: 'Authentication Failed' }))
+        .mockResolvedValueOnce({ status: 200, body: { status: 'success' }, requestId: 'gsp_x' });
+
+      const promesa = partnerSubscriptions.subscribeToEvents('app-123', APIKEY, {
+        url: 'https://x.io/wh', tag: 'x', modes: ['ACCOUNT'],
+      });
+
+      const resultado = await ejecutarDestrabandoDelays(promesa);
+
+      expect(resultado).toEqual({ status: 'success' });
+      expect(httpClient.request).toHaveBeenCalledTimes(2);
+    });
+
+    test('401 persistente en los 4 intentos (1 original + 3 reintentos): se agotan los delays 1s/3s/5s en orden y se mapea a AppError 502, nunca 401', async () => {
+      httpClient.request.mockRejectedValue(gupshupError(401, { message: 'Authentication Failed' }));
+
+      const promesa = partnerSubscriptions
+        .subscribeToEvents('app-123', APIKEY, { url: 'https://x.io/wh', tag: 'x', modes: ['ACCOUNT'] })
+        .catch((err) => err); // no queremos que el reject dispare un unhandledRejection mientras se destraban los delays
+
+      const setTimeoutSpy = jest.spyOn(global, 'setTimeout');
+
+      const errorFinal = await ejecutarDestrabandoDelays(promesa);
+
+      expect(httpClient.request).toHaveBeenCalledTimes(4); // 1 original + 3 reintentos
+      expect(setTimeoutSpy.mock.calls.map((call) => call[1])).toEqual([1000, 3000, 5000]); // orden y valores exactos del backoff progresivo
+      expect(errorFinal).toMatchObject({ statusCode: 502 });
+      expect(errorFinal.statusCode).not.toBe(401);
+    });
+
+    test('400/403/409/429: NUNCA reintenta (no es un problema de timing) — falla en el primer intento', async () => {
+      httpClient.request.mockRejectedValue(gupshupError(429, { message: 'Too Many Requests' }));
+
+      await expect(
+        partnerSubscriptions.subscribeToEvents('app-123', APIKEY, { url: 'https://x.io/wh', tag: 'x', modes: ['ACCOUNT'] })
+      ).rejects.toMatchObject({ statusCode: 429 });
+
+      expect(httpClient.request).toHaveBeenCalledTimes(1);
+    });
+
+    test('un error que no es GupshupHttpError (ej. de red) se propaga tal cual, sin reintentar', async () => {
+      const errorDeRed = new Error('ECONNRESET');
+      httpClient.request.mockRejectedValue(errorDeRed);
+
+      await expect(
+        partnerSubscriptions.subscribeToEvents('app-123', APIKEY, { url: 'https://x.io/wh', tag: 'x', modes: ['ACCOUNT'] })
+      ).rejects.toBe(errorDeRed);
+
+      expect(httpClient.request).toHaveBeenCalledTimes(1);
     });
   });
 });
