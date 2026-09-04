@@ -44,28 +44,47 @@ Para contraste, los otros 2 call sites de `generateReply()` sí tienen algo de c
 
 ---
 
-## 2026-09-04 — Incidente real de Embedded Signup: 401 de Gupshup deslogueaba al usuario, y la Subscription API rechazó el apikey recién creado
+## 2026-09-04 — Incidente real de Embedded Signup: 401 de Gupshup deslogueaba al usuario; endpoint de suscripción equivocado; "Invalid URL Passed" por nuestro propio webhook
 
-**Estado:** Resuelto en este mismo PR (fix/gupshup-401-mapping-and-subscription-backoff) — se deja esta entrada porque una de las 2 causas (abajo) se corrigió con una HIPÓTESIS NO CONFIRMADA con soporte de Gupshup, para que si vuelve a fallar quien lo investigue tenga el contexto completo sin repetir el diagnóstico desde cero.
-**Prioridad:** Alta (bloqueaba completar un Embedded Signup real) — resuelta.
-**Detectado en:** primer intento real de Embedded Signup en producción, tenant "Nutriva Corp" (`6a9340ae5af267a3ffd8b1b5`).
-**Archivos involucrados:** [`partner.errors.js`](../../src/modules/channels/providers/gupshup/partner/partner.errors.js), [`partner.subscriptions.js`](../../src/modules/channels/providers/gupshup/partner/partner.subscriptions.js), [`error.middleware.js`](../../src/middleware/error.middleware.js), [`auth.middleware.js`](../../src/middleware/auth.middleware.js), [`client.ts` (crea-os-ignite)](../../../crea-os-ignite/src/lib/api/client.ts).
+**Estado:** 3 de 3 causas encontradas y arregladas a nivel de código (2 mergeadas, 1 en PR con tests en verde). La verificación 100% end-to-end en vivo queda pendiente de un despliegue real — ver "Por qué la prueba en vivo no pudo terminar de confirmarlo" más abajo.
+**Prioridad:** Alta (bloquea completar un Embedded Signup real de punta a punta).
+**Detectado en:** primer intento real de Embedded Signup en producción, tenant "Nutriva Corp" (`6a9340ae5af267a3ffd8b1b5`), sesión `6a9ae932fe38b2ca69042e03`, appId de Gupshup `cd6ac9ef-824a-48cc-ab85-77cb3f21c5c4`.
+**Archivos involucrados:** [`partner.errors.js`](../../src/modules/channels/providers/gupshup/partner/partner.errors.js), [`partner.subscriptions.js`](../../src/modules/channels/providers/gupshup/partner/partner.subscriptions.js), [`error.middleware.js`](../../src/middleware/error.middleware.js), [`auth.middleware.js`](../../src/middleware/auth.middleware.js), [`channel.controller.js`](../../src/modules/channels/channel.controller.js), [`channelOnboardingWebhook.controller.js`](../../src/modules/channels/channelOnboardingWebhook.controller.js) (nuevo), [`channelOnboardingWebhook.constants.js`](../../src/modules/channels/channelOnboardingWebhook.constants.js) (nuevo), [`webhook.routes.js`](../../src/modules/webhooks/webhook.routes.js), [`client.ts` (crea-os-ignite)](../../../crea-os-ignite/src/lib/api/client.ts).
 
-### Problema (2 causas independientes, encadenadas)
+### Causa 1 (RESUELTA, mergeada) — 401 de Gupshup deslogueaba al usuario
 
-1. **`POST /wa/app/{appId}/subscription` (Subscription API de Gupshup) respondió 401** segundos después de que `createApp()` y `GET /partner/app/{appId}/token` devolvieran 200 para la MISMA app recién creada. HIPÓTESIS NO CONFIRMADA CON SOPORTE DE GUPSHUP: la Subscription API (`api.gupshup.io`) y el Partner API de control plane (`partner.gupshup.io`) son sistemas separados — es plausible que el apikey de una app recién creada tarde un momento en propagarse al primero aunque el segundo ya lo reconozca. Mitigado con un backoff progresivo (1s/3s/5s) en `partner.subscriptions.js`, pero no hay confirmación oficial de que esa sea la causa real ni de cuánto puede tardar en el peor caso.
-2. **Ese 401 (de Gupshup, nada que ver con la sesión del usuario) se reenviaba tal cual como HTTP 401** al frontend. `apiFetch()` (`client.ts`) trataba CUALQUIER 401 en un endpoint no-auth como "tu sesión expiró": intentaba refrescar el token, reintentaba la petición, volvía a fallar con el mismo 401 (porque el problema era de Gupshup, no del usuario), y deslogueaba a la fuerza. El usuario tuvo que volver a loguearse a mitad del flujo de Embedded Signup.
+Un 401 de Gupshup (nada que ver con la sesión del usuario) se reenviaba tal cual como HTTP 401 al frontend. `apiFetch()` (`client.ts`) trataba CUALQUIER 401 en un endpoint no-auth como "tu sesión expiró" y deslogueaba a la fuerza. Fix: `partner.errors.js` ya no mapea ningún error de Gupshup a 401 (pasa a 502); `AppError` ganó un `code` opcional, `auth.middleware.js` marca sus 401 con `AUTH_SESSION_INVALID_CODE`; `client.ts` solo desloguea si el 401 trae ese código exacto. Mergeado en PR #75.
 
-### Fix aplicado
+### Causa 2 (RESUELTA, mergeada) — endpoint de suscripción equivocado
 
-- `partner.errors.js` ya no mapea ningún error de Gupshup a HTTP 401 — pasa a 502 (mismo criterio que sus 500). Esto por sí solo ya vuelve inequívoco cualquier 401 real del backend (solo lo emite `auth.middleware.js`/`auth.service.js`).
-- Además, `AppError` ganó un `code` opcional; `auth.middleware.js` marca sus 401 con `AUTH_SESSION_INVALID_CODE` — señal estructural explícita, no dependiente de que nadie recuerde no volver a mapear un error de tercero a 401 en el futuro.
-- `client.ts` solo desloguea/dispara `crea:unauthorized` cuando el 401 trae ese `code` exacto — cualquier otro 401 se trata como un error de negocio normal.
-- `partner.subscriptions.js#subscribeToEvents()` reintenta con backoff progresivo (1s, 3s, 5s) únicamente ante un 401 de Gupshup — cualquier otro código (400/403/409/429/500) falla en el primer intento, sin reintentar ciegamente.
+`POST https://api.gupshup.io/wa/app/{appId}/subscription` (Subscription API "self-serve", tier de mensajería) respondía 401 de forma CONSISTENTE — probado en vivo con backoff de hasta 9s, y hasta horas después del intento original, descartando la hipótesis de "propagación lenta" documentada antes acá. Causa real: ese endpoint es para apps YA live con WABA verificado (como el canal PLATFORM); nuestra app nueva nunca llegó a ese punto. El endpoint correcto es `POST https://partner.gupshup.io/partner/app/{appId}/subscription` ("Set subscription for an app", Partner Portal), con nota textual propia: *"Subscriptions can now be set for sandbox apps as well."* — pensado exactamente para este caso. Fix con header `Authorization` (no `apikey`), `modes` sin corchetes, `version: 3`. Probado en vivo contra la sesión real: **el 401 desapareció** (avanzó a la Causa 3).
 
-### Si vuelve a pasar
+### Causa 3 (RESUELTA a nivel de código, PR abierto) — "Invalid URL Passed" era nuestro propio webhook, no Gupshup
 
-Si el backoff de 1s/3s/5s no alcanza (sigue fallando con 401 después de agotar los 3 reintentos), o si Gupshup confirma/descarta la hipótesis de propagación, es en `partner.subscriptions.js` (constante `SUBSCRIPTION_401_RETRY_DELAYS_MS`) donde hay que ajustar — y valdría la pena escalarlo directo con soporte de Gupshup en vez de seguir ajustando delays a ciegas.
+Con el endpoint corregido, la llamada ya no daba 401 — pero Gupshup respondía `400 {"status":"error","message":"Invalid URL Passed"}` para el campo `url`, incluso probando con un dominio ajeno reconocido (`https://example.com/webhook`), sin path, con/sin percent-encoding, con `version` 2 y 3, y descartando un problema de form-urlencoded vs JSON (JSON da un error DISTINTO — `"Required request parameter 'modes'..."` — confirmando que `url` SÍ se parsea correctamente y el rechazo es sobre su contenido).
+
+**Causa raíz real, confirmada en 2 pasos:**
+1. `docs.gupshup.io/docs/webhook-key-points` documenta que un webhook debe devolver `2xx` y "aceptar el evento de usuario `sandbox-start`" — evidencia de que Gupshup valida la URL con un ping antes de aceptar la suscripción.
+2. Confirmado con un curl directo contra nuestro propio endpoint: `POST /api/v1/webhooks/gupshup` sin el header `GUPSHUP_WEBHOOK_TOKEN` devuelve **401**, no 2xx (`webhook.service.js#verifyGupshupAuth()` exige ese secreto en TODO POST). Un ping de verificación de Gupshup para una app nueva no tiene forma de conocer ese secreto — nuestro propio endpoint rechazaba la validación, y Gupshup lo reportaba hacia afuera como "Invalid URL Passed". El mismo control también habría bloqueado el evento real `ACCOUNT_VERIFIED` más adelante, no solo el ping inicial.
+
+**Nota sobre el "control" con `example.com/webhook`:** en su momento pareció descartar cualquier explicación ligada a nuestro dominio — en retrospectiva, `https://example.com/webhook` devuelve **404** (no 2xx), así que en realidad fallaba por el mismo tipo de motivo (no-2xx), no porque el chequeo de Gupshup sea independiente del contenido de la URL. No invalida la conclusión, la reafirma.
+
+### Decisión de diseño: NO tocar `/api/v1/webhooks/gupshup`
+
+`/api/v1/webhooks/gupshup` tiene tráfico real de producción hoy (canal PLATFORM) y está dentro de la ventana de validación de 14 días del Bloque A — se descartó relajar `verifyGupshupAuth()` o cambiar el orden ACK/validación de ese endpoint. En su lugar: **una ruta de callback completamente nueva y separada**, exclusiva del flujo de Embedded Signup:
+
+- `GET|POST /api/v1/webhooks/gupshup/onboarding/:appId` (`channelOnboardingWebhook.controller.js`, nuevo) — mismo Express router (`webhook.routes.js`), controller y secreto (`GUPSHUP_ONBOARDING_WEBHOOK_TOKEN`, nueva env var) 100% independientes de `webhook.service.js`/`GUPSHUP_WEBHOOK_TOKEN`. `:appId` en el path (no en el body) — cada suscripción ya apunta a una URL con el appId correcto embebido, así que `handleGupshupAccountVerified()` se llama con el path param, no con un campo del payload (más robusto ante un ping de verificación con shape impredecible).
+- El secreto viaja a Gupshup vía el campo `meta` de `POST /partner/app/{appId}/subscription` — documentado por Gupshup como `{"headers": {...}}`, custom headers que reenvía en cada request a la URL suscripta. `partner.subscriptions.js#subscribeToEvents()` ganó un parámetro `headers` opcional para esto.
+- `channelOnboardingWebhook.constants.js` (nuevo, sin dependencias propias): el nombre del header vive acá, no en el controller — importarlo directo desde `channel.controller.js` habría formado un require circular real (`channel.controller.js` → `channelOnboardingWebhook.controller.js` → `channelOnboardingCompletion.service.js` → `channel.controller.js`, dejando `nombreAppGupshup` `undefined` del otro lado). Encontrado y evitado antes de commitear, no en producción.
+- `webhook.service.js`, `verifyGupshupAuth()`, `GUPSHUP_WEBHOOK_TOKEN` y el endpoint `/api/v1/webhooks/gupshup` existente: **sin ningún cambio**.
+
+Tests nuevos: `channelOnboardingWebhook.controller.test.js` (10 tests: auth fail-closed, ACK 2xx siempre que la auth pase, dispara `handleGupshupAccountVerified` solo ante un payload ACCOUNT_VERIFIED real, no-op silencioso ante cualquier otro payload como el ping de verificación). `partner.subscriptions.test.js` ampliado (parámetro `headers`→`meta`). `channel.controller.test.js` actualizado (URL nueva, header nuevo, guard de env var faltante). Suite completa: 289/289.
+
+### Por qué la prueba en vivo no pudo terminar de confirmarlo
+
+Reintentado en vivo contra la sesión real tras implementar el fix: **seguía dando "Invalid URL Passed"**. Investigado por qué antes de asumir que el fix estaba mal: un `curl` directo a la ruta nueva contra el servidor de producción REALMENTE DESPLEGADO devuelve 401 "Token de autenticación requerido" — porque **el código de esta rama todavía no está desplegado** (`railway run` ejecuta el código local contra las env vars/DB de producción para los scripts de un solo uso, pero la Subscription API de Gupshup necesita poder alcanzar la URL por HTTPS real — eso solo lo sirve el contenedor efectivamente desplegado, que sigue corriendo el código de `main` sin esta ruta). Confirmado que CUALQUIER path no reconocido bajo `/api/v1/webhooks/*` cae hoy en el `router.use(authenticate, injectTenant)` de `webhook.routes.js` y devuelve ese mismo 401 — coincide exactamente con lo observado.
+
+**Conclusión:** el fix está completo y verificado a nivel de código/tests; la confirmación end-to-end contra Gupshup real requiere desplegar esta rama (merge a `main`, o `railway up` directo) — una acción de mayor alcance (afecta el contenedor que sirve tráfico real de PLATFORM) que no se tomó sin autorización explícita. Pendiente de decisión del dueño del producto sobre cómo completar esa verificación.
 
 ---
 

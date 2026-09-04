@@ -1,50 +1,62 @@
 // partner.subscriptions.js — Subscription API de Gupshup (notificaciones de
 // eventos de una app específica). PR-06 del blueprint maestro
-// (CREA_OS_WhatsApp_Gupshup_Multitenant_Architecture_v1.md). Deliberadamente
-// separado de partner.apps.js — no es el mismo Partner API de control plane,
-// es una API distinta con host y auth propios, confirmado por fuente directa
-// el 28 ago 2026 (WebFetch de docs.gupshup.io/reference/addsubscriptionforapp,
-// ver docs/integrations/gupshup-registration-contract.md §11.2):
+// (CREA_OS_WhatsApp_Gupshup_Multitenant_Architecture_v1.md).
 //
-//   - Host: api.gupshup.io (NO partner.gupshup.io) — de ahí el `baseUrl`
-//     explícito en cada llamada de gupshup.http.client.js#request().
-//   - Auth: header `apikey` — el apikey de mensajería DE LA APP puntual
-//     (partnerApps.getAppAccessToken()), no el `token` JWT de partner que
-//     usa todo partner.apps.js.
+// CORREGIDO el 04/sep/2026 (ver docs/implementation/known-issues.md, entrada
+// del mismo día): la versión original de este archivo llamaba a
+// `POST https://api.gupshup.io/wa/app/{appId}/subscription` (el endpoint
+// "Add Subscription for app" del tier de mensajería "self-serve",
+// docs.gupshup.io) con header `apikey`. Esa llamada devolvía 401
+// "Authentication Failed" de forma CONSISTENTE (probado en vivo contra
+// producción, incluso con reintentos y backoff de hasta 9s) para una app
+// recién creada sin ningún WABA todavía asociado — porque ESE endpoint
+// pertenece al tier de mensajería, pensado para apps que ya están live.
 //
-// Uso actual (único, PR-06): suscribirse en modo ACCOUNT para recibir el
-// evento `account-event`/`ACCOUNT_VERIFIED` (Go-Live) en el webhook que ya
-// existe (POST /api/v1/webhooks/gupshup) — ver
-// channel.controller.js#completeGupshupEmbeddedSignup() y
-// channelOnboardingCompletion.service.js.
+// El endpoint correcto para suscribirse ANTES de que la app esté live es
+// otro, documentado por separado en `partner-docs.gupshup.io` bajo "Partner
+// App Management → Subscription Management → Set subscription for an app":
+//
+//   POST https://partner.gupshup.io/partner/app/{appId}/subscription
+//
+// Con esta nota textual de la propia documentación de Gupshup (verificada
+// en vivo, no interpretación de IA): *"Subscriptions can now be set for
+// sandbox apps as well. Once the app goes live, the current subscription
+// will be retained."* — exactamente nuestro caso: suscribirse ANTES del
+// go-live para poder recibir el evento `ACCOUNT_VERIFIED` cuando el
+// Embedded Signup se complete.
+//
+// Diferencias estructurales confirmadas entre ambos endpoints (no
+// intercambiables, cada detalle importa):
+//   - Host: `partner.gupshup.io` (no `api.gupshup.io`).
+//   - Auth: header `Authorization` (no `apikey`) — mismo valor (el apikey
+//     de la app, partnerApps.getAppAccessToken()), header distinto.
+//   - `modes`: string simple sin corchetes (ej. `"ACCOUNT"`), no
+//     `"[ACCOUNT]"` — y el vocabulario de valores válidos es distinto
+//     (incluye FLOWS_MESSAGE/PAYMENTS/ALL/COEXISTENCE, no tiene
+//     MESSAGE/BILLING).
+//   - `version`: debe ser `2` o `3` documentado — no `1`.
+//   - No tiene `doCheck`; tiene `showOnUI`/`meta` opcionales, sin uso hoy.
 const httpClient = require('../gupshup.http.client');
 const { GupshupHttpError } = httpClient;
 const { mapPartnerError } = require('./partner.errors');
 const { AppError } = require('../../../../../middleware/error.middleware');
 
-const SUBSCRIPTION_API_BASE_URL = 'https://api.gupshup.io';
+// Coincide con gupshup.http.client.js#BASE_URL — se repite acá explícito
+// (no se omite el `baseUrl` del request confiando en que coincida con el
+// default de otro archivo) para que este módulo siga siendo autocontenido
+// si el default de gupshup.http.client.js cambia el día de mañana por otra
+// razón (ej. otro endpoint que si viva en un host distinto).
+const SUBSCRIPTION_API_BASE_URL = 'https://partner.gupshup.io';
 
-// Incidente del 04/sep/2026 (ver docs/implementation/known-issues.md): el
-// primer intento real de completar un Embedded Signup en producción llamó a
-// subscribeToEvents() ~1-2s después de que createApp() devolviera 200, y
-// Gupshup respondió 401 "Authentication Failed" al apikey de la app recién
-// creada — el mismo apikey que GET /partner/app/{appId}/token acababa de
-// confirmar como válido segundos antes.
-//
-// HIPÓTESIS NO CONFIRMADA CON SOPORTE DE GUPSHUP: la Subscription API
-// (api.gupshup.io) y el Partner API de control plane (partner.gupshup.io)
-// son sistemas separados (ver comentario de arriba) — es plausible que el
-// apikey de una app recién creada tarde un momento en propagarse al primero
-// aunque el segundo ya lo reconozca. No hay confirmación oficial de esto ni
-// de cuánto tarda esa propagación en el peor caso. Si este backoff no
-// resuelve el problema de raíz, o si Gupshup confirma/descarta esta
-// hipótesis, revisar acá primero.
-//
-// Se reintenta ÚNICAMENTE ante un 401 de Gupshup — un 400/403/409/429 no es
-// un problema de timing, reintentarlo ciegamente no cambiaría el resultado y
-// desperdiciaría cupo del rate limit documentado (10 requests/60s). Delays
-// progresivos (no un intervalo fijo) para darle más margen a cada intento
-// sucesivo sin alargar de más el caso feliz cuando alcanza con poco.
+// Retenido como red de seguridad tras el fix del 04/sep — con el endpoint
+// correcto (arriba) no debería verse más un 401 por este motivo, pero un
+// 401 transitorio real (ej. el token cacheado vence justo entre
+// getAppAccessToken() y esta llamada) sigue siendo un caso legítimo para
+// reintentar antes de rendirse. Ya NO se reintenta bajo la hipótesis de
+// "propagación lenta de Gupshup" (esa hipótesis quedó descartada: el 401
+// persistía incluso después de 9s Y de horas transcurridas contra el
+// endpoint viejo) — el fix real fue cambiar de endpoint, esto es solo
+// tolerancia a fallas transitorias genéricas.
 const SUBSCRIPTION_401_RETRY_DELAYS_MS = [1000, 3000, 5000];
 
 function esperar(ms) {
@@ -52,40 +64,48 @@ function esperar(ms) {
 }
 
 /**
- * POST /wa/app/{appId}/subscription — registra (o actualiza, según `doCheck`)
- * una suscripción de eventos para esta app.
- *
- * Parámetros confirmados por fuente directa (mismo WebFetch de arriba): los
- * 5 son requeridos por Gupshup (`url`, `tag`, `version`, `modes`, `doCheck`).
- * `modes` viaja como string con la sintaxis de lista que muestra el ejemplo
- * oficial de la documentación (`[MODO1,MODO2]`), no como array real —
- * `httpClient.request()` solo sabe serializar form-urlencoded plano.
- *
- * La respuesta de éxito NO tiene un shape documentado (confirmado en la
- * misma fuente) — se devuelve el body crudo tal cual, el caller no debe
- * asumir ningún campo puntual.
+ * POST /partner/app/{appId}/subscription ("Set subscription for an app") —
+ * registra una suscripción de eventos para esta app, incluso antes de que
+ * tenga un WABA asociado (app "sandbox" — ver comentario del módulo).
  *
  * @param {string} appId
- * @param {string} apikey - de la app puntual (partnerApps.getAppAccessToken()), NO el token de partner
- * @param {{ url: string, tag: string, modes: string[], version?: number, doCheck?: boolean }} params
+ * @param {string} apikey - de la app puntual (partnerApps.getAppAccessToken())
+ * @param {{ url: string, tag: string, modes: string[], version?: number, headers?: Object<string,string> }} params
+ *   `modes` se manda como string simple (Gupshup documenta "uno de los
+ *   siguientes", no una lista) — si el caller pasa más de un valor, se
+ *   concatenan con coma; hoy el único uso real (channel.controller.js) pasa
+ *   siempre `['ACCOUNT']`, así que el caso multi-valor no está probado en
+ *   vivo contra Gupshup.
+ *   `headers` (opcional) — custom headers que Gupshup reenvía en cada
+ *   request que hace a `url`, vía el campo `meta` documentado por Gupshup
+ *   como `{"headers": {...}}` (incidente del 04/sep/2026, ver
+ *   docs/implementation/known-issues.md Bug 3): channel.controller.js lo usa
+ *   para pasar el secreto de channelOnboardingWebhook.controller.js, ya que
+ *   ese callback es un endpoint DISTINTO al que usa el resto de la app y
+ *   necesita su propia autenticación.
  * @returns {Promise<object>} body crudo de Gupshup
  * @throws {AppError} 400 si falta url/tag/modes (validado localmente); el
  *   resto de los errores se mapea vía mapPartnerError() como el resto del
  *   wrapper de Gupshup — incluyendo un 401 persistente después de agotar los
  *   reintentos de SUBSCRIPTION_401_RETRY_DELAYS_MS (ver comentario arriba).
  */
-async function subscribeToEvents(appId, apikey, { url, tag, modes, version = 1, doCheck = true } = {}) {
+async function subscribeToEvents(appId, apikey, { url, tag, modes, version = 3, headers } = {}) {
   if (!url || !tag || !Array.isArray(modes) || modes.length === 0) {
     throw new AppError('url, tag y modes (array no vacío) son requeridos para suscribirse a eventos de Gupshup', 400);
+  }
+
+  const form = { url, tag, version, modes: modes.join(',') };
+  if (headers && Object.keys(headers).length > 0) {
+    form.meta = JSON.stringify({ headers });
   }
 
   const intentarUnaVez = () =>
     httpClient.request({
       method: 'POST',
-      path: `/wa/app/${appId}/subscription`,
+      path: `/partner/app/${appId}/subscription`,
       baseUrl: SUBSCRIPTION_API_BASE_URL,
-      headers: { apikey },
-      form: { url, tag, version, modes: `[${modes.join(',')}]`, doCheck },
+      headers: { Authorization: apikey },
+      form,
       idempotent: false, // efecto de auditoría del lado de Gupshup, mismo criterio que login()/createApp()
     });
 
