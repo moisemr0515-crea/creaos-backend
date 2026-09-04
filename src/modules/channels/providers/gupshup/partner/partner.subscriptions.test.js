@@ -29,7 +29,7 @@ describe('partner.subscriptions', () => {
   });
 
   describe('subscribeToEvents()', () => {
-    test('happy path: POST /wa/app/{appId}/subscription contra api.gupshup.io, header apikey (no token)', async () => {
+    test('happy path: POST /partner/app/{appId}/subscription contra partner.gupshup.io, header Authorization (no apikey) — fix del 04/sep/2026', async () => {
       httpClient.request.mockResolvedValue({ status: 200, body: { status: 'success' }, requestId: 'gsp_x' });
 
       const result = await partnerSubscriptions.subscribeToEvents(
@@ -42,33 +42,33 @@ describe('partner.subscriptions', () => {
       expect(httpClient.request).toHaveBeenCalledWith(
         expect.objectContaining({
           method: 'POST',
-          path: '/wa/app/app-123/subscription',
-          baseUrl: 'https://api.gupshup.io',
-          headers: { apikey: APIKEY },
-          form: { url: 'https://backend.creaos.com/api/v1/webhooks/gupshup', tag: 'creaos-account-events', version: 1, modes: '[ACCOUNT]', doCheck: true },
+          path: '/partner/app/app-123/subscription',
+          baseUrl: 'https://partner.gupshup.io',
+          headers: { Authorization: APIKEY },
+          form: { url: 'https://backend.creaos.com/api/v1/webhooks/gupshup', tag: 'creaos-account-events', version: 3, modes: 'ACCOUNT' },
           idempotent: false,
         })
       );
     });
 
-    test('varios modos: se serializan juntos entre corchetes', async () => {
+    test('varios modos: se serializan juntos separados por coma, sin corchetes', async () => {
       httpClient.request.mockResolvedValue({ status: 200, body: {}, requestId: 'gsp_x' });
 
       await partnerSubscriptions.subscribeToEvents('app-123', APIKEY, {
-        url: 'https://backend.creaos.com/api/v1/webhooks/gupshup', tag: 'x', modes: ['ACCOUNT', 'MESSAGE'],
+        url: 'https://backend.creaos.com/api/v1/webhooks/gupshup', tag: 'x', modes: ['ACCOUNT', 'TEMPLATE'],
       });
 
-      expect(httpClient.request).toHaveBeenCalledWith(expect.objectContaining({ form: expect.objectContaining({ modes: '[ACCOUNT,MESSAGE]' }) }));
+      expect(httpClient.request).toHaveBeenCalledWith(expect.objectContaining({ form: expect.objectContaining({ modes: 'ACCOUNT,TEMPLATE' }) }));
     });
 
-    test('version/doCheck explícitos pisan los defaults', async () => {
+    test('version explícito pisa el default (3)', async () => {
       httpClient.request.mockResolvedValue({ status: 200, body: {}, requestId: 'gsp_x' });
 
       await partnerSubscriptions.subscribeToEvents('app-123', APIKEY, {
-        url: 'https://backend.creaos.com/api/v1/webhooks/gupshup', tag: 'x', modes: ['ACCOUNT'], version: 2, doCheck: false,
+        url: 'https://backend.creaos.com/api/v1/webhooks/gupshup', tag: 'x', modes: ['ACCOUNT'], version: 2,
       });
 
-      expect(httpClient.request).toHaveBeenCalledWith(expect.objectContaining({ form: expect.objectContaining({ version: 2, doCheck: false }) }));
+      expect(httpClient.request).toHaveBeenCalledWith(expect.objectContaining({ form: expect.objectContaining({ version: 2 }) }));
     });
 
     test('sin url: AppError 400 local, nunca llama a Gupshup', async () => {
@@ -96,12 +96,13 @@ describe('partner.subscriptions', () => {
     });
   });
 
-  // Incidente del 04/sep/2026 (ver docs/implementation/known-issues.md y el
-  // comentario de SUBSCRIPTION_401_RETRY_DELAYS_MS en partner.subscriptions.js):
-  // un 401 justo después de createApp() puede ser Gupshup todavía propagando
-  // el apikey de la app recién creada — se reintenta con backoff progresivo
-  // ANTES de darlo por un fallo real.
-  describe('subscribeToEvents() — backoff ante 401 (hipótesis de propagación de Gupshup, no confirmada con su soporte)', () => {
+  // El backoff se retuvo tras el fix del endpoint (04/sep/2026, ver
+  // docs/implementation/known-issues.md) como red de seguridad genérica ante
+  // un 401 transitorio real — la hipótesis original de "propagación lenta de
+  // Gupshup" quedó descartada (el 401 persistía incluso después de 9s y de
+  // horas transcurridas contra el endpoint viejo; la causa real era llamar
+  // al endpoint equivocado, no un problema de timing).
+  describe('subscribeToEvents() — backoff ante un 401 transitorio (red de seguridad genérica, ya no la causa raíz esperada)', () => {
     beforeEach(() => {
       jest.useFakeTimers();
     });
