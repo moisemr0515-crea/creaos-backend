@@ -13,7 +13,14 @@ const partnerSubscriptions = require('./providers/gupshup/partner/partner.subscr
 const { AppError } = require('../../middleware/error.middleware');
 const { respuestaExito, respuestaError } = require('../../utils/response');
 const logger = require('../../utils/logger');
-const { META_APP_ID, META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID, BACKEND_PUBLIC_URL } = require('../../config/env');
+const { META_APP_ID, META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID, BACKEND_PUBLIC_URL, GUPSHUP_ONBOARDING_WEBHOOK_TOKEN } = require('../../config/env');
+// Constante compartida vía un archivo sin dependencias propias — NO se
+// importa directo de channelOnboardingWebhook.controller.js acá (ese módulo
+// requiere channelOnboardingCompletion.service.js, que a su vez requiere
+// ESTE archivo para nombreAppGupshup() — hacerlo formaría un ciclo real que
+// dejaría nombreAppGupshup `undefined` del otro lado). Ver el comentario en
+// channelOnboardingWebhook.constants.js para el detalle completo.
+const { ONBOARDING_WEBHOOK_HEADER } = require('./channelOnboardingWebhook.constants');
 // Marcador propio para session.gupshup.webhookReference — la Subscription
 // API de Gupshup no devuelve ningún ID de suscripción documentado (ver
 // docs/integrations/gupshup-registration-contract.md §11.2), así que este
@@ -511,15 +518,30 @@ const completeGupshupEmbeddedSignup = async (req, res, next) => {
         // llega. Confirmado por fuente directa que hace falta el apikey DE
         // ESTA app (no el token de partner) — ver
         // docs/integrations/gupshup-registration-contract.md §11.
+        //
+        // Incidente del 04/sep/2026 (docs/implementation/known-issues.md,
+        // Bug 3): la URL de callback es channelOnboardingWebhook.controller.js
+        // (/gupshup/onboarding/:appId), DELIBERADAMENTE distinta de
+        // /api/v1/webhooks/gupshup a secas — ese endpoint exige
+        // GUPSHUP_WEBHOOK_TOKEN en todo POST (tráfico real de PLATFORM hoy,
+        // no se toca) y el ping de verificación de Gupshup al crear la
+        // suscripción no puede conocer ese secreto, causando el 400
+        // "Invalid URL Passed" que bloqueaba este paso. El secreto de la
+        // ruta nueva (GUPSHUP_ONBOARDING_WEBHOOK_TOKEN) viaja en `headers`
+        // → Gupshup lo reenvía vía `meta` en cada request a esta URL.
         if (!BACKEND_PUBLIC_URL) {
           throw new AppError('BACKEND_PUBLIC_URL no está configurado — no se puede suscribir el webhook de eventos ACCOUNT de Gupshup', 500);
+        }
+        if (!GUPSHUP_ONBOARDING_WEBHOOK_TOKEN) {
+          throw new AppError('GUPSHUP_ONBOARDING_WEBHOOK_TOKEN no está configurado — no se puede suscribir el webhook de eventos ACCOUNT de Gupshup', 500);
         }
 
         const { apikey } = await partnerApps.getAppAccessToken(session.gupshup.appId, token);
         await partnerSubscriptions.subscribeToEvents(session.gupshup.appId, apikey, {
-          url: `${BACKEND_PUBLIC_URL}/api/v1/webhooks/gupshup`,
+          url: `${BACKEND_PUBLIC_URL}/api/v1/webhooks/gupshup/onboarding/${session.gupshup.appId}`,
           tag: 'creaos-account-events',
           modes: ['ACCOUNT'],
+          headers: { [ONBOARDING_WEBHOOK_HEADER]: GUPSHUP_ONBOARDING_WEBHOOK_TOKEN },
         });
         session.gupshup.webhookReference = GUPSHUP_ACCOUNT_SUBSCRIPTION_MARKER;
         // Mismo criterio que appId arriba — se guarda antes de seguir, así

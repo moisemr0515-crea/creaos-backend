@@ -166,13 +166,30 @@ module.exports = {
   GUPSHUP_PARTNER_EMAIL:  process.env.GUPSHUP_PARTNER_EMAIL || '',
   GUPSHUP_PARTNER_SECRET: process.env.GUPSHUP_PARTNER_SECRET || '',
 
+  // Incidente del 04/sep/2026 (docs/implementation/known-issues.md, Bug 3):
+  // secreto PROPIO y SEPARADO de GUPSHUP_WEBHOOK_TOKEN (arriba), exclusivo
+  // de la ruta nueva /api/v1/webhooks/gupshup/onboarding/:appId
+  // (channelOnboardingWebhook.controller.js). A propósito NO se reutiliza
+  // GUPSHUP_WEBHOOK_TOKEN: ese es el que ya protege /api/v1/webhooks/gupshup,
+  // el endpoint con tráfico real de producción hoy (canal PLATFORM) — no se
+  // toca su alcance ni su comportamiento. Se manda a Gupshup vía el campo
+  // `meta` de partner.subscriptions.js#subscribeToEvents() (header custom
+  // `x-gupshup-webhook-secret`, mecanismo documentado por Gupshup mismo para
+  // este endpoint), Gupshup lo reenvía en cada request a esta URL — incluye,
+  // según todo lo investigado, el ping de verificación al crear la
+  // suscripción, no solo los eventos reales.
+  GUPSHUP_ONBOARDING_WEBHOOK_TOKEN: process.env.GUPSHUP_ONBOARDING_WEBHOOK_TOKEN || '',
+
   // URL pública de ESTE backend (no la del frontend — eso es APP_URL/FRONTEND_URL
-  // arriba) — PR-06 del blueprint maestro la necesita para armar la URL de
-  // callback (`${BACKEND_PUBLIC_URL}/api/v1/webhooks/gupshup`) que se manda al
+  // arriba). BACKEND_PUBLIC_URL + '/api/v1/webhooks/gupshup/onboarding/{appId}'
+  // (channelOnboardingWebhook.controller.js) es la URL que se manda al
   // suscribirse a eventos ACCOUNT de una app de Gupshup (ver
   // channel.controller.js#completeGupshupEmbeddedSignup() y
-  // partner.subscriptions.js). Sin default: si falta, ese paso puntual falla
-  // ruidoso (AppError 500) en vez de suscribir un callback vacío/inválido.
+  // partner.subscriptions.js) — DISTINTA de '/api/v1/webhooks/gupshup' a
+  // secas (esa sigue siendo solo para el canal PLATFORM, sin cambios, ver
+  // GUPSHUP_ONBOARDING_WEBHOOK_TOKEN arriba). Sin default: si falta, ese paso
+  // puntual falla ruidoso (AppError 500) en vez de suscribir un callback
+  // vacío/inválido.
   BACKEND_PUBLIC_URL: process.env.BACKEND_PUBLIC_URL || '',
 
   // Feature flag temporal (Implementation Blueprint, Decisión 3) — corte del

@@ -71,6 +71,41 @@ describe('partner.subscriptions', () => {
       expect(httpClient.request).toHaveBeenCalledWith(expect.objectContaining({ form: expect.objectContaining({ version: 2 }) }));
     });
 
+    // Incidente del 04/sep/2026 (docs/implementation/known-issues.md, Bug 3):
+    // channel.controller.js necesita pasar un header custom (el secreto de
+    // channelOnboardingWebhook.controller.js) que Gupshup reenvía en cada
+    // request a `url` — vía el campo `meta` documentado por Gupshup como
+    // `{"headers": {...}}`.
+    test('con `headers`: se manda `meta` como JSON string con esos headers', async () => {
+      httpClient.request.mockResolvedValue({ status: 200, body: {}, requestId: 'gsp_x' });
+
+      await partnerSubscriptions.subscribeToEvents('app-123', APIKEY, {
+        url: 'https://backend.creaos.com/api/v1/webhooks/gupshup/onboarding/app-123',
+        tag: 'x',
+        modes: ['ACCOUNT'],
+        headers: { 'x-gupshup-webhook-secret': 'secreto-de-onboarding' },
+      });
+
+      expect(httpClient.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          form: expect.objectContaining({
+            meta: JSON.stringify({ headers: { 'x-gupshup-webhook-secret': 'secreto-de-onboarding' } }),
+          }),
+        })
+      );
+    });
+
+    test('sin `headers` (o vacío): NO manda `meta` en el form', async () => {
+      httpClient.request.mockResolvedValue({ status: 200, body: {}, requestId: 'gsp_x' });
+
+      await partnerSubscriptions.subscribeToEvents('app-123', APIKEY, {
+        url: 'https://backend.creaos.com/api/v1/webhooks/gupshup', tag: 'x', modes: ['ACCOUNT'], headers: {},
+      });
+
+      const formEnviado = httpClient.request.mock.calls[0][0].form;
+      expect(formEnviado).not.toHaveProperty('meta');
+    });
+
     test('sin url: AppError 400 local, nunca llama a Gupshup', async () => {
       await expect(partnerSubscriptions.subscribeToEvents('app-123', APIKEY, { tag: 'x', modes: ['ACCOUNT'] })).rejects.toMatchObject({ statusCode: 400 });
       expect(httpClient.request).not.toHaveBeenCalled();

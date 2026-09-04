@@ -22,6 +22,11 @@ process.env.CHANNEL_CREDENTIALS_KEY = process.env.CHANNEL_CREDENTIALS_KEY || req
 // ACCOUNT (necesita BACKEND_PUBLIC_URL configurado) — mismo motivo que las
 // otras env vars de acá arriba, seteada ANTES de requerir config/env.js.
 process.env.BACKEND_PUBLIC_URL = process.env.BACKEND_PUBLIC_URL || 'https://backend.creaos.test';
+// Incidente del 04/sep/2026 (docs/implementation/known-issues.md, Bug 3):
+// la suscripción ahora usa un callback dedicado
+// (/gupshup/onboarding/:appId) con secreto propio — mismo motivo/momento
+// que BACKEND_PUBLIC_URL arriba.
+process.env.GUPSHUP_ONBOARDING_WEBHOOK_TOKEN = process.env.GUPSHUP_ONBOARDING_WEBHOOK_TOKEN || 'onboarding-webhook-token-de-prueba';
 
 jest.mock('./providers/meta/metaEmbeddedSignup.service');
 jest.mock('./providers/gupshup/partner/partner.auth');
@@ -693,7 +698,15 @@ describe('channel.controller#completeGupshupEmbeddedSignup()', () => {
     expect(partnerSubscriptions.subscribeToEvents).toHaveBeenCalledWith(
       'gs-app-real',
       'apikey-real-de-la-app',
-      { url: 'https://backend.creaos.test/api/v1/webhooks/gupshup', tag: 'creaos-account-events', modes: ['ACCOUNT'] }
+      {
+        // Incidente del 04/sep/2026 (known-issues.md Bug 3): callback
+        // dedicado, NO /api/v1/webhooks/gupshup a secas — ese endpoint tiene
+        // tráfico real de PLATFORM y su propio secreto, sin tocar.
+        url: 'https://backend.creaos.test/api/v1/webhooks/gupshup/onboarding/gs-app-real',
+        tag: 'creaos-account-events',
+        modes: ['ACCOUNT'],
+        headers: { 'x-gupshup-webhook-secret': 'onboarding-webhook-token-de-prueba' },
+      }
     );
     expect(partnerApps.setContactDetails).toHaveBeenCalledWith(
       'gs-app-real',
@@ -770,15 +783,17 @@ describe('channel.controller#completeGupshupEmbeddedSignup()', () => {
     expect(partnerApps.setContactDetails).toHaveBeenCalledWith('gs-app-ya-creada', expect.any(Object), 'token');
   });
 
-  // NOTA: el guard de "BACKEND_PUBLIC_URL no configurado" (channel.controller.js,
-  // justo antes de armar la URL de suscripción) NO tiene un test dedicado acá
-  // a propósito — a diferencia de GUPSHUP_PARTNER_EMAIL en partner.auth.test.js,
-  // que se testea recargando el módulo con jest.isolateModules(), la cadena de
+  // NOTA: los guards de "BACKEND_PUBLIC_URL no configurado" y (desde el
+  // incidente del 04/sep/2026, known-issues.md Bug 3) "GUPSHUP_ONBOARDING_
+  // WEBHOOK_TOKEN no configurado" (channel.controller.js, justo antes de
+  // armar la URL de suscripción) NO tienen un test dedicado acá a propósito
+  // — a diferencia de GUPSHUP_PARTNER_EMAIL en partner.auth.test.js, que se
+  // testea recargando el módulo con jest.isolateModules(), la cadena de
   // requires de channel.controller.js incluye modelos Mongoose (Channel
   // OnboardingSession.model.js) — recargarla en un registro aislado da una
   // instancia de mongoose desconectada, así que el guard quedaría probado
   // contra un doble falso silencioso (la sesión nunca se persistiría de
-  // verdad). El guard sigue el mismo patrón exacto, ya testeado, de
+  // verdad). Ambos guards siguen el mismo patrón exacto, ya testeado, de
   // GUPSHUP_PARTNER_EMAIL/SECRET en partner.auth.js#getValidToken().
 
   test('error de Gupshup al suscribirse a eventos ACCOUNT: se propaga, sesión queda failed con error.step:"gupshup_registration"', async () => {

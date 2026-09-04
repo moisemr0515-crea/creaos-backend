@@ -70,21 +70,33 @@ function esperar(ms) {
  *
  * @param {string} appId
  * @param {string} apikey - de la app puntual (partnerApps.getAppAccessToken())
- * @param {{ url: string, tag: string, modes: string[], version?: number }} params
+ * @param {{ url: string, tag: string, modes: string[], version?: number, headers?: Object<string,string> }} params
  *   `modes` se manda como string simple (Gupshup documenta "uno de los
  *   siguientes", no una lista) — si el caller pasa más de un valor, se
  *   concatenan con coma; hoy el único uso real (channel.controller.js) pasa
  *   siempre `['ACCOUNT']`, así que el caso multi-valor no está probado en
  *   vivo contra Gupshup.
+ *   `headers` (opcional) — custom headers que Gupshup reenvía en cada
+ *   request que hace a `url`, vía el campo `meta` documentado por Gupshup
+ *   como `{"headers": {...}}` (incidente del 04/sep/2026, ver
+ *   docs/implementation/known-issues.md Bug 3): channel.controller.js lo usa
+ *   para pasar el secreto de channelOnboardingWebhook.controller.js, ya que
+ *   ese callback es un endpoint DISTINTO al que usa el resto de la app y
+ *   necesita su propia autenticación.
  * @returns {Promise<object>} body crudo de Gupshup
  * @throws {AppError} 400 si falta url/tag/modes (validado localmente); el
  *   resto de los errores se mapea vía mapPartnerError() como el resto del
  *   wrapper de Gupshup — incluyendo un 401 persistente después de agotar los
  *   reintentos de SUBSCRIPTION_401_RETRY_DELAYS_MS (ver comentario arriba).
  */
-async function subscribeToEvents(appId, apikey, { url, tag, modes, version = 3 } = {}) {
+async function subscribeToEvents(appId, apikey, { url, tag, modes, version = 3, headers } = {}) {
   if (!url || !tag || !Array.isArray(modes) || modes.length === 0) {
     throw new AppError('url, tag y modes (array no vacío) son requeridos para suscribirse a eventos de Gupshup', 400);
+  }
+
+  const form = { url, tag, version, modes: modes.join(',') };
+  if (headers && Object.keys(headers).length > 0) {
+    form.meta = JSON.stringify({ headers });
   }
 
   const intentarUnaVez = () =>
@@ -93,7 +105,7 @@ async function subscribeToEvents(appId, apikey, { url, tag, modes, version = 3 }
       path: `/partner/app/${appId}/subscription`,
       baseUrl: SUBSCRIPTION_API_BASE_URL,
       headers: { Authorization: apikey },
-      form: { url, tag, version, modes: modes.join(',') },
+      form,
       idempotent: false, // efecto de auditoría del lado de Gupshup, mismo criterio que login()/createApp()
     });
 
