@@ -44,6 +44,31 @@ Para contraste, los otros 2 call sites de `generateReply()` sí tienen algo de c
 
 ---
 
+## 2026-09-04 — Incidente real de Embedded Signup: 401 de Gupshup deslogueaba al usuario, y la Subscription API rechazó el apikey recién creado
+
+**Estado:** Resuelto en este mismo PR (fix/gupshup-401-mapping-and-subscription-backoff) — se deja esta entrada porque una de las 2 causas (abajo) se corrigió con una HIPÓTESIS NO CONFIRMADA con soporte de Gupshup, para que si vuelve a fallar quien lo investigue tenga el contexto completo sin repetir el diagnóstico desde cero.
+**Prioridad:** Alta (bloqueaba completar un Embedded Signup real) — resuelta.
+**Detectado en:** primer intento real de Embedded Signup en producción, tenant "Nutriva Corp" (`6a9340ae5af267a3ffd8b1b5`).
+**Archivos involucrados:** [`partner.errors.js`](../../src/modules/channels/providers/gupshup/partner/partner.errors.js), [`partner.subscriptions.js`](../../src/modules/channels/providers/gupshup/partner/partner.subscriptions.js), [`error.middleware.js`](../../src/middleware/error.middleware.js), [`auth.middleware.js`](../../src/middleware/auth.middleware.js), [`client.ts` (crea-os-ignite)](../../../crea-os-ignite/src/lib/api/client.ts).
+
+### Problema (2 causas independientes, encadenadas)
+
+1. **`POST /wa/app/{appId}/subscription` (Subscription API de Gupshup) respondió 401** segundos después de que `createApp()` y `GET /partner/app/{appId}/token` devolvieran 200 para la MISMA app recién creada. HIPÓTESIS NO CONFIRMADA CON SOPORTE DE GUPSHUP: la Subscription API (`api.gupshup.io`) y el Partner API de control plane (`partner.gupshup.io`) son sistemas separados — es plausible que el apikey de una app recién creada tarde un momento en propagarse al primero aunque el segundo ya lo reconozca. Mitigado con un backoff progresivo (1s/3s/5s) en `partner.subscriptions.js`, pero no hay confirmación oficial de que esa sea la causa real ni de cuánto puede tardar en el peor caso.
+2. **Ese 401 (de Gupshup, nada que ver con la sesión del usuario) se reenviaba tal cual como HTTP 401** al frontend. `apiFetch()` (`client.ts`) trataba CUALQUIER 401 en un endpoint no-auth como "tu sesión expiró": intentaba refrescar el token, reintentaba la petición, volvía a fallar con el mismo 401 (porque el problema era de Gupshup, no del usuario), y deslogueaba a la fuerza. El usuario tuvo que volver a loguearse a mitad del flujo de Embedded Signup.
+
+### Fix aplicado
+
+- `partner.errors.js` ya no mapea ningún error de Gupshup a HTTP 401 — pasa a 502 (mismo criterio que sus 500). Esto por sí solo ya vuelve inequívoco cualquier 401 real del backend (solo lo emite `auth.middleware.js`/`auth.service.js`).
+- Además, `AppError` ganó un `code` opcional; `auth.middleware.js` marca sus 401 con `AUTH_SESSION_INVALID_CODE` — señal estructural explícita, no dependiente de que nadie recuerde no volver a mapear un error de tercero a 401 en el futuro.
+- `client.ts` solo desloguea/dispara `crea:unauthorized` cuando el 401 trae ese `code` exacto — cualquier otro 401 se trata como un error de negocio normal.
+- `partner.subscriptions.js#subscribeToEvents()` reintenta con backoff progresivo (1s, 3s, 5s) únicamente ante un 401 de Gupshup — cualquier otro código (400/403/409/429/500) falla en el primer intento, sin reintentar ciegamente.
+
+### Si vuelve a pasar
+
+Si el backoff de 1s/3s/5s no alcanza (sigue fallando con 401 después de agotar los 3 reintentos), o si Gupshup confirma/descarta la hipótesis de propagación, es en `partner.subscriptions.js` (constante `SUBSCRIPTION_401_RETRY_DELAYS_MS`) donde hay que ajustar — y valdría la pena escalarlo directo con soporte de Gupshup en vez de seguir ajustando delays a ciegas.
+
+---
+
 ## 2026-08-24 — "Nivel" y "Personalidad" de la IA (panel de negocio): ni persisten, ni hay lógica real esperándolos
 
 **Estado:** Abierto — diagnóstico completo, sin implementar. Necesita decisión de producto antes de código (Track 5 del roadmap, no un fix chico de Track 1).
