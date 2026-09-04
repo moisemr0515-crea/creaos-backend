@@ -46,8 +46,8 @@ Para contraste, los otros 2 call sites de `generateReply()` sí tienen algo de c
 
 ## 2026-09-04 — Incidente real de Embedded Signup: 401 de Gupshup deslogueaba al usuario; endpoint de suscripción equivocado; "Invalid URL Passed" por nuestro propio webhook
 
-**Estado:** 3 de 3 causas encontradas y arregladas a nivel de código (2 mergeadas, 1 en PR con tests en verde). La verificación 100% end-to-end en vivo queda pendiente de un despliegue real — ver "Por qué la prueba en vivo no pudo terminar de confirmarlo" más abajo.
-**Prioridad:** Alta (bloquea completar un Embedded Signup real de punta a punta).
+**Estado:** RESUELTO y CONFIRMADO EN VIVO — las 3 causas arregladas, mergeadas (PR #75, #76) y desplegadas; la suscripción a eventos ACCOUNT contra la sesión real del incidente ya devuelve 200. Queda un paso manual pendiente (no bloqueante para este bug): que alguien complete el `embedSignupUrl` para que el `WhatsAppChannel` DEDICATED se termine de crear — ver "Confirmación en vivo post-deploy" al final.
+**Prioridad:** Alta (bloqueaba completar un Embedded Signup real de punta a punta) — ya no bloquea.
 **Detectado en:** primer intento real de Embedded Signup en producción, tenant "Nutriva Corp" (`6a9340ae5af267a3ffd8b1b5`), sesión `6a9ae932fe38b2ca69042e03`, appId de Gupshup `cd6ac9ef-824a-48cc-ab85-77cb3f21c5c4`.
 **Archivos involucrados:** [`partner.errors.js`](../../src/modules/channels/providers/gupshup/partner/partner.errors.js), [`partner.subscriptions.js`](../../src/modules/channels/providers/gupshup/partner/partner.subscriptions.js), [`error.middleware.js`](../../src/middleware/error.middleware.js), [`auth.middleware.js`](../../src/middleware/auth.middleware.js), [`channel.controller.js`](../../src/modules/channels/channel.controller.js), [`channelOnboardingWebhook.controller.js`](../../src/modules/channels/channelOnboardingWebhook.controller.js) (nuevo), [`channelOnboardingWebhook.constants.js`](../../src/modules/channels/channelOnboardingWebhook.constants.js) (nuevo), [`webhook.routes.js`](../../src/modules/webhooks/webhook.routes.js), [`client.ts` (crea-os-ignite)](../../../crea-os-ignite/src/lib/api/client.ts).
 
@@ -59,7 +59,7 @@ Un 401 de Gupshup (nada que ver con la sesión del usuario) se reenviaba tal cua
 
 `POST https://api.gupshup.io/wa/app/{appId}/subscription` (Subscription API "self-serve", tier de mensajería) respondía 401 de forma CONSISTENTE — probado en vivo con backoff de hasta 9s, y hasta horas después del intento original, descartando la hipótesis de "propagación lenta" documentada antes acá. Causa real: ese endpoint es para apps YA live con WABA verificado (como el canal PLATFORM); nuestra app nueva nunca llegó a ese punto. El endpoint correcto es `POST https://partner.gupshup.io/partner/app/{appId}/subscription` ("Set subscription for an app", Partner Portal), con nota textual propia: *"Subscriptions can now be set for sandbox apps as well."* — pensado exactamente para este caso. Fix con header `Authorization` (no `apikey`), `modes` sin corchetes, `version: 3`. Probado en vivo contra la sesión real: **el 401 desapareció** (avanzó a la Causa 3).
 
-### Causa 3 (RESUELTA a nivel de código, PR abierto) — "Invalid URL Passed" era nuestro propio webhook, no Gupshup
+### Causa 3 (RESUELTA, mergeada Y confirmada en vivo — PR #76) — "Invalid URL Passed" era nuestro propio webhook, no Gupshup
 
 Con el endpoint corregido, la llamada ya no daba 401 — pero Gupshup respondía `400 {"status":"error","message":"Invalid URL Passed"}` para el campo `url`, incluso probando con un dominio ajeno reconocido (`https://example.com/webhook`), sin path, con/sin percent-encoding, con `version` 2 y 3, y descartando un problema de form-urlencoded vs JSON (JSON da un error DISTINTO — `"Required request parameter 'modes'..."` — confirmando que `url` SÍ se parsea correctamente y el rechazo es sobre su contenido).
 
@@ -80,11 +80,35 @@ Con el endpoint corregido, la llamada ya no daba 401 — pero Gupshup respondía
 
 Tests nuevos: `channelOnboardingWebhook.controller.test.js` (10 tests: auth fail-closed, ACK 2xx siempre que la auth pase, dispara `handleGupshupAccountVerified` solo ante un payload ACCOUNT_VERIFIED real, no-op silencioso ante cualquier otro payload como el ping de verificación). `partner.subscriptions.test.js` ampliado (parámetro `headers`→`meta`). `channel.controller.test.js` actualizado (URL nueva, header nuevo, guard de env var faltante). Suite completa: 289/289.
 
-### Por qué la prueba en vivo no pudo terminar de confirmarlo
+### Intento previo al deploy: por qué la prueba en vivo no confirmaba nada todavía
 
-Reintentado en vivo contra la sesión real tras implementar el fix: **seguía dando "Invalid URL Passed"**. Investigado por qué antes de asumir que el fix estaba mal: un `curl` directo a la ruta nueva contra el servidor de producción REALMENTE DESPLEGADO devuelve 401 "Token de autenticación requerido" — porque **el código de esta rama todavía no está desplegado** (`railway run` ejecuta el código local contra las env vars/DB de producción para los scripts de un solo uso, pero la Subscription API de Gupshup necesita poder alcanzar la URL por HTTPS real — eso solo lo sirve el contenedor efectivamente desplegado, que sigue corriendo el código de `main` sin esta ruta). Confirmado que CUALQUIER path no reconocido bajo `/api/v1/webhooks/*` cae hoy en el `router.use(authenticate, injectTenant)` de `webhook.routes.js` y devuelve ese mismo 401 — coincide exactamente con lo observado.
+Reintentado en vivo contra la sesión real ANTES de mergear/desplegar el PR: **seguía dando "Invalid URL Passed"**. Investigado por qué antes de asumir que el fix estaba mal: un `curl` directo a la ruta nueva contra el servidor de producción REALMENTE DESPLEGADO devolvía 401 "Token de autenticación requerido" — porque el código de la rama todavía no estaba desplegado (`railway run` ejecuta el código local contra las env vars/DB de producción para los scripts de un solo uso, pero la Subscription API de Gupshup necesita poder alcanzar la URL por HTTPS real — eso solo lo sirve el contenedor efectivamente desplegado). Confirmado que CUALQUIER path no reconocido bajo `/api/v1/webhooks/*` caía en el `router.use(authenticate, injectTenant)` de `webhook.routes.js` y devolvía ese mismo 401 — coincidía exactamente con lo observado. Se decidió no hacer `railway up` manual (afecta el contenedor que sirve tráfico real de PLATFORM) y esperar el merge/deploy real vía PR — igual que con el resto de los fixes de este mismo incidente.
 
-**Conclusión:** el fix está completo y verificado a nivel de código/tests; la confirmación end-to-end contra Gupshup real requiere desplegar esta rama (merge a `main`, o `railway up` directo) — una acción de mayor alcance (afecta el contenedor que sirve tráfico real de PLATFORM) que no se tomó sin autorización explícita. Pendiente de decisión del dueño del producto sobre cómo completar esa verificación.
+### Confirmación en vivo post-deploy (04/sep/2026, mismo día) — RESUELTO
+
+PR #76 mergeado a `main` → deploy en Railway confirmado exitoso (`railway deployment list`: `status: SUCCESS`, `commitHash` desplegado = HEAD de `main`). Confirmado además con un `curl` directo que la ruta nueva ya respondía 200 en el servidor real (antes del deploy daba 401).
+
+Reintentada la suscripción contra la MISMA sesión real del incidente (`6a9ae932fe38b2ca69042e03`, appId `cd6ac9ef-824a-48cc-ab85-77cb3f21c5c4`, tenant Nutriva Corp):
+
+```
+POST /partner/app/cd6ac9ef-824a-48cc-ab85-77cb3f21c5c4/subscription
+→ 200 (antes: 400 "Invalid URL Passed")
+```
+
+El flujo completo avanzó de punta a punta en la misma corrida — algo que nunca se había alcanzado en ningún intento anterior — incluyendo `setContactDetails` (200) y `getEmbedSignupLink` (200, generó un `embedSignupUrl` real y nuevo).
+
+**Estado de la sesión, antes → después de esta corrida:**
+
+| Campo | Antes | Después |
+|---|---|---|
+| `status` | `failed` | `gupshup_registering` |
+| `error.step` / `error.message` | `gupshup_registration` / "Invalid URL Passed" | `null` / `null` |
+| `gupshup.webhookReference` | `null` | `gupshup:account-subscribed` |
+| `gupshup.embedSignupUrl` | `null` | `https://gs.tc.im/kZf6e9KQ6mx` |
+
+**`WhatsAppChannel` del tenant: sigue vacío (`[]`) — este es el estado ESPERADO acá, no una falla.** La suscripción a `ACCOUNT_VERIFIED` ya quedó armada y funcionando correctamente; el `WhatsAppChannel` DEDICATED recién se crea (`channelOnboardingCompletion.service.js#handleGupshupAccountVerified()`) cuando alguien complete manualmente el `embedSignupUrl` de arriba (el paso de Gupshup donde se asocia la WABA de verdad) y Gupshup dispare el webhook `ACCOUNT_VERIFIED` hacia la ruta nueva. Ese paso requiere acción humana — no se puede completar solo desde el backend, y su ausencia hoy no indica que algo siga roto.
+
+**Bug cerrado.** Si en el futuro alguien completa ese `embedSignupUrl` y el `WhatsAppChannel` NO se crea (o el webhook `ACCOUNT_VERIFIED` no llega a `/api/v1/webhooks/gupshup/onboarding/:appId`), eso sería un incidente NUEVO — no reabrir esta entrada, documentar aparte con su propia investigación.
 
 ---
 
