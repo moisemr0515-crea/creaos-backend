@@ -43,7 +43,7 @@ const agentRuntime = new DefaultAgentRuntime();
  * ya probado del flujo síncrono (throw + reintentos + dead-letter en vez de
  * un no-op consistente).
  */
-async function ensureLeadAndConversation({ businessId, phone, text, name, mediaType, mediaSourceUrl }) {
+async function ensureLeadAndConversation({ businessId, phone, text, name, mediaType, mediaSourceUrl, channelId = null }) {
   // Mismo criterio que webhook.service.js#processGupshupMessage(): un
   // mensaje de imagen/video sin caption llega con text:'' — antes este
   // guard exigía `text` siempre, así que el caso más común (una foto sola,
@@ -97,7 +97,11 @@ async function ensureLeadAndConversation({ businessId, phone, text, name, mediaT
 
   let conversation = await Conversation.findOne({ business: businessId, lead: lead._id, status: 'active', isDeleted: false });
   if (!conversation) {
-    conversation = await Conversation.create({ business: businessId, lead: lead._id, channel: 'whatsapp', status: 'active', aiEnabled: true });
+    // PR-10a: whatsappChannel = channelId (el WhatsAppChannel real que
+    // recibió este mensaje, ya resuelto por channelResolver.resolve() en
+    // inbound.gateway.js antes de encolar) — mismo criterio que
+    // webhook.service.js#processGupshupMessage().
+    conversation = await Conversation.create({ business: businessId, lead: lead._id, channel: 'whatsapp', whatsappChannel: channelId, status: 'active', aiEnabled: true });
   }
 
   // Ventana de 24h de WhatsApp Business (Meta) — mismo criterio que
@@ -139,6 +143,9 @@ async function processInboundJob(job) {
     name: event.rawPayload?.name,
     mediaType: event.mediaType,
     mediaSourceUrl: event.mediaSourceUrl,
+    // PR-10a: event.channel ya viene resuelto por channelResolver.resolve()
+    // (inbound.gateway.js, antes de encolar este InboundEvent).
+    channelId: event.channel,
   });
 
   if (!result) {

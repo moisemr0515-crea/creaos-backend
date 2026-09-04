@@ -298,7 +298,7 @@ const saveInboundMessage = async (conversationId, text, media) => {
 
   if (media?.sourceUrl) {
     try {
-      const channel = await channelService.getChannelForTenant(conversation.business);
+      const channel = await channelService.getChannelForConversation(conversation, conversation.business);
       if (!channel) {
         throw new Error(`Ningún WhatsAppChannel activo para el tenant ${conversation.business}`);
       }
@@ -683,7 +683,11 @@ const sendAgentMessage = async (conversationId, text, actor) => {
       // `business` es requerido desde siempre y tiene el mismo valor,
       // Decisión 1). Este envío NO pasa por la cola de salida — esa cola
       // (sub-fase 1.d) es solo para las respuestas automáticas de la IA.
-      const channel = await channelService.getChannelForTenant(conversation.business);
+      // PR-10a: resuelve por conversation.whatsappChannel cuando está
+      // poblado (el canal que RECIBIÓ el mensaje del lead) — con 1 solo
+      // canal activo (100% de la base hoy) es idéntico a
+      // getChannelForTenant() de siempre.
+      const channel = await channelService.getChannelForConversation(conversation, conversation.business);
       if (!channel) {
         // Antes de esta sub-fase, el envío siempre se intentaba vía el
         // número compartido — este es un modo de fallo NUEVO para negocios
@@ -767,7 +771,9 @@ const sendTemplateMessage = async (conversationId, template, actor) => {
   };
 
   try {
-    const channel = await channelService.getChannelForTenant(conversation.business);
+    // PR-10a: mismo criterio que sendAgentMessage() — resuelve por
+    // conversation.whatsappChannel cuando está poblado.
+    const channel = await channelService.getChannelForConversation(conversation, conversation.business);
     if (!channel) {
       logger.warn(`sendTemplateMessage: sin WhatsAppChannel activo para el tenant ${conversation.business} (conversación ${conversationId})`);
       throw new Error(`Ningún WhatsAppChannel activo para el tenant ${conversation.business}`);
@@ -871,7 +877,8 @@ const sendMediaMessage = async (conversationId, media, actor) => {
   };
 
   try {
-    const channel = await channelService.getChannelForTenant(conversation.business);
+    // PR-10a: mismo criterio que sendAgentMessage()/sendTemplateMessage().
+    const channel = await channelService.getChannelForConversation(conversation, conversation.business);
     if (!channel) {
       logger.warn(`sendMediaMessage: sin WhatsAppChannel activo para el tenant ${conversation.business} (conversación ${conversationId})`);
       throw new Error(`Ningún WhatsAppChannel activo para el tenant ${conversation.business}`);
