@@ -1,6 +1,6 @@
 const jwt = require('jsonwebtoken');
 const { JWT_SECRET } = require('../config/env');
-const { AppError } = require('./error.middleware');
+const { AppError, AUTH_SESSION_INVALID_CODE } = require('./error.middleware');
 const User = require('../modules/users/user.model');
 
 /**
@@ -13,7 +13,7 @@ const authenticate = async (req, res, next) => {
     // Extraer token del header
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      throw new AppError('Token de autenticación requerido', 401);
+      throw new AppError('Token de autenticación requerido', 401, AUTH_SESSION_INVALID_CODE);
     }
 
     const token = authHeader.split(' ')[1];
@@ -24,16 +24,16 @@ const authenticate = async (req, res, next) => {
       payload = jwt.verify(token, JWT_SECRET);
     } catch (jwtError) {
       if (jwtError.name === 'TokenExpiredError') {
-        throw new AppError('El token ha expirado', 401);
+        throw new AppError('El token ha expirado', 401, AUTH_SESSION_INVALID_CODE);
       }
-      throw new AppError('Token inválido', 401);
+      throw new AppError('Token inválido', 401, AUTH_SESSION_INVALID_CODE);
     }
 
     // Buscar usuario activo en BD
     const usuario = await User.findById(payload.sub).populate('role', 'slug permissions');
 
     if (!usuario) {
-      throw new AppError('Usuario no encontrado', 401);
+      throw new AppError('Usuario no encontrado', 401, AUTH_SESSION_INVALID_CODE);
     }
 
     if (!usuario.isActive) {
@@ -63,7 +63,7 @@ const authenticateUnverified = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      throw new AppError('Token de autenticación requerido', 401);
+      throw new AppError('Token de autenticación requerido', 401, AUTH_SESSION_INVALID_CODE);
     }
 
     const token = authHeader.split(' ')[1];
@@ -72,7 +72,7 @@ const authenticateUnverified = async (req, res, next) => {
     const usuario = await User.findById(payload.sub).populate('role', 'slug permissions');
 
     if (!usuario || !usuario.isActive) {
-      throw new AppError('Usuario no encontrado o inactivo', 401);
+      throw new AppError('Usuario no encontrado o inactivo', 401, AUTH_SESSION_INVALID_CODE);
     }
 
     req.user = usuario;

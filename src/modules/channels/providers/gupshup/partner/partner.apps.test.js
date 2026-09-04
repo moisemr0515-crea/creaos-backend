@@ -102,10 +102,10 @@ describe('partner.apps', () => {
       );
     });
 
-    test('401 Authentication Failed: se mapea a AppError 401', async () => {
+    test('401 Authentication Failed: se mapea a AppError 502, no 401 (ver partner.errors.js)', async () => {
       httpClient.request.mockRejectedValue(gupshupError(401, { message: 'Authentication Failed' }));
 
-      await expect(partnerApps.setContactDetails('app-123', {}, TOKEN)).rejects.toMatchObject({ statusCode: 401 });
+      await expect(partnerApps.setContactDetails('app-123', {}, TOKEN)).rejects.toMatchObject({ statusCode: 502 });
     });
   });
 
@@ -146,10 +146,10 @@ describe('partner.apps', () => {
       );
     });
 
-    test('401 Unauthorized: se mapea a AppError 401', async () => {
+    test('401 Unauthorized: se mapea a AppError 502, no 401 (ver partner.errors.js)', async () => {
       httpClient.request.mockRejectedValue(gupshupError(401, null));
 
-      await expect(partnerApps.linkAppWithPartner({ apiKey: 'x', appName: 'y' }, TOKEN)).rejects.toMatchObject({ statusCode: 401 });
+      await expect(partnerApps.linkAppWithPartner({ apiKey: 'x', appName: 'y' }, TOKEN)).rejects.toMatchObject({ statusCode: 502 });
     });
   });
 
@@ -213,10 +213,10 @@ describe('partner.apps', () => {
       expect(httpClient.request).not.toHaveBeenCalled();
     });
 
-    test('401 Authentication Failed (appId o token incorrecto): se mapea a AppError 401', async () => {
+    test('401 Authentication Failed (appId o token incorrecto): se mapea a AppError 502, no 401 (ver partner.errors.js)', async () => {
       httpClient.request.mockRejectedValue(gupshupError(401, { status: 'error', message: 'Authentication Failed' }));
 
-      await expect(partnerApps.getEmbedSignupLink('app-123', { user: 'ana@creaos.com', lang: 'es' }, TOKEN)).rejects.toMatchObject({ statusCode: 401 });
+      await expect(partnerApps.getEmbedSignupLink('app-123', { user: 'ana@creaos.com', lang: 'es' }, TOKEN)).rejects.toMatchObject({ statusCode: 502 });
     });
 
     test('500 "Max link already sent": se mapea a AppError 502 (falla del proveedor)', async () => {
@@ -242,10 +242,10 @@ describe('partner.apps', () => {
       );
     });
 
-    test('401 Authentication Failed: se mapea a AppError 401', async () => {
+    test('401 Authentication Failed: se mapea a AppError 502, no 401 (ver partner.errors.js)', async () => {
       httpClient.request.mockRejectedValue(gupshupError(401, { message: 'Authentication Failed' }));
 
-      await expect(partnerApps.getAppAccessToken('app-123', TOKEN)).rejects.toMatchObject({ statusCode: 401 });
+      await expect(partnerApps.getAppAccessToken('app-123', TOKEN)).rejects.toMatchObject({ statusCode: 502 });
     });
   });
 });
