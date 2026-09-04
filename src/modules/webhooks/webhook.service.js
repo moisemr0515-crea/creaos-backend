@@ -425,7 +425,16 @@ async function findGupshupConfig(body) {
   });
 }
 
-async function processGupshupMessage({ phone, text, name, mediaType, mediaSourceUrl }, businessId) {
+// PR-10a: `channelId` es un parámetro NUEVO, opcional (`= null`) a
+// propósito — el único caller real, inbound.gateway.js, ya tiene el
+// WhatsAppChannel resuelto (channelResolver.resolve()) y lo pasa acá; el
+// camino legacy de webhook.controller.js (parseGupshupPayload()/
+// findGupshupConfig(), muerto hoy con WHATSAPP_CHANNEL_CORE_ENABLED=true
+// pero todavía en el código) nunca resolvió un WhatsAppChannel real, así
+// que sigue llamando a esta función sin el 3er argumento — se comporta
+// exactamente igual que antes de este PR (cae al fallback de
+// getChannelForConversation(), ver más abajo).
+async function processGupshupMessage({ phone, text, name, mediaType, mediaSourceUrl }, businessId, channelId = null) {
   logger.info('[gupshup] processGupshupMessage: inicio', { phone, textPreview: text?.slice(0, 50), mediaType, businessId });
 
   // Un mensaje de imagen/video SIN caption llega con text:'' — antes este
@@ -495,6 +504,10 @@ async function processGupshupMessage({ phone, text, name, mediaType, mediaSource
       business:  businessId,
       lead:      lead._id,
       channel:   'whatsapp',
+      // PR-10a: el WhatsAppChannel real que recibió ESTE mensaje (resuelto
+      // por channelResolver.resolve() en inbound.gateway.js) — null en el
+      // camino legacy, que nunca lo resuelve (ver comentario de la firma).
+      whatsappChannel: channelId,
       status:    'active',
       aiEnabled: true,
     });
@@ -606,7 +619,10 @@ async function processGupshupMessage({ phone, text, name, mediaType, mediaSource
   // intentaba igual vía el número compartido) — se loguea y no se relanza,
   // consistente con el resto de esta función (nunca lanza por datos
   // faltantes, ver los `return` de arriba).
-  const channel = await channelService.getChannelForTenant(businessId);
+  // PR-10a: getChannelForConversation() (no getChannelForTenant() a secas)
+  // — responde por el MISMO canal que recibió el mensaje del lead cuando
+  // conversation.whatsappChannel está poblado.
+  const channel = await channelService.getChannelForConversation(conversation, businessId);
   if (!channel) {
     logger.warn('[gupshup] sin WhatsAppChannel activo para este tenant, no se pudo enviar la respuesta', { businessId, leadId: lead._id.toString() });
   } else {

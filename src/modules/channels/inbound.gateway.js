@@ -121,10 +121,14 @@ async function handleOne(msg) {
     // Lo único distinto es que `tenantId` vino de ChannelResolver +
     // TenantResolver, no de findGupshupConfig(). mediaType/mediaSourceUrl
     // se pasan tal cual — processGupshupMessage() ya sabe qué hacer con
-    // ellos (feat/inbound-media-messages).
+    // ellos (feat/inbound-media-messages). PR-10a: se pasa también
+    // `channel._id` (ya resuelto acá arriba) para que, si esto crea una
+    // Conversation nueva, quede atada al canal real que la originó — ver
+    // Conversation.whatsappChannel.
     await webhookService.processGupshupMessage(
       { phone: msg.from, text: msg.text, name: msg.name, mediaType: msg.mediaType, mediaSourceUrl: msg.mediaSourceUrl },
-      tenantId
+      tenantId,
+      channel._id
     );
     event.status = 'processed';
     event.processedAt = new Date();

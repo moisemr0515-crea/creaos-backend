@@ -104,10 +104,12 @@ describe('inboundGateway#handle() — camino síncrono real (WHATSAPP_QUEUE_PROC
 
     expect(webhookService.processGupshupMessage).toHaveBeenCalledWith(
       { phone: '51987654321', text: 'Hola, quiero info', name: 'Lead de prueba', mediaType: undefined, mediaSourceUrl: undefined },
-      expect.anything()
+      expect.anything(),
+      expect.anything() // PR-10a: 3er argumento, el channel._id resuelto
     );
-    const [, tenantIdPasado] = webhookService.processGupshupMessage.mock.calls[0];
+    const [, tenantIdPasado, channelIdPasado] = webhookService.processGupshupMessage.mock.calls[0];
     expect(String(tenantIdPasado)).toBe(String(business._id));
+    expect(String(channelIdPasado)).toBe(String(canalDedicado._id)); // PR-10a
 
     const event = await InboundEvent.findOne({ providerMessageId: 'msg-1' });
     expect(event).not.toBeNull();
@@ -307,7 +309,8 @@ describe('inboundGateway#handle() — camino síncrono real (WHATSAPP_QUEUE_PROC
     expect(event.mediaSourceUrl).toBe('https://filemanager.gupshup.io/x/foto.jpg');
     expect(webhookService.processGupshupMessage).toHaveBeenCalledWith(
       expect.objectContaining({ mediaType: 'image', mediaSourceUrl: 'https://filemanager.gupshup.io/x/foto.jpg' }),
-      expect.anything()
+      expect.anything(),
+      expect.anything() // PR-10a
     );
   });
 });

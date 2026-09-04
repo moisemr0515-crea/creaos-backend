@@ -122,6 +122,19 @@ const conversationSchema = new mongoose.Schema(
     lead:       { type: mongoose.Schema.Types.ObjectId, ref: 'Lead',     required: true, index: true },
     assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     channel:    { type: String, enum: ['whatsapp', 'web', 'email', 'manual'], default: 'manual' },
+    // PR-10a (correctness de routing saliente, multi-canal por tenant) —
+    // referencia real al WhatsAppChannel que RECIBIÓ el mensaje entrante que
+    // originó esta conversación. Deliberadamente un campo NUEVO, no un
+    // reemplazo de `channel` (arriba): `channel` es un STRING de tipo
+    // ('whatsapp'/'web'/'email'/'manual'), ya leído en 3 lugares de
+    // ai.service.js (sendAgentMessage/sendTemplateMessage/sendMediaMessage)
+    // para decisiones que no tienen nada que ver con MULTI-canal — renombrarlo
+    // o pisarlo rompería esos 3 usos. Mismo criterio que `tenantId` arriba:
+    // opcional, sin backfill de las conversaciones existentes — channelService.
+    // getChannelForConversation() cae al comportamiento de siempre ("primer
+    // canal activo del tenant") cuando este campo no está poblado, así que
+    // ninguna conversación vieja se rompe por no tenerlo.
+    whatsappChannel: { type: mongoose.Schema.Types.ObjectId, ref: 'WhatsAppChannel', default: null },
     status:     { type: String, enum: ['active', 'waiting', 'resolved', 'escalated'], default: 'active' },
     messages:   [messageSchema],
     aiEnabled:  { type: Boolean, default: true },
