@@ -4,7 +4,6 @@ const IChannelProvider = require('../channelProvider.interface');
 // mockearlo en tests sin tocar el módulo real (ver _tmp-test-fase-1b.js).
 const gupshupClient = require('../../webhooks/gupshup.client');
 const channelCredentialsService = require('../channelCredentials.service');
-const { GUPSHUP_PHONE_NUMBER } = require('../../../config/env');
 
 /**
  * PR-07a (Plan Maestro §3/§5): arma el objeto `{apiKey, source, appName}`
@@ -112,14 +111,28 @@ class GupshupProvider extends IChannelProvider {
    * llamada en vivo a la API de Gupshup, mismo criterio que ya usaba
    * whatsapp.controller.js#getStatus() antes de este refactor).
    *
-   * @param {import('../whatsappChannel.model')} _channel — no usado hoy:
-   *   estaConfigurado() sigue siendo global (env vars), no por canal — el
-   *   parámetro se acepta para cumplir el contrato, igual que sendMessage().
-   * @returns {Promise<{connected: boolean, provider: string, phoneNumber: string|null}>}
+   * @param {import('../whatsappChannel.model')} channel — el WhatsAppChannel
+   *   real ya resuelto para el tenant (channel.service.js#getChannelStatus).
+   *   `connected` sigue siendo global (gupshupClient.estaConfigurado(), env
+   *   vars) — no depende de este canal puntual, es "¿Gupshup en sí está
+   *   operativo?", no "¿este canal existe?" (eso ya lo garantizó el caller:
+   *   getChannelForTenant() solo devuelve canales con status:'active').
+   *   phoneNumber/connectionType SÍ vienen del canal real — antes esto
+   *   devolvía GUPSHUP_PHONE_NUMBER (el número compartido de PLATFORM) sin
+   *   importar qué canal fuera, incluso para un WhatsAppChannel DEDICATED
+   *   real ya conectado. Bug encontrado auditando Conexiones en
+   *   crea-os-ignite — el frontend nunca podía mostrar el número real de un
+   *   canal propio porque este endpoint no se lo daba.
+   * @returns {Promise<{connected: boolean, provider: string, phoneNumber: string|null, connectionType: string|null}>}
    */
-  async getChannelStatus(_channel) {
+  async getChannelStatus(channel) {
     const connected = gupshupClient.estaConfigurado();
-    return { connected, provider: 'gupshup', phoneNumber: connected ? GUPSHUP_PHONE_NUMBER : null };
+    return {
+      connected,
+      provider: 'gupshup',
+      phoneNumber: connected ? channel.phoneNumber : null,
+      connectionType: connected ? channel.connectionType : null,
+    };
   }
 
   /**

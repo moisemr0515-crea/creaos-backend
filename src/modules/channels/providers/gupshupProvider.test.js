@@ -148,21 +148,50 @@ describe('GupshupProvider', () => {
     });
   });
 
-  // Regresión — sin cambios en PR-07a, pero este archivo no tenía NINGÚN
-  // test antes de este PR (pedido explícito: cubrir lo nuevo Y confirmar que
-  // el camino PLATFORM/status actual sigue igual).
-  describe('getChannelStatus() / listTemplates() — sin cambios en PR-07a', () => {
-    test('getChannelStatus() sigue sin usar el channel ni resolveCredentials() — status global de estaConfigurado()', async () => {
+  // getChannelStatus() SÍ cambió acá (bug encontrado auditando Conexiones en
+  // crea-os-ignite: devolvía GUPSHUP_PHONE_NUMBER, el número compartido de
+  // PLATFORM, sin importar qué canal se le pasara — incluso un DEDICATED
+  // real ya conectado). listTemplates() no tiene cambios, se deja aparte.
+  describe('getChannelStatus()', () => {
+    test('devuelve el phoneNumber/connectionType del canal DEDICATED real, no el compartido de plataforma', async () => {
       gupshupClient.estaConfigurado.mockReturnValue(true);
 
       const status = await provider.getChannelStatus(channelDedicado);
 
-      expect(status.connected).toBe(true);
-      expect(status.provider).toBe('gupshup');
+      expect(status).toEqual({
+        connected: true,
+        provider: 'gupshup',
+        phoneNumber: channelDedicado.phoneNumber,
+        connectionType: 'DEDICATED',
+      });
       expect(channelCredentialsService.resolveCredentials).not.toHaveBeenCalled();
     });
 
-    test('listTemplates() sigue sin usar el channel ni resolveCredentials()', async () => {
+    test('devuelve el phoneNumber/connectionType del canal PLATFORM cuando el canal resuelto es ese', async () => {
+      gupshupClient.estaConfigurado.mockReturnValue(true);
+
+      const status = await provider.getChannelStatus(channelPlatform);
+
+      expect(status.phoneNumber).toBe(channelPlatform.phoneNumber);
+      expect(status.connectionType).toBe('PLATFORM');
+    });
+
+    test('sin Gupshup configurado (estaConfigurado():false), phoneNumber/connectionType quedan null aunque el canal exista', async () => {
+      gupshupClient.estaConfigurado.mockReturnValue(false);
+
+      const status = await provider.getChannelStatus(channelDedicado);
+
+      expect(status).toEqual({
+        connected: false,
+        provider: 'gupshup',
+        phoneNumber: null,
+        connectionType: null,
+      });
+    });
+  });
+
+  describe('listTemplates() — sin cambios en este fix', () => {
+    test('sigue sin usar el channel ni resolveCredentials()', async () => {
       gupshupClient.listTemplates.mockResolvedValue([{ id: 'tpl-1' }]);
 
       const templates = await provider.listTemplates(channelDedicado);
