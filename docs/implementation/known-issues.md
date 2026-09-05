@@ -11,6 +11,46 @@ propuesto para el PR de seguimiento.
 
 ---
 
+## 2026-09-05 — BLOQUEANTE PARA LANZAMIENTO: el Embedded Signup saca al usuario a una página con marca de Gupshup, fuera de creaosapp.com
+
+**Estado:** Abierto — diagnóstico completo, sin implementar. Necesita una respuesta directa de Gupshup (contacto: Dali, Partnership) antes de poder diseñar el fix en firme — no es un bug de código, es una posible limitación real de la plataforma de Gupshup.
+**Prioridad:** ALTA — bloqueante antes de abrir CREA OS a clientes reales (ningún negocio debería salir de nuestro dominio hacia la marca de un proveedor de infraestructura que nunca contrató directamente).
+**Detectado en:** piloto PR-11, prueba de "Negocio Prueba 3" (Embedded Signup de punta a punta sin errores, confirmando que los fixes de PR #81/#82 funcionan) — hallazgo de producto, no un bug funcional. Relacionado pero distinto del hallazgo ya resuelto de "nombre 'Moises Ramos' visible en el popup de Meta" (resuelto cambiando nombre de portafolio + logo en Meta Business Manager) — ese era sobre el popup de Meta; este es sobre un paso completamente aparte, después de que el popup de Meta ya cerró.
+**Archivos involucrados:** [`channel.controller.js#completeGupshupEmbeddedSignup()`](../../src/modules/channels/channel.controller.js) (backend, genera el link), [`partner.apps.js#getEmbedSignupLink()`](../../src/modules/channels/providers/gupshup/partner/partner.apps.js) (backend, llama a Gupshup), [`use-whatsapp-connect.ts#runCompleteGupshup()`](../../../crea-os-ignite/src/lib/use-whatsapp-connect.ts) (frontend, abre el link).
+
+### Problema
+
+El flujo actual tiene 2 partes bien distintas, y solo la primera está embebida en nuestro dominio:
+
+1. **Autorización de Meta** — SÍ está embebida: `facebook-sdk.ts#startWhatsappEmbeddedSignup()` abre el popup de Meta (JS SDK de Facebook) directo desde `creaosapp.com`, sin salir del dominio. Meta devuelve `code`/`wabaId`/`phoneNumberId` a nuestra propia ventana. Esta parte ya funciona como el usuario la pidió.
+2. **Vinculación WABA↔app de Gupshup** — NO está embebida: una vez que el backend ya hizo `createApp()`/`setContactDetails()`/`subscribeToEvents()` contra la Partner API de Gupshup, el único paso que falta (asociar el WABA real ya autorizado por Meta con el `appId` de Gupshup) requiere llamar a `GET /partner/app/{appId}/onboarding/embed/link` y **redirigir al usuario a esa URL** (`https://gs.tc.im/...`, hosteada por Gupshup, con su propio branding) — `window.open(embedSignupUrl, "_blank", ...)`. El usuario completa ahí un paso final del lado de Gupshup, en una pestaña nueva, totalmente fuera de creaosapp.com.
+
+### Investigación: ¿hay una alternativa 100% vía API, sin el paso hosteado?
+
+Revisado contra la documentación oficial de Gupshup (`partner-docs.gupshup.io`) y su Ask AI (grounded en esa misma documentación):
+
+- **`POST /partner/app/{appId}/onboarding/register`** ("Register phone for an app") es el único otro endpoint con un nombre que sugiere esto — **descartado**: no documenta ningún body, no acepta `code`, `wabaId`, ni `phone_number_id`. El propio Ask AI de Gupshup, consultado directo: *"the docs do not show it accepting code, wabaId, or phone_number_id. Therefore, from the docs, you should assume it is NOT the headless replacement for the hosted completion flow. If you need a fully white-labeled/server-to-server completion, the docs here don't expose such an API."*
+- **`obotoembed/whitelist`/`verify`** (investigados a fondo en `docs/integrations/gupshup-registration-contract.md`) siguen confirmados como exclusivos del flujo de MIGRACIÓN (una WABA que ya estaba en otro BSP u OBO) — no aplican a un alta 100% nueva.
+- **No se encontró ningún endpoint documentado** que acepte el `code`/`wabaId`/`phoneNumberId` de Meta directo por API para completar esta vinculación sin la página hosteada.
+
+**Esto no es concluyente de que sea imposible** — la documentación pública de Gupshup ya demostró, en investigaciones anteriores de este mismo proyecto, tener huecos reales que solo un contacto humano (Dali) pudo resolver (ver `gupshup-registration-contract.md §9`: el endpoint correcto para altas nuevas tampoco estaba claro en la doc pública). Es muy posible que exista una vía server-to-server mediada por su equipo de Partnership/CSM (mismo patrón ya visto con el "Solution ID", que en algunos casos es un proceso manual coordinado con el CSM de Gupshup) que no esté expuesta como API pública.
+
+### Alcance estimado, según la respuesta de Gupshup
+
+**Si Gupshup confirma que existe una vía server-to-server** (a preguntar directo a Dali):
+- Backend: nueva función en `partner.apps.js` (reemplaza o complementa `getEmbedSignupLink()`) que mande `code`/`wabaId`/`phoneNumberId` directo; `completeGupshupEmbeddedSignup()` ya no genera ni devuelve `embedSignupUrl`.
+- Frontend: `use-whatsapp-connect.ts` pierde el estado `awaiting_gupshup_completion` y el `window.open()` — el flujo pasa a resolverse síncrono contra nuestro propio backend, sin ninguna pestaña nueva.
+- Alcance chico-mediano: la arquitectura general (Meta embebido + backend habla con Gupshup) ya está lista, solo cambia qué endpoint de Gupshup se llama en un paso puntual.
+
+**Si Gupshup confirma que el paso hosteado es obligatorio** (limitación real de su plataforma, posiblemente por motivos de compliance/KYC del lado de ellos, no solo técnicos):
+- No hay forma de eliminarlo sin cambiar de BSP — la decisión de producto sería entre (a) aceptarlo y mitigar la percepción con copy claro antes de redirigir ("vas a completar un último paso con nuestro proveedor de WhatsApp, volvés automáticamente"), (b) probar si la página de Gupshup admite embeberse en un `<iframe>` propio en vez de pestaña nueva (mitigación cosmética menor, sin garantía — muchas páginas de verificación bloquean explícitamente el framing por seguridad, y no se probó en vivo), o (c) evaluar un BSP alternativo a futuro si el branding de terceros es un bloqueante duro para el producto.
+
+### Siguiente paso
+
+Escribirle a Dali (mismo contacto de Partnership usado en investigaciones anteriores) con la pregunta puntual: *"Para una app Tech Provider, después de que el customer autoriza vía el JS SDK de Meta embebido en nuestro propio dominio (tenemos code + wabaId + phone_number_id), ¿existe alguna forma de completar la vinculación WABA↔app 100% server-to-server, sin redirigir al customer a la página hosteada de `Generate Embed Signed Link`? Si no es posible vía API pública, ¿hay algo posible coordinando con nuestro Customer Success Manager?"* — no implementar nada hasta tener esa respuesta.
+
+---
+
 ## 2026-09-05 — Piloto PR-11: reintentar el onboarding tras perder el sessionId chocaba con 409 "Bot Already Exists" y luego con 400 "Duplicate component tag"
 
 **Estado:** RESUELTO — 2 causas, mismo patrón, mismo `completeGupshupEmbeddedSignup()`.
