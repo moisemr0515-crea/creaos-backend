@@ -11,28 +11,34 @@ propuesto para el PR de seguimiento.
 
 ---
 
-## 2026-09-05 — Piloto PR-11: reintentar el registro en Gupshup tras perder el sessionId chocaba con 409 "Bot Already Exists"
+## 2026-09-05 — Piloto PR-11: reintentar el onboarding tras perder el sessionId chocaba con 409 "Bot Already Exists" y luego con 400 "Duplicate component tag"
 
-**Estado:** RESUELTO.
+**Estado:** RESUELTO — 2 causas, mismo patrón, mismo `completeGupshupEmbeddedSignup()`.
 **Prioridad:** Alta (bloqueaba completar el onboarding de cualquier tenant que reintentara el flujo más de una vez).
-**Detectado en:** segundo tenant de prueba del piloto PR-11 ("Negocio Prueba 2", `+51940766276`) — no relacionado con el incidente de Embedded Signup del 04/sep (entrada anterior), es un bug distinto encontrado en la siguiente sesión de pruebas.
-**Archivos involucrados:** [`channel.controller.js`](../../src/modules/channels/channel.controller.js), [`partner.apps.js`](../../src/modules/channels/providers/gupshup/partner/partner.apps.js).
+**Detectado en:** segundo tenant de prueba del piloto PR-11 ("Negocio Prueba 2", `+51940766276`) — no relacionado con el incidente de Embedded Signup del 04/sep (entrada anterior), son bugs distintos encontrados en la siguiente sesión de pruebas.
+**Archivos involucrados:** [`channel.controller.js`](../../src/modules/channels/channel.controller.js), [`partner.apps.js`](../../src/modules/channels/providers/gupshup/partner/partner.apps.js), [`partner.subscriptions.js`](../../src/modules/channels/providers/gupshup/partner/partner.subscriptions.js).
 
-### Problema
+### Causa 1 (RESUELTA) — `createApp()`: 409 "Bot Already Exists"
 
 El nombre de la app de Gupshup es determinístico por tenant (`nombreAppGupshup(tenantId)`), pero el chequeo `if (!session.gupshup.appId)` en `completeGupshupEmbeddedSignup()` era por SESIÓN, no por tenant. Si el `sessionId` se perdía del lado del frontend (reload, cierre del popup, cualquier interrupción — el `sessionId` vive solo en memoria de React, ver incidente anterior) y el usuario reiniciaba desde `/init`, se creaba una `ChannelOnboardingSession` nueva sin `gupshup.appId` — que no tenía forma de saber que OTRA sesión del mismo tenant ya había creado la app minutos antes. Resultado: `createApp()` se volvía a llamar con el mismo nombre, y Gupshup respondía `409 "Bot Already Exists"`.
 
 Evidencia real: para el tenant "Negocio Prueba 2", la sesión B (creada 05:37:56) completó el registro con éxito (`gupshup.appId: "4f81131f-3b56-4bf5-808f-4e05176d0315"`, confirmado 1:1 contra el Partner Portal de Gupshup) — pero 8 minutos después, la sesión A (un reintento desde cero del mismo tenant) falló con 409 al intentar crear la misma app de nuevo.
 
-### Fix
-
-En `completeGupshupEmbeddedSignup()`, antes de llamar a `createApp()`:
+**Fix**, antes de llamar a `createApp()`:
 1. **Chequeo a nivel tenant (vía primaria)**: buscar la `ChannelOnboardingSession` más reciente del mismo `tenantId` (excluyendo la actual) con `gupshup.appId` poblado, sin importar su `status` final — el appId en Gupshup sigue siendo válido independientemente de cómo haya terminado esa sesión anterior. Si se encuentra, se reusa directo, sin llamar a Gupshup.
 2. **Fallback ante 409 real**: si ninguna sesión en Mongo tenía el appId (ej. el guardado falló después de crear la app en Gupshup pero antes de persistir — mismo patrón "creado afuera, no persistido adentro" del incidente anterior) y `createApp()` responde 409, se resuelve el appId real vía `partnerApps.getPartnerApps()` (nuevo, `GET /partner/account/api/partnerApps`), buscando por el nombre determinístico. Si tampoco aparece ahí, se propaga el 409 original — no se inventa un appId.
 
-**Decisión de diseño**: las sesiones viejas que quedaron en `failed`/`expired` por este motivo NO se marcan de ninguna forma especial ("superseded" u otro estado) — quedan como registro de auditoría tal cual, mismo criterio que el resto de sesiones abandonadas del modelo (nunca se hard-borran ni se reinterpretan). Si en el futuro hace falta distinguir programáticamente "falló pero fue superada" de "falló y quedó sin resolver", la vía más barata sería un campo opcional nuevo (`supersededBySessionId`) en vez de tocar el enum de `status` — no implementado, sin caso de uso real que lo pida todavía.
+### Causa 2 (RESUELTA) — `subscribeToEvents()`: 400 "Duplicate component tag"
 
-Tests nuevos: `channel.controller.test.js` (4 tests: reusa appId de otra sesión, usa la más reciente si hay varias, resuelve por `getPartnerApps()` ante 409 sin ninguna sesión con appId, propaga el 409 original si tampoco se encuentra por nombre). `partner.apps.test.js` (`getPartnerApps()`: happy path, respuesta sin `partnerAppsList`, mapeo de error). Suite completa: 302/302.
+Con la Causa 1 arreglada (el `appId` ya se reusaba bien), apareció el mismo problema un paso más adelante: `if (!session.gupshup.webhookReference)` también era por SESIÓN, no por tenant+appId. La app reusada (creada por la sesión B) ya tenía una suscripción activa con el `tag` determinístico (`'creaos-account-events'`) — confirmado en vivo (`GET /partner/app/{appId}/subscription`, solo lectura): `{"id":"10967130","active":true,"tag":"creaos-account-events",...}`, con la URL y el `meta` ya correctos. La sesión A, sin saberlo, volvía a llamar `subscribeToEvents()` (POST, crear) con el mismo `tag` → Gupshup respondía `400 "Duplicate component tag. Please ensure that each tag is unique."`.
+
+**Fix**, mismo patrón exacto que la Causa 1, un nivel más abajo:
+1. **Chequeo a nivel tenant+appId (vía primaria)**: buscar otra `ChannelOnboardingSession` del mismo `tenantId` **con el mismo `gupshup.appId`** que tenga `webhookReference` poblado. Si existe, se copia el marcador directo, sin llamar a Gupshup.
+2. **Fallback ante Gupshup**: si ninguna sesión en Mongo lo tenía, se consulta `partnerSubscriptions.getSubscriptions()` (nuevo, `GET /partner/app/{appId}/subscription`) buscando una suscripción `active` con ese `tag`. Si aparece, se marca directo (ya estaba bien configurada, no hace falta `updateSubscription()` acá). Si tampoco aparece, recién ahí se llama a `subscribeToEvents()` (POST) como siempre.
+
+**Decisión de diseño (aplica a ambas causas)**: las sesiones viejas que quedaron en `failed`/`expired` por este motivo NO se marcan de ninguna forma especial ("superseded" u otro estado) — quedan como registro de auditoría tal cual, mismo criterio que el resto de sesiones abandonadas del modelo (nunca se hard-borran ni se reinterpretan). Si en el futuro hace falta distinguir programáticamente "falló pero fue superada" de "falló y quedó sin resolver", la vía más barata sería un campo opcional nuevo (`supersededBySessionId`) en vez de tocar el enum de `status` — no implementado, sin caso de uso real que lo pida todavía.
+
+Tests nuevos: `channel.controller.test.js` (Causa 1: 4 tests — reusa appId de otra sesión, usa la más reciente si hay varias, resuelve por `getPartnerApps()` ante 409 sin ninguna sesión con appId, propaga el 409 original si tampoco se encuentra por nombre. Causa 2: 4 tests — reusa webhookReference de otra sesión con el MISMO appId, NO lo reusa si el appId es distinto, resuelve por `getSubscriptions()` ante ninguna sesión con webhookReference, sigue con `subscribeToEvents()` sin regresión si `getSubscriptions()` no encuentra el tag). `partner.apps.test.js` (`getPartnerApps()`: happy path, sin `partnerAppsList`, mapeo de error). `partner.subscriptions.test.js` (`getSubscriptions()`: happy path, sin `subscriptions`, mapeo de error, error no-Gupshup se propaga tal cual). Suite completa: 312/312.
 
 ---
 

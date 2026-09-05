@@ -206,4 +206,43 @@ async function updateSubscription(appId, apikey, subscriptionId, { url, tag, mod
   }
 }
 
-module.exports = { subscribeToEvents, updateSubscription, SUBSCRIPTION_API_BASE_URL, SUBSCRIPTION_401_RETRY_DELAYS_MS };
+/**
+ * GET /partner/app/{appId}/subscription ("Get All Subscriptions") — lista
+ * TODAS las suscripciones activas de una app.
+ *
+ * Piloto PR-11 (docs/implementation/known-issues.md): fallback de
+ * completeGupshupEmbeddedSignup() para el mismo patrón que
+ * partnerApps.getPartnerApps() resuelve para `appId` — cuando el `appId` se
+ * reusó de otra sesión del mismo tenant (createApp() evitado), esa app
+ * puede YA tener una suscripción activa con el `tag` determinístico
+ * ('creaos-account-events') creada por la sesión anterior. Sin este
+ * chequeo, subscribeToEvents() (POST) vuelve a intentar crearla y Gupshup
+ * responde 400 "Duplicate component tag".
+ *
+ * @param {string} appId
+ * @param {string} apikey - de la app puntual (partnerApps.getAppAccessToken())
+ * @returns {Promise<Array<{id: string, appId: string, active: boolean, tag: string, url: string, modes: string[], meta?: string, version: number}>>}
+ */
+async function getSubscriptions(appId, apikey) {
+  try {
+    const { body } = await httpClient.request({
+      method: 'GET',
+      path: `/partner/app/${appId}/subscription`,
+      baseUrl: SUBSCRIPTION_API_BASE_URL,
+      headers: { Authorization: apikey },
+      // idempotent: true (default de GET) — es una lectura.
+    });
+    return body.subscriptions || [];
+  } catch (err) {
+    if (err instanceof GupshupHttpError) throw mapPartnerError(err, `listar suscripciones de app ${appId}`);
+    throw err;
+  }
+}
+
+module.exports = {
+  subscribeToEvents,
+  updateSubscription,
+  getSubscriptions,
+  SUBSCRIPTION_API_BASE_URL,
+  SUBSCRIPTION_401_RETRY_DELAYS_MS,
+};

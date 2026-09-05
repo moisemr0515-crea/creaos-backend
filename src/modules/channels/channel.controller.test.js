@@ -658,6 +658,10 @@ describe('channel.controller#completeGupshupEmbeddedSignup()', () => {
     // necesitan otro comportamiento lo pisan explícito.
     partnerApps.getAppAccessToken.mockResolvedValue({ apikey: 'apikey-real-de-la-app' });
     partnerSubscriptions.subscribeToEvents.mockResolvedValue({ status: 'success' });
+    // Default feliz para el fallback de PR-11 (piloto, known-issues.md):
+    // "sin ninguna suscripción existente" — los tests que sí necesitan
+    // simular una suscripción ya activa lo pisan explícito.
+    partnerSubscriptions.getSubscriptions.mockResolvedValue([]);
   });
 
   // Helper — sesión ya en 'gupshup_registering', con phoneNumber ya
@@ -879,6 +883,116 @@ describe('channel.controller#completeGupshupEmbeddedSignup()', () => {
       expect(refrescada.status).toBe('failed');
       expect(refrescada.error.step).toBe('gupshup_registration');
       expect(refrescada.error.message).toBe(errorDeGupshup.message);
+    });
+  });
+
+  // Piloto PR-11 (docs/implementation/known-issues.md): MISMO patrón que la
+  // reutilización de appId de arriba, un paso más adelante — si el appId se
+  // reusó de otra sesión del mismo tenant, esa app puede YA tener una
+  // suscripción activa con el tag determinístico. Sin este chequeo,
+  // subscribeToEvents() (POST) vuelve a intentar crearla y Gupshup responde
+  // 400 "Duplicate component tag."
+  describe('reutilización de webhookReference existente del mismo tenant+appId (PR-11)', () => {
+    test('existe OTRA sesión del mismo tenant con el MISMO appId y webhookReference poblado: la reusa, nunca llama subscribeToEvents()', async () => {
+      await crearSesionGupshupRegistering({
+        status: 'gupshup_registering',
+        gupshup: { appId: 'app-compartida', webhookReference: 'gupshup:account-subscribed' },
+      });
+      const sesionActual = await crearSesionGupshupRegistering({ gupshup: { appId: 'app-compartida' } });
+
+      partnerAuth.getValidToken.mockResolvedValue('token');
+      partnerApps.setContactDetails.mockResolvedValue({ status: 'success' });
+      partnerApps.getEmbedSignupLink.mockResolvedValue({ link: 'https://embed.gupshup.io/xyz' });
+
+      await completeGupshupEmbeddedSignup(
+        { businessId: business._id, user: requester, body: { sessionId: String(sesionActual._id) } },
+        mockRes(),
+        jest.fn()
+      );
+
+      expect(partnerApps.getAppAccessToken).not.toHaveBeenCalled();
+      expect(partnerSubscriptions.subscribeToEvents).not.toHaveBeenCalled();
+      expect(partnerSubscriptions.getSubscriptions).not.toHaveBeenCalled();
+
+      const refrescada = await ChannelOnboardingSession.findById(sesionActual._id);
+      expect(refrescada.gupshup.webhookReference).toBe('gupshup:account-subscribed');
+    });
+
+    test('NO reusa el webhookReference de una sesión con appId DISTINTO (aunque sea del mismo tenant)', async () => {
+      await crearSesionGupshupRegistering({
+        status: 'gupshup_registering',
+        gupshup: { appId: 'app-de-otro-intento', webhookReference: 'gupshup:account-subscribed' },
+      });
+      const sesionActual = await crearSesionGupshupRegistering({ gupshup: { appId: 'app-compartida' } });
+
+      partnerAuth.getValidToken.mockResolvedValue('token');
+      partnerApps.getAppAccessToken.mockResolvedValue({ apikey: 'apikey-de-la-app' });
+      partnerSubscriptions.getSubscriptions.mockResolvedValue([]);
+      partnerSubscriptions.subscribeToEvents.mockResolvedValue({ status: 'success' });
+      partnerApps.setContactDetails.mockResolvedValue({ status: 'success' });
+      partnerApps.getEmbedSignupLink.mockResolvedValue({ link: 'https://embed.gupshup.io/xyz' });
+
+      await completeGupshupEmbeddedSignup(
+        { businessId: business._id, user: requester, body: { sessionId: String(sesionActual._id) } },
+        mockRes(),
+        jest.fn()
+      );
+
+      // Con appId distinto, el chequeo de Mongo no debe matchear — sigue el
+      // camino normal (consulta a Gupshup, sin nada existente, crea una).
+      expect(partnerSubscriptions.subscribeToEvents).toHaveBeenCalledWith('app-compartida', 'apikey-de-la-app', expect.any(Object));
+    });
+
+    test('sin ninguna sesión previa con webhookReference: consulta getSubscriptions() y encuentra el tag ya activo — lo marca, nunca llama subscribeToEvents()', async () => {
+      const sesionActual = await crearSesionGupshupRegistering({ gupshup: { appId: 'app-compartida' } });
+
+      partnerAuth.getValidToken.mockResolvedValue('token');
+      partnerApps.getAppAccessToken.mockResolvedValue({ apikey: 'apikey-de-la-app' });
+      partnerSubscriptions.getSubscriptions.mockResolvedValue([
+        { id: '10967130', appId: 'app-compartida', active: true, tag: 'creaos-account-events', modes: ['ACCOUNT'] },
+      ]);
+      partnerApps.setContactDetails.mockResolvedValue({ status: 'success' });
+      partnerApps.getEmbedSignupLink.mockResolvedValue({ link: 'https://embed.gupshup.io/xyz' });
+
+      await completeGupshupEmbeddedSignup(
+        { businessId: business._id, user: requester, body: { sessionId: String(sesionActual._id) } },
+        mockRes(),
+        jest.fn()
+      );
+
+      expect(partnerSubscriptions.getSubscriptions).toHaveBeenCalledWith('app-compartida', 'apikey-de-la-app');
+      expect(partnerSubscriptions.subscribeToEvents).not.toHaveBeenCalled();
+
+      const refrescada = await ChannelOnboardingSession.findById(sesionActual._id);
+      expect(refrescada.gupshup.webhookReference).toBe('gupshup:account-subscribed');
+    });
+
+    test('getSubscriptions() no encuentra ninguna con el tag activo: sigue con subscribeToEvents() como siempre, sin regresión', async () => {
+      const sesionActual = await crearSesionGupshupRegistering({ gupshup: { appId: 'app-compartida' } });
+
+      partnerAuth.getValidToken.mockResolvedValue('token');
+      partnerApps.getAppAccessToken.mockResolvedValue({ apikey: 'apikey-de-la-app' });
+      partnerSubscriptions.getSubscriptions.mockResolvedValue([
+        { id: 'otra-sub', appId: 'app-compartida', active: true, tag: 'otro-tag-sin-relacion', modes: ['MESSAGE'] },
+      ]);
+      partnerSubscriptions.subscribeToEvents.mockResolvedValue({ status: 'success' });
+      partnerApps.setContactDetails.mockResolvedValue({ status: 'success' });
+      partnerApps.getEmbedSignupLink.mockResolvedValue({ link: 'https://embed.gupshup.io/xyz' });
+
+      await completeGupshupEmbeddedSignup(
+        { businessId: business._id, user: requester, body: { sessionId: String(sesionActual._id) } },
+        mockRes(),
+        jest.fn()
+      );
+
+      expect(partnerSubscriptions.subscribeToEvents).toHaveBeenCalledWith(
+        'app-compartida',
+        'apikey-de-la-app',
+        expect.objectContaining({ tag: 'creaos-account-events' })
+      );
+
+      const refrescada = await ChannelOnboardingSession.findById(sesionActual._id);
+      expect(refrescada.gupshup.webhookReference).toBe('gupshup:account-subscribed');
     });
   });
 
