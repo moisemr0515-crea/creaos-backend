@@ -292,4 +292,51 @@ describe('partner.subscriptions', () => {
       ).rejects.toBe(errorDeRed);
     });
   });
+
+  // Piloto PR-11 (docs/implementation/known-issues.md): fallback de
+  // completeGupshupEmbeddedSignup() cuando el appId se reusó de otra sesión
+  // y esa app ya puede tener una suscripción activa con el tag
+  // determinístico — antes de intentar crearla de nuevo (y chocar con
+  // "Duplicate component tag"), se consulta esta lista.
+  describe('getSubscriptions()', () => {
+    test('happy path: GET /partner/app/{appId}/subscription, header Authorization, devuelve subscriptions', async () => {
+      const listaReal = [
+        { id: '10967130', appId: 'app-123', active: true, tag: 'creaos-account-events', modes: ['ACCOUNT'], url: 'https://x.io/wh', version: 3 },
+      ];
+      httpClient.request.mockResolvedValue({ status: 200, body: { status: 'success', subscriptions: listaReal }, requestId: 'gsp_x' });
+
+      const result = await partnerSubscriptions.getSubscriptions('app-123', APIKEY);
+
+      expect(result).toEqual(listaReal);
+      expect(httpClient.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: 'GET',
+          path: '/partner/app/app-123/subscription',
+          baseUrl: 'https://partner.gupshup.io',
+          headers: { Authorization: APIKEY },
+        })
+      );
+    });
+
+    test('respuesta sin subscriptions: devuelve [], no explota', async () => {
+      httpClient.request.mockResolvedValue({ status: 200, body: { status: 'success' }, requestId: 'gsp_x' });
+
+      const result = await partnerSubscriptions.getSubscriptions('app-123', APIKEY);
+
+      expect(result).toEqual([]);
+    });
+
+    test('error de Gupshup: se mapea vía mapPartnerError() como el resto del archivo', async () => {
+      httpClient.request.mockRejectedValue(gupshupError(500, { message: 'Internal Server Error' }));
+
+      await expect(partnerSubscriptions.getSubscriptions('app-123', APIKEY)).rejects.toMatchObject({ statusCode: 502 });
+    });
+
+    test('un error que no es GupshupHttpError se propaga tal cual', async () => {
+      const errorDeRed = new Error('ECONNRESET');
+      httpClient.request.mockRejectedValue(errorDeRed);
+
+      await expect(partnerSubscriptions.getSubscriptions('app-123', APIKEY)).rejects.toBe(errorDeRed);
+    });
+  });
 });

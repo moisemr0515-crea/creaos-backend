@@ -569,24 +569,57 @@ const completeGupshupEmbeddedSignup = async (req, res, next) => {
         // "Invalid URL Passed" que bloqueaba este paso. El secreto de la
         // ruta nueva (GUPSHUP_ONBOARDING_WEBHOOK_TOKEN) viaja en `headers`
         // → Gupshup lo reenvía vía `meta` en cada request a esta URL.
-        if (!BACKEND_PUBLIC_URL) {
-          throw new AppError('BACKEND_PUBLIC_URL no está configurado — no se puede suscribir el webhook de eventos ACCOUNT de Gupshup', 500);
-        }
-        if (!GUPSHUP_ONBOARDING_WEBHOOK_TOKEN) {
-          throw new AppError('GUPSHUP_ONBOARDING_WEBHOOK_TOKEN no está configurado — no se puede suscribir el webhook de eventos ACCOUNT de Gupshup', 500);
-        }
 
-        const { apikey } = await partnerApps.getAppAccessToken(session.gupshup.appId, token);
-        await partnerSubscriptions.subscribeToEvents(session.gupshup.appId, apikey, {
-          url: `${BACKEND_PUBLIC_URL}/api/v1/webhooks/gupshup/onboarding/${session.gupshup.appId}`,
-          tag: 'creaos-account-events',
-          modes: ['ACCOUNT'],
-          headers: { [ONBOARDING_WEBHOOK_HEADER]: GUPSHUP_ONBOARDING_WEBHOOK_TOKEN },
-        });
-        session.gupshup.webhookReference = GUPSHUP_ACCOUNT_SUBSCRIPTION_MARKER;
-        // Mismo criterio que appId arriba — se guarda antes de seguir, así
-        // un retry no vuelve a pegarle a la Subscription API de más.
-        await session.save();
+        // Piloto PR-11 (docs/implementation/known-issues.md): MISMO patrón
+        // que el chequeo de appId de arriba — si el appId se reusó de otra
+        // sesión del mismo tenant, esa app puede YA tener una suscripción
+        // activa con el tag determinístico ('creaos-account-events')
+        // creada por esa sesión anterior. Sin este chequeo,
+        // subscribeToEvents() (POST) vuelve a intentar crearla y Gupshup
+        // responde 400 "Duplicate component tag."
+        const sesionConWebhookExistente = await ChannelOnboardingSession.findOne({
+          tenantId: req.businessId,
+          _id: { $ne: session._id },
+          'gupshup.appId': session.gupshup.appId,
+          'gupshup.webhookReference': { $ne: null },
+        }).sort({ createdAt: -1 }).select('gupshup.webhookReference');
+
+        if (sesionConWebhookExistente) {
+          session.gupshup.webhookReference = sesionConWebhookExistente.gupshup.webhookReference;
+          await session.save();
+        } else {
+          if (!BACKEND_PUBLIC_URL) {
+            throw new AppError('BACKEND_PUBLIC_URL no está configurado — no se puede suscribir el webhook de eventos ACCOUNT de Gupshup', 500);
+          }
+          if (!GUPSHUP_ONBOARDING_WEBHOOK_TOKEN) {
+            throw new AppError('GUPSHUP_ONBOARDING_WEBHOOK_TOKEN no está configurado — no se puede suscribir el webhook de eventos ACCOUNT de Gupshup', 500);
+          }
+
+          const { apikey } = await partnerApps.getAppAccessToken(session.gupshup.appId, token);
+
+          // Fallback (Gupshup): ninguna sesión en Mongo tenía el
+          // webhookReference guardado (mismo caso borde de "creado afuera,
+          // no persistido adentro" que el appId) — consultar si la app ya
+          // tiene una suscripción activa con el tag determinístico antes
+          // de intentar crear una nueva.
+          const suscripciones = await partnerSubscriptions.getSubscriptions(session.gupshup.appId, apikey);
+          const suscripcionExistente = suscripciones.find((s) => s.tag === 'creaos-account-events' && s.active);
+
+          if (suscripcionExistente) {
+            session.gupshup.webhookReference = GUPSHUP_ACCOUNT_SUBSCRIPTION_MARKER;
+          } else {
+            await partnerSubscriptions.subscribeToEvents(session.gupshup.appId, apikey, {
+              url: `${BACKEND_PUBLIC_URL}/api/v1/webhooks/gupshup/onboarding/${session.gupshup.appId}`,
+              tag: 'creaos-account-events',
+              modes: ['ACCOUNT'],
+              headers: { [ONBOARDING_WEBHOOK_HEADER]: GUPSHUP_ONBOARDING_WEBHOOK_TOKEN },
+            });
+            session.gupshup.webhookReference = GUPSHUP_ACCOUNT_SUBSCRIPTION_MARKER;
+          }
+          // Mismo criterio que appId arriba — se guarda antes de seguir,
+          // así un retry no vuelve a pegarle a la Subscription API de más.
+          await session.save();
+        }
       }
 
       await partnerApps.setContactDetails(
