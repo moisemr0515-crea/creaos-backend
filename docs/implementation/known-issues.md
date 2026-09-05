@@ -46,10 +46,10 @@ Para contraste, los otros 2 call sites de `generateReply()` sí tienen algo de c
 
 ## 2026-09-04 — Incidente real de Embedded Signup: 401 de Gupshup deslogueaba al usuario; endpoint de suscripción equivocado; "Invalid URL Passed" por nuestro propio webhook
 
-**Estado:** 4 causas encontradas — 3 mergeadas y confirmadas en vivo (PR #75, #76), la 4ta (`meta` doblemente anidado, bloqueaba la entrega real del evento a nuestro webhook) con fix + tests listos, PR abierto, pendiente de merge/deploy y reconfirmación en vivo.
-**Prioridad:** Alta (bloqueaba completar un Embedded Signup real de punta a punta) — ya no debería bloquear tras el merge de la Causa 4.
+**Estado:** CERRADO — las 4 causas encontradas y corregidas, mergeadas (PR #75, #76, #78) y confirmadas en vivo. `WhatsAppChannel`/`ChannelCredentials` de Nutriva Corp creados y activos. Ver "Cierre del incidente" al final para el resumen completo y por qué la creación final fue manual.
+**Prioridad:** Alta (bloqueaba completar un Embedded Signup real de punta a punta) — ya no bloquea, el fix de raíz (PR #78) cubre cualquier Embedded Signup futuro sin intervención manual.
 **Detectado en:** primer intento real de Embedded Signup en producción, tenant "Nutriva Corp" (`6a9340ae5af267a3ffd8b1b5`), sesión `6a9ae932fe38b2ca69042e03`, appId de Gupshup `cd6ac9ef-824a-48cc-ab85-77cb3f21c5c4`.
-**Archivos involucrados:** [`partner.errors.js`](../../src/modules/channels/providers/gupshup/partner/partner.errors.js), [`partner.subscriptions.js`](../../src/modules/channels/providers/gupshup/partner/partner.subscriptions.js), [`error.middleware.js`](../../src/middleware/error.middleware.js), [`auth.middleware.js`](../../src/middleware/auth.middleware.js), [`channel.controller.js`](../../src/modules/channels/channel.controller.js), [`channelOnboardingWebhook.controller.js`](../../src/modules/channels/channelOnboardingWebhook.controller.js) (nuevo), [`channelOnboardingWebhook.constants.js`](../../src/modules/channels/channelOnboardingWebhook.constants.js) (nuevo), [`webhook.routes.js`](../../src/modules/webhooks/webhook.routes.js), [`client.ts` (crea-os-ignite)](../../../crea-os-ignite/src/lib/api/client.ts).
+**Archivos involucrados:** [`partner.errors.js`](../../src/modules/channels/providers/gupshup/partner/partner.errors.js), [`partner.subscriptions.js`](../../src/modules/channels/providers/gupshup/partner/partner.subscriptions.js), [`error.middleware.js`](../../src/middleware/error.middleware.js), [`auth.middleware.js`](../../src/middleware/auth.middleware.js), [`channel.controller.js`](../../src/modules/channels/channel.controller.js), [`channelOnboardingWebhook.controller.js`](../../src/modules/channels/channelOnboardingWebhook.controller.js) (nuevo), [`channelOnboardingWebhook.constants.js`](../../src/modules/channels/channelOnboardingWebhook.constants.js) (nuevo), [`channelOnboardingCompletion.service.js`](../../src/modules/channels/channelOnboardingCompletion.service.js), [`webhook.routes.js`](../../src/modules/webhooks/webhook.routes.js), [`client.ts` (crea-os-ignite)](../../../crea-os-ignite/src/lib/api/client.ts).
 
 ### Causa 1 (RESUELTA, mergeada) — 401 de Gupshup deslogueaba al usuario
 
@@ -108,7 +108,7 @@ El flujo completo avanzó de punta a punta en la misma corrida — algo que nunc
 
 **`WhatsAppChannel` del tenant: sigue vacío (`[]`) — en ese momento se interpretó como el estado ESPERADO** (la suscripción a `ACCOUNT_VERIFIED` había quedado armada correctamente; solo faltaba que alguien completara manualmente el `embedSignupUrl`). Esa lectura resultó incompleta — ver Causa 4.
 
-### Causa 4 (fix listo, PR abierto, pendiente de merge/deploy) — `meta` doblemente anidado: el header nunca llegó en la entrega real del evento
+### Causa 4 (RESUELTA, mergeada Y confirmada en vivo — PR #78) — `meta` doblemente anidado: el header nunca llegó en la entrega real del evento
 
 El usuario completó el `embedSignupUrl` (`https://gs.tc.im/kZf6e9KQ6mx`) del lado de Gupshup con éxito — pero `WhatsAppChannel` siguió vacío y `session.status` nunca pasó a `completed`. Investigado con evidencia, no asumido:
 
@@ -122,7 +122,26 @@ El usuario completó el `embedSignupUrl` (`https://gs.tc.im/kZf6e9KQ6mx`) del la
 
 Tests nuevos/actualizados en `partner.subscriptions.test.js`: `updateSubscription()` (6 tests: happy path, solo manda los campos presentes, sin params no explota, permite pisar url/tag/modes/version/active, mapeo de error 400 "subscription doesn't exist", error no-Gupshup se propaga tal cual) + el test de `meta` de `subscribeToEvents()` actualizado con un guard explícito contra reintroducir el wrap. Suite completa: 295/295.
 
-**Pendiente después de este merge/deploy:** ejecutar `updateSubscription()` contra la suscripción real (`id: "10966820"`, appId `cd6ac9ef-...`) para corregirle el `meta`, y reconfirmar en vivo que el header llega esta vez — no se hizo antes de este PR por la misma razón que en la Causa 3 (`railway up` manual afectaría el contenedor que sirve tráfico real de PLATFORM).
+**Confirmación en vivo post-deploy (mismo día):** PR #78 mergeado → deploy en Railway confirmado exitoso (mismo chequeo de `commitHash` = HEAD de `main`). Ejecutado `updateSubscription('cd6ac9ef-...', apikey, '10966820', { headers: {...} })` contra la suscripción real — la respuesta ya trajo `meta` corregido (`{"headers":{"x-gupshup-webhook-secret":"..."}}`, un solo nivel), confirmado además con un `GET` independiente aparte. `url`/`tag`/`active`/`modes`/`version` de la suscripción quedaron exactamente iguales — la actualización por `id` no tocó nada más, como estaba pensado.
+
+### Cierre del incidente — 05/sep/2026
+
+**Resumen de las 4 causas encontradas y corregidas, en orden:**
+
+| # | Causa | Síntoma | Fix | PR |
+|---|---|---|---|---|
+| 1 | 401 de Gupshup se reenviaba como "sesión expirada" al usuario | El frontend deslogueaba a mitad del flujo de Embedded Signup | `partner.errors.js` deja de mapear errores de Gupshup a 401 (pasa a 502); `AUTH_SESSION_INVALID_CODE` explícito para diferenciar un 401 real de sesión | #75 |
+| 2 | Endpoint de suscripción equivocado (`api.gupshup.io`, tier self-serve) | 401 "Authentication Failed" persistente al suscribirse a eventos ACCOUNT | Endpoint correcto: `partner.gupshup.io` ("Set subscription for an app", pensado para apps sandbox) | #76 |
+| 3 | `/api/v1/webhooks/gupshup` exigía un secreto que el ping de verificación de Gupshup no podía conocer | 400 "Invalid URL Passed" al suscribirse | Callback dedicado `/api/v1/webhooks/gupshup/onboarding/:appId`, secreto propio (`GUPSHUP_ONBOARDING_WEBHOOK_TOKEN`), sin tocar el endpoint de producción existente | #76 |
+| 4 | `meta` de la suscripción quedaba doblemente anidado | El header custom nunca llegaba en la entrega real del evento — el webhook llegaba pero se rechazaba con 401 | `meta` se manda sin el wrap extra; `updateSubscription()` (PUT) para corregir una suscripción ya activa sin recrearla | #78 |
+
+**Sobre el WABA ID "distinto" (`28278663765116123` vs `1447462370887181`): no es un bug, es esperado.** El primero es el que devolvió el popup de Meta al arrancar el flujo (antes de que Gupshup terminara de procesar la asociación); el segundo es el WABA ID real y definitivo, confirmado independientemente vía `GET /partner/app/{appId}/waba/info` (`accountStatus: "ACTIVE"`, `dockerStatus: "CONNECTED"`) y coincide exactamente con lo que Gupshup le mostró al usuario en su pantalla de éxito. Meta entrega un ID provisorio en el popup inicial; Gupshup confirma el definitivo al completar el embed link. `session.meta.wabaId` quedó con el valor viejo simplemente porque nada en el flujo lo actualiza después de ese primer popup — no hay ninguna corrupción de datos ni 2 WABAs de por medio (confirmado aparte: solo hay una suscripción activa para este app).
+
+**Por qué `WhatsAppChannel`/`ChannelCredentials` de Nutriva Corp se crearon MANUALMENTE, y qué significa (y qué NO significa) eso:**
+
+Para el momento en que se corrigió la Causa 4 (PR #78), el evento `ACCOUNT_VERIFIED` real ya había sido entregado por Gupshup UNA vez y rechazado con 401 (por el bug de la Causa 4, entonces todavía sin corregir) — Gupshup no documenta ningún mecanismo de reintento automático ni de reenvío manual de un webhook ya entregado. Ese evento puntual estaba perdido para siempre. Pero el WABA en sí ya estaba `ACTIVE`/`CONNECTED` del lado de Gupshup (confirmado vía `GET /partner/app/{appId}/waba/info`, de solo lectura) — la verificación había pasado de verdad, solo la notificación nunca nos llegó bien. Se corrigió `session.meta.wabaId` al valor real y se disparó `channelOnboardingCompletion.service.js#handleGupshupAccountVerified('cd6ac9ef-...')` manualmente (mismo código que corre automáticamente ante cualquier webhook real) — resultado: `WhatsAppChannel` (`connectionType: DEDICATED`, `status: active`, `wabaId: "1447462370887181"` correcto) + `ChannelCredentials` (1 apikey cifrada) creados en `6a9b5ff9478f653503523454`/`6a9b5ff9478f653503523456`, sesión en `status: completed`.
+
+**Esto fue una finalización manual de UNA sesión puntual que ya había fallado antes de que el fix existiera — no es un patrón a repetir ni una muleta permanente.** El fix del PR #78 corrige el problema de raíz: cualquier Embedded Signup que se complete DE ACÁ EN ADELANTE va a recibir el webhook `ACCOUNT_VERIFIED` con el header correcto en el primer intento, y `WhatsAppChannel`/`ChannelCredentials` se van a crear automáticamente sin ninguna intervención manual — exactamente como estaba diseñado desde el principio. Si algún Embedded Signup futuro también termina necesitando una finalización manual, eso sería un incidente NUEVO (el mismo bug no puede ser la causa, ya está corregido) — investigar aparte, no asumir que es "lo mismo de siempre".
 
 ---
 
