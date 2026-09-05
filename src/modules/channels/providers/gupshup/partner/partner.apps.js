@@ -258,6 +258,35 @@ async function getAppAccessToken(appId, token) {
   }, `getAppAccessToken de app ${appId}`);
 }
 
+/**
+ * GET /partner/account/api/partnerApps — lista TODAS las apps de la cuenta
+ * de partner (no filtra por tenant ni por nombre — eso lo hace el caller).
+ *
+ * Incidente PR-11 (docs/implementation/known-issues.md): fallback de
+ * channel.controller.js#completeGupshupEmbeddedSignup() cuando createApp()
+ * responde 409 "Bot Already Exists" y ninguna ChannelOnboardingSession en
+ * Mongo tiene el `appId` real guardado (mismo patrón "creado afuera, no
+ * persistido adentro" que ya se vio en otros pasos del onboarding) — en vez
+ * de fallar, se resuelve el appId real buscando por el nombre determinístico
+ * (`nombreAppGupshup(tenantId)`) en esta lista.
+ *
+ * @param {string} token - JWT de partner (partner.auth.js#getValidToken())
+ * @returns {Promise<Array<{id: string, name: string, phone?: string, live: boolean, customerId: string, partnerId: number, createdOn: number, modifiedOn: number}>>}
+ *   Confirmado en vivo (04/sep/2026): `phone` solo aparece si la app ya
+ *   tiene un número registrado — no está presente en apps "sandbox".
+ */
+async function getPartnerApps(token) {
+  return runOrMap(async () => {
+    const { body } = await httpClient.request({
+      method: 'GET',
+      path: '/partner/account/api/partnerApps',
+      headers: authHeader(token),
+      // idempotent: true (default de GET) — es una lectura.
+    });
+    return body.partnerAppsList || [];
+  }, 'listar apps del partner');
+}
+
 module.exports = {
   createApp,
   setContactDetails,
@@ -266,6 +295,7 @@ module.exports = {
   verifyAndAttachCreditLine,
   getEmbedSignupLink,
   getAppAccessToken,
+  getPartnerApps,
   APP_NAME_MIN_LENGTH,
   APP_NAME_MAX_LENGTH,
 };

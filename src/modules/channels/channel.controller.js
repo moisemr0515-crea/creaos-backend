@@ -504,11 +504,51 @@ const completeGupshupEmbeddedSignup = async (req, res, next) => {
       token = await partnerAuth.getValidToken();
 
       if (!session.gupshup.appId) {
-        const { appId } = await partnerApps.createApp({ name: nombreAppGupshup(req.businessId) }, token);
-        session.gupshup.appId = appId;
-        // Se guarda ANTES de seguir — si algo de acá para abajo falla, un
-        // retry no vuelve a crear la app (ver el chequeo `if` de arriba).
-        await session.save();
+        // Incidente PR-11 (docs/implementation/known-issues.md): antes de
+        // crear una app nueva, buscar si YA existe una de OTRA sesión del
+        // mismo tenant — el nombre de la app es determinístico por
+        // tenantId (nombreAppGupshup), así que perder el sessionId del
+        // lado del frontend (reload, error previo, lo que sea) y reiniciar
+        // desde /init NO debe volver a intentar createApp() a ciegas. Se
+        // toma la sesión MÁS RECIENTE con appId poblado, sin importar su
+        // status final (failed/expired/completed) — el appId en Gupshup
+        // sigue siendo válido independientemente de cómo haya terminado la
+        // sesión de CREA OS que lo creó en su momento.
+        const sesionConAppExistente = await ChannelOnboardingSession.findOne({
+          tenantId: req.businessId,
+          _id: { $ne: session._id },
+          'gupshup.appId': { $ne: null },
+        }).sort({ createdAt: -1 }).select('gupshup.appId');
+
+        if (sesionConAppExistente) {
+          session.gupshup.appId = sesionConAppExistente.gupshup.appId;
+          await session.save();
+        } else {
+          try {
+            const { appId } = await partnerApps.createApp({ name: nombreAppGupshup(req.businessId) }, token);
+            session.gupshup.appId = appId;
+            // Se guarda ANTES de seguir — si algo de acá para abajo falla,
+            // un retry no vuelve a crear la app (ver el chequeo `if` de
+            // más arriba, y el fallback de acá abajo cubren ambos lados).
+            await session.save();
+          } catch (err) {
+            if (err.statusCode === 409) {
+              // Fallback: ninguna sesión en Mongo tenía el appId guardado
+              // (ej. el guardado falló después de crear la app en Gupshup
+              // pero antes de persistir — mismo patrón "creado afuera, no
+              // persistido adentro" ya visto en otros pasos) — resolver el
+              // appId real por nombre en vez de fallar.
+              const apps = await partnerApps.getPartnerApps(token);
+              const nombreEsperado = nombreAppGupshup(req.businessId);
+              const appExistente = apps.find((a) => a.name === nombreEsperado);
+              if (!appExistente) throw err; // no se pudo resolver — se propaga el 409 real
+              session.gupshup.appId = appExistente.id;
+              await session.save();
+            } else {
+              throw err;
+            }
+          }
+        }
       }
 
       if (!session.gupshup.webhookReference) {
