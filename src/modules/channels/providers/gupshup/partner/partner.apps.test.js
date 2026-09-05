@@ -248,4 +248,38 @@ describe('partner.apps', () => {
       await expect(partnerApps.getAppAccessToken('app-123', TOKEN)).rejects.toMatchObject({ statusCode: 502 });
     });
   });
+
+  // Incidente PR-11 (docs/implementation/known-issues.md): fallback de
+  // completeGupshupEmbeddedSignup() ante un 409 "Bot Already Exists" cuando
+  // ninguna ChannelOnboardingSession en Mongo tiene el appId real guardado.
+  describe('getPartnerApps()', () => {
+    test('happy path: GET /partner/account/api/partnerApps, header token, devuelve partnerAppsList', async () => {
+      const listaReal = [
+        { id: 'app-1', name: 'creaos-tenant-1', live: false, customerId: 'c1', partnerId: 5092, createdOn: 1, modifiedOn: 1 },
+        { id: 'app-2', name: 'creaos-tenant-2', phone: '51993047743', live: true, customerId: 'c1', partnerId: 5092, createdOn: 2, modifiedOn: 2 },
+      ];
+      httpClient.request.mockResolvedValue({ status: 200, body: { status: 'success', partnerAppsList: listaReal }, requestId: 'gsp_x' });
+
+      const result = await partnerApps.getPartnerApps(TOKEN);
+
+      expect(result).toEqual(listaReal);
+      expect(httpClient.request).toHaveBeenCalledWith(
+        expect.objectContaining({ method: 'GET', path: '/partner/account/api/partnerApps', headers: { token: TOKEN } })
+      );
+    });
+
+    test('respuesta sin partnerAppsList: devuelve [], no explota', async () => {
+      httpClient.request.mockResolvedValue({ status: 200, body: { status: 'success' }, requestId: 'gsp_x' });
+
+      const result = await partnerApps.getPartnerApps(TOKEN);
+
+      expect(result).toEqual([]);
+    });
+
+    test('error de Gupshup: se mapea vía mapPartnerError() como el resto del archivo', async () => {
+      httpClient.request.mockRejectedValue(gupshupError(500, { message: 'Internal Server Error' }));
+
+      await expect(partnerApps.getPartnerApps(TOKEN)).rejects.toMatchObject({ statusCode: 502 });
+    });
+  });
 });

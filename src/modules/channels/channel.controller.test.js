@@ -783,6 +783,105 @@ describe('channel.controller#completeGupshupEmbeddedSignup()', () => {
     expect(partnerApps.setContactDetails).toHaveBeenCalledWith('gs-app-ya-creada', expect.any(Object), 'token');
   });
 
+  // Incidente PR-11 (docs/implementation/known-issues.md): reintentar desde
+  // /init tras perder el sessionId (reload, error previo) crea una sesión
+  // NUEVA sin appId — sin este chequeo, completeGupshupEmbeddedSignup()
+  // volvía a llamar createApp() con el mismo nombre determinístico y
+  // Gupshup respondía 409 "Bot Already Exists".
+  describe('reutilización de appId existente del mismo tenant (PR-11)', () => {
+    test('existe OTRA sesión del mismo tenant con gupshup.appId poblado: la reusa, nunca llama createApp()', async () => {
+      await crearSesionGupshupRegistering({ status: 'failed', gupshup: { appId: 'app-de-otra-sesion' } });
+      const sesionActual = await crearSesionGupshupRegistering(); // sin appId — la que está reintentando
+
+      partnerAuth.getValidToken.mockResolvedValue('token');
+      partnerApps.setContactDetails.mockResolvedValue({ status: 'success' });
+      partnerApps.getEmbedSignupLink.mockResolvedValue({ link: 'https://embed.gupshup.io/xyz' });
+
+      await completeGupshupEmbeddedSignup(
+        { businessId: business._id, user: requester, body: { sessionId: String(sesionActual._id) } },
+        mockRes(),
+        jest.fn()
+      );
+
+      expect(partnerApps.createApp).not.toHaveBeenCalled();
+      expect(partnerApps.setContactDetails).toHaveBeenCalledWith('app-de-otra-sesion', expect.any(Object), 'token');
+      expect(partnerApps.getEmbedSignupLink).toHaveBeenCalledWith('app-de-otra-sesion', expect.any(Object), 'token');
+
+      const refrescada = await ChannelOnboardingSession.findById(sesionActual._id);
+      expect(refrescada.gupshup.appId).toBe('app-de-otra-sesion');
+    });
+
+    test('hay 2 sesiones previas con appId poblado: usa la MÁS RECIENTE, no la más vieja', async () => {
+      await crearSesionGupshupRegistering({ status: 'expired', gupshup: { appId: 'app-mas-vieja' } });
+      await crearSesionGupshupRegistering({ status: 'failed', gupshup: { appId: 'app-mas-reciente' } });
+      const sesionActual = await crearSesionGupshupRegistering();
+
+      partnerAuth.getValidToken.mockResolvedValue('token');
+      partnerApps.setContactDetails.mockResolvedValue({ status: 'success' });
+      partnerApps.getEmbedSignupLink.mockResolvedValue({ link: 'https://embed.gupshup.io/xyz' });
+
+      await completeGupshupEmbeddedSignup(
+        { businessId: business._id, user: requester, body: { sessionId: String(sesionActual._id) } },
+        mockRes(),
+        jest.fn()
+      );
+
+      const refrescada = await ChannelOnboardingSession.findById(sesionActual._id);
+      expect(refrescada.gupshup.appId).toBe('app-mas-reciente');
+    });
+
+    test('sin ninguna sesión previa con appId, createApp() da 409 "Bot Already Exists": resuelve el appId real vía getPartnerApps() por nombre', async () => {
+      const sesionActual = await crearSesionGupshupRegistering();
+      const nombreEsperado = `creaos${business._id}`;
+
+      partnerAuth.getValidToken.mockResolvedValue('token');
+      partnerApps.createApp.mockRejectedValue(Object.assign(new Error('Gupshup Partner API: el recurso ya existe — Bot Already Exists'), { statusCode: 409 }));
+      partnerApps.getPartnerApps.mockResolvedValue([
+        { id: 'otra-app-sin-relacion', name: 'otro-nombre-cualquiera' },
+        { id: 'app-resuelta-por-nombre', name: nombreEsperado },
+      ]);
+      partnerApps.setContactDetails.mockResolvedValue({ status: 'success' });
+      partnerApps.getEmbedSignupLink.mockResolvedValue({ link: 'https://embed.gupshup.io/xyz' });
+
+      await completeGupshupEmbeddedSignup(
+        { businessId: business._id, user: requester, body: { sessionId: String(sesionActual._id) } },
+        mockRes(),
+        jest.fn()
+      );
+
+      expect(partnerApps.getPartnerApps).toHaveBeenCalledWith('token');
+      expect(partnerApps.setContactDetails).toHaveBeenCalledWith('app-resuelta-por-nombre', expect.any(Object), 'token');
+
+      const refrescada = await ChannelOnboardingSession.findById(sesionActual._id);
+      expect(refrescada.gupshup.appId).toBe('app-resuelta-por-nombre');
+      expect(refrescada.status).toBe('gupshup_registering'); // terminó bien, no failed
+    });
+
+    test('409 de createApp() y getPartnerApps() NO encuentra ninguna app con el nombre esperado: propaga el 409 original, sesión queda failed', async () => {
+      const sesionActual = await crearSesionGupshupRegistering();
+      const errorDeGupshup = Object.assign(new Error('Gupshup Partner API: el recurso ya existe — Bot Already Exists'), { statusCode: 409 });
+
+      partnerAuth.getValidToken.mockResolvedValue('token');
+      partnerApps.createApp.mockRejectedValue(errorDeGupshup);
+      partnerApps.getPartnerApps.mockResolvedValue([{ id: 'app-sin-relacion', name: 'nombre-que-no-coincide' }]);
+
+      const next = jest.fn();
+      await completeGupshupEmbeddedSignup(
+        { businessId: business._id, user: requester, body: { sessionId: String(sesionActual._id) } },
+        mockRes(),
+        next
+      );
+
+      expect(next).toHaveBeenCalledWith(errorDeGupshup);
+      expect(partnerApps.setContactDetails).not.toHaveBeenCalled();
+
+      const refrescada = await ChannelOnboardingSession.findById(sesionActual._id);
+      expect(refrescada.status).toBe('failed');
+      expect(refrescada.error.step).toBe('gupshup_registration');
+      expect(refrescada.error.message).toBe(errorDeGupshup.message);
+    });
+  });
+
   // NOTA: los guards de "BACKEND_PUBLIC_URL no configurado" y (desde el
   // incidente del 04/sep/2026, known-issues.md Bug 3) "GUPSHUP_ONBOARDING_
   // WEBHOOK_TOKEN no configurado" (channel.controller.js, justo antes de
