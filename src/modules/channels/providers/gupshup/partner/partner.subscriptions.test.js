@@ -71,12 +71,15 @@ describe('partner.subscriptions', () => {
       expect(httpClient.request).toHaveBeenCalledWith(expect.objectContaining({ form: expect.objectContaining({ version: 2 }) }));
     });
 
-    // Incidente del 04/sep/2026 (docs/implementation/known-issues.md, Bug 3):
-    // channel.controller.js necesita pasar un header custom (el secreto de
-    // channelOnboardingWebhook.controller.js) que Gupshup reenvía en cada
-    // request a `url` — vía el campo `meta` documentado por Gupshup como
-    // `{"headers": {...}}`.
-    test('con `headers`: se manda `meta` como JSON string con esos headers', async () => {
+    // Incidente del 04/sep/2026 (docs/implementation/known-issues.md, Bug 3,
+    // Causa 4): channel.controller.js necesita pasar un header custom (el
+    // secreto de channelOnboardingWebhook.controller.js) que Gupshup reenvía
+    // en cada request a `url` — vía el campo `meta`. CONFIRMADO EN VIVO que
+    // hay que mandar el objeto de headers SIN envolver en `{"headers": {}}`
+    // — Gupshup agrega ese wrap él mismo (mandarlo ya envuelto termina
+    // guardado como `{"headers":{"headers":{...}}}`, doble anidado, y el
+    // header custom nunca llega en la entrega real del evento).
+    test('con `headers`: se manda `meta` como JSON string de los headers DIRECTO, sin envolver en {"headers": {...}}', async () => {
       httpClient.request.mockResolvedValue({ status: 200, body: {}, requestId: 'gsp_x' });
 
       await partnerSubscriptions.subscribeToEvents('app-123', APIKEY, {
@@ -89,10 +92,14 @@ describe('partner.subscriptions', () => {
       expect(httpClient.request).toHaveBeenCalledWith(
         expect.objectContaining({
           form: expect.objectContaining({
-            meta: JSON.stringify({ headers: { 'x-gupshup-webhook-secret': 'secreto-de-onboarding' } }),
+            meta: JSON.stringify({ 'x-gupshup-webhook-secret': 'secreto-de-onboarding' }),
           }),
         })
       );
+      // Guard explícito contra volver a introducir el bug: nunca un `meta`
+      // con un `"headers"` como clave de primer nivel.
+      const metaEnviado = httpClient.request.mock.calls[0][0].form.meta;
+      expect(JSON.parse(metaEnviado)).not.toHaveProperty('headers');
     });
 
     test('sin `headers` (o vacío): NO manda `meta` en el form', async () => {
@@ -207,6 +214,82 @@ describe('partner.subscriptions', () => {
       ).rejects.toBe(errorDeRed);
 
       expect(httpClient.request).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // Bug 3, Causa 4 (docs/implementation/known-issues.md): vía de corrección
+  // segura de un `meta` mal armado en una suscripción YA activa, sin
+  // arriesgar el comportamiento no documentado de re-"Set subscription" con
+  // el mismo `tag`.
+  describe('updateSubscription()', () => {
+    test('happy path: PUT /partner/app/{appId}/subscription/{subscriptionId}, header Authorization, solo manda los campos presentes', async () => {
+      httpClient.request.mockResolvedValue({ status: 200, body: { status: 'success', subscription: { id: '10966820' } }, requestId: 'gsp_x' });
+
+      const result = await partnerSubscriptions.updateSubscription('app-123', APIKEY, '10966820', {
+        headers: { 'x-gupshup-webhook-secret': 'secreto-corregido' },
+      });
+
+      expect(result).toEqual({ status: 'success', subscription: { id: '10966820' } });
+      expect(httpClient.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: 'PUT',
+          path: '/partner/app/app-123/subscription/10966820',
+          baseUrl: 'https://partner.gupshup.io',
+          headers: { Authorization: APIKEY },
+          form: { meta: JSON.stringify({ 'x-gupshup-webhook-secret': 'secreto-corregido' }) },
+          idempotent: false,
+        })
+      );
+    });
+
+    test('solo actualiza `meta`: NO manda url/tag/modes/version/active — deja el resto de la suscripción intacto', async () => {
+      httpClient.request.mockResolvedValue({ status: 200, body: {}, requestId: 'gsp_x' });
+
+      await partnerSubscriptions.updateSubscription('app-123', APIKEY, '10966820', {
+        headers: { 'x-gupshup-webhook-secret': 'secreto-corregido' },
+      });
+
+      const formEnviado = httpClient.request.mock.calls[0][0].form;
+      expect(Object.keys(formEnviado)).toEqual(['meta']);
+    });
+
+    test('sin ningún param: manda un form vacío (no explota, no inventa valores)', async () => {
+      httpClient.request.mockResolvedValue({ status: 200, body: {}, requestId: 'gsp_x' });
+
+      await partnerSubscriptions.updateSubscription('app-123', APIKEY, '10966820');
+
+      expect(httpClient.request).toHaveBeenCalledWith(expect.objectContaining({ form: {} }));
+    });
+
+    test('permite actualizar url/tag/modes/version/active si se pasan explícitos', async () => {
+      httpClient.request.mockResolvedValue({ status: 200, body: {}, requestId: 'gsp_x' });
+
+      await partnerSubscriptions.updateSubscription('app-123', APIKEY, '10966820', {
+        url: 'https://nueva.url/callback', tag: 'nuevo-tag', modes: ['ACCOUNT', 'TEMPLATE'], version: 2, active: false,
+      });
+
+      expect(httpClient.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          form: { url: 'https://nueva.url/callback', tag: 'nuevo-tag', modes: 'ACCOUNT,TEMPLATE', version: 2, active: false },
+        })
+      );
+    });
+
+    test('400 "subscription doesn\'t exist": se mapea vía mapPartnerError(), nunca explota crudo', async () => {
+      httpClient.request.mockRejectedValue(gupshupError(400, { message: "subscription doesn't exist" }));
+
+      await expect(
+        partnerSubscriptions.updateSubscription('app-123', APIKEY, 'id-inexistente', { headers: { x: 'y' } })
+      ).rejects.toMatchObject({ statusCode: 400 });
+    });
+
+    test('un error que no es GupshupHttpError se propaga tal cual', async () => {
+      const errorDeRed = new Error('ECONNRESET');
+      httpClient.request.mockRejectedValue(errorDeRed);
+
+      await expect(
+        partnerSubscriptions.updateSubscription('app-123', APIKEY, '10966820', { headers: { x: 'y' } })
+      ).rejects.toBe(errorDeRed);
     });
   });
 });

@@ -77,12 +77,24 @@ function esperar(ms) {
  *   siempre `['ACCOUNT']`, así que el caso multi-valor no está probado en
  *   vivo contra Gupshup.
  *   `headers` (opcional) — custom headers que Gupshup reenvía en cada
- *   request que hace a `url`, vía el campo `meta` documentado por Gupshup
- *   como `{"headers": {...}}` (incidente del 04/sep/2026, ver
- *   docs/implementation/known-issues.md Bug 3): channel.controller.js lo usa
- *   para pasar el secreto de channelOnboardingWebhook.controller.js, ya que
- *   ese callback es un endpoint DISTINTO al que usa el resto de la app y
+ *   request que hace a `url`, vía el campo `meta`. channel.controller.js lo
+ *   usa para pasar el secreto de channelOnboardingWebhook.controller.js, ya
+ *   que ese callback es un endpoint DISTINTO al que usa el resto de la app y
  *   necesita su propia autenticación.
+ *
+ *   CORREGIDO el 04/sep/2026 (docs/implementation/known-issues.md, Bug 3,
+ *   Causa 4): `meta` se manda como `JSON.stringify(headers)` DIRECTO, sin
+ *   envolverlo en `{"headers": {...}}` — a pesar de que el ejemplo de la
+ *   propia documentación de Gupshup lo muestra así envuelto. Confirmado en
+ *   vivo (GET /partner/app/{appId}/subscription contra la suscripción real
+ *   creada con el wrap): Gupshup guardó `meta` como
+ *   `{"headers":{"headers":{...}}}` — un nivel de más — y el evento real
+ *   entregado a nuestro webhook NUNCA trajo el header esperado (confirmado
+ *   por log: `headerPresente: false`). Conclusión: el ejemplo de la doc
+ *   muestra el resultado YA envuelto por Gupshup, no lo que hay que mandar
+ *   — Gupshup agrega su propio `"headers"` alrededor de lo que sea que se
+ *   mande en `meta`. Mandar el objeto sin envolver dejó el `meta`
+ *   almacenado con un solo nivel (`{"headers": {...}}`), como corresponde.
  * @returns {Promise<object>} body crudo de Gupshup
  * @throws {AppError} 400 si falta url/tag/modes (validado localmente); el
  *   resto de los errores se mapea vía mapPartnerError() como el resto del
@@ -96,7 +108,7 @@ async function subscribeToEvents(appId, apikey, { url, tag, modes, version = 3, 
 
   const form = { url, tag, version, modes: modes.join(',') };
   if (headers && Object.keys(headers).length > 0) {
-    form.meta = JSON.stringify({ headers });
+    form.meta = JSON.stringify(headers);
   }
 
   const intentarUnaVez = () =>
@@ -137,4 +149,61 @@ async function subscribeToEvents(appId, apikey, { url, tag, modes, version = 3, 
   throw new AppError(`suscripción de eventos de app ${appId}: se agotaron los reintentos sin una respuesta`, 502);
 }
 
-module.exports = { subscribeToEvents, SUBSCRIPTION_API_BASE_URL, SUBSCRIPTION_401_RETRY_DELAYS_MS };
+/**
+ * PUT /partner/app/{appId}/subscription/{subscriptionId} ("Update App
+ * Subscription") — actualiza UNA suscripción ya existente por su `id`
+ * (`subscriptions[].id` de subscribeToEvents()/`GET .../subscription`), a
+ * diferencia de subscribeToEvents() que siempre intenta crear una nueva.
+ *
+ * Por qué existe esta función (no solo subscribeToEvents() de nuevo):
+ * Gupshup documenta `tag` como "único por app", pero NO documenta qué pasa
+ * si se llama a "Set subscription" de nuevo con el mismo `tag` de una
+ * suscripción ya activa (¿la actualiza? ¿tira error de tag duplicado? ¿crea
+ * una segunda?) — comportamiento no confirmado y potencialmente riesgoso de
+ * probar en una suscripción que ya está activa y funcionando. Actualizar
+ * por `id` documentado explícitamente sí soporta modificar solo `meta` sin
+ * tocar nada más de la suscripción real (url/tag/modes/version/active
+ * quedan como estaban si no se pasan) — la vía segura para corregir un
+ * `meta` mal armado (ver corrección de subscribeToEvents() arriba) sin
+ * arriesgar la suscripción existente.
+ *
+ * Todos los params de `params` son opcionales — se manda solo lo que se
+ * quiera cambiar; el resto lo deja como está la propia Gupshup (documentado
+ * explícito en "Update App Subscription": todos opcionales salvo appId/
+ * subscriptionId del path).
+ *
+ * @param {string} appId
+ * @param {string} apikey - de la app puntual (partnerApps.getAppAccessToken())
+ * @param {string} subscriptionId - `id` de la suscripción a actualizar
+ * @param {{ url?: string, tag?: string, modes?: string[], version?: number, active?: boolean, headers?: Object<string,string> }} [params]
+ *   Mismo criterio de `modes`/`headers` que subscribeToEvents() — ver ahí.
+ * @returns {Promise<object>} body crudo de Gupshup (`{ status, subscription }`)
+ * @throws {AppError} los errores se mapean vía mapPartnerError() (ej. 400
+ *   "subscription doesn't exist" si `subscriptionId` no es válido).
+ */
+async function updateSubscription(appId, apikey, subscriptionId, { url, tag, modes, version, active, headers } = {}) {
+  const form = {};
+  if (url !== undefined) form.url = url;
+  if (tag !== undefined) form.tag = tag;
+  if (Array.isArray(modes)) form.modes = modes.join(',');
+  if (version !== undefined) form.version = version;
+  if (active !== undefined) form.active = active;
+  if (headers && Object.keys(headers).length > 0) form.meta = JSON.stringify(headers);
+
+  try {
+    const { body } = await httpClient.request({
+      method: 'PUT',
+      path: `/partner/app/${appId}/subscription/${subscriptionId}`,
+      baseUrl: SUBSCRIPTION_API_BASE_URL,
+      headers: { Authorization: apikey },
+      form,
+      idempotent: false, // efecto de auditoría del lado de Gupshup, mismo criterio que subscribeToEvents()
+    });
+    return body;
+  } catch (err) {
+    if (err instanceof GupshupHttpError) throw mapPartnerError(err, `actualización de la suscripción ${subscriptionId} de app ${appId}`);
+    throw err;
+  }
+}
+
+module.exports = { subscribeToEvents, updateSubscription, SUBSCRIPTION_API_BASE_URL, SUBSCRIPTION_401_RETRY_DELAYS_MS };
