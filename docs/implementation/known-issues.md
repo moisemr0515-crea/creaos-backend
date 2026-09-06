@@ -13,7 +13,7 @@ propuesto para el PR de seguimiento.
 
 ## 2026-09-06 — Los canales DEDICATED (Embedded Signup) nunca reciben mensajes de WhatsApp entrantes — falta la suscripción `MESSAGE`/`ALL`
 
-**Estado:** Abierto — diagnóstico completo y fix propuesto, sin implementar todavía.
+**Estado:** RESUELTO — código implementado con tests (PR #85, `fix/gupshup-dedicated-channels-message-subscription`, mergeado y desplegado, incluye el manejo de fallo fail-hard del sub-paso de mensajería, documentado y testeado aparte) + corregidos en producción los 2 canales DEDICATED que ya existían (ver nota al final de esta entrada). Sin pendientes.
 **Prioridad:** CRÍTICA — ningún tenant onboardeado vía Embedded Signup (Nutriva Corp, "Negocio Prueba 3", y cualquier tenant futuro) puede recibir mensajes reales de WhatsApp. Gupshup ni siquiera intenta entregárnoslos: no es un fallo silencioso en nuestro código, es una suscripción que nunca se creó.
 **Detectado en:** reporte de "ningún lead/conversación nueva" al escribir a 3 números distintos (PLATFORM, Nutriva Corp, "Negocio Prueba 3") — investigado como posible incidente sistémico/infraestructura; descartado eso, la causa es específica y estructural.
 **Archivos involucrados:** [`channel.controller.js#completeGupshupEmbeddedSignup()`](../../src/modules/channels/channel.controller.js), [`partner.subscriptions.js`](../../src/modules/channels/providers/gupshup/partner/partner.subscriptions.js).
@@ -61,6 +61,19 @@ El canal PLATFORM (`CREAOS`, self-serve, nunca pasó por Partner API — ver ent
 4. Reporte antes/después por canal, sin ejecutar nada sin confirmación explícita (mismo protocolo que la corrección manual del `WhatsAppChannel` del 05/sep).
 
 Tests a agregar cuando se implemente: `channel.controller.test.js` (la segunda suscripción se crea junto con `ACCOUNT` en el mismo paso; es idempotente ante reintento — no duplica si ya existe; no rompe ni modifica la suscripción `ACCOUNT` existente). `partner.subscriptions.test.js` ya cubre `subscribeToEvents()`/`getSubscriptions()` en general — no debería necesitar casos nuevos salvo que el modo elegido requiera algún tratamiento especial una vez confirmado contra la documentación real.
+
+### Nota post-implementación — cerrado de punta a punta
+
+**Código (PR #85, mergeado y desplegado):** implementada la segunda suscripción tal como se propuso arriba — `tag: 'creaos-messages'`, `modes: ['ALL']` (confirmado contra la documentación oficial de Gupshup: el endpoint de Partner API no tiene `MESSAGE` en su vocabulario, a diferencia de la API self-serve vieja; `ALL` sí es válido sin restricción de versión), apuntando a `/api/v1/webhooks/gupshup` con el header `x-gupshup-webhook-token` correcto — sin tocar la suscripción `ACCOUNT` ni su webhook dedicado de onboarding. Se agregó además, como discusión aparte antes de implementar, el manejo explícito del camino de fallo: decisión **fail-hard** (si `subscribeToEvents()` de mensajería falla después de que `ACCOUNT` ya tuvo éxito, la sesión queda `failed` pero `webhookReference` de ACCOUNT no se pierde, y un reintento retoma solo el sub-paso que falló, sin duplicar nada) — se descartó fail-soft explícitamente por ser, en los hechos, reproducir el mismo bug silencioso que motivó todo este incidente. 2 tests nuevos cubren ese camino. Suite completa: 321/321.
+
+**Corrección en producción (2026-09-06), aplicada con confirmación explícita en cada paso (dry-run primero, luego `--apply`, luego verificación posterior):** el script `fix-dedicated-channels-missing-message-subscription.js` (de un solo uso, borrado después de usarse) agregó la suscripción de mensajería faltante a los 2 canales DEDICATED que ya existían:
+
+| Tenant | appId | Suscripción creada |
+|---|---|---|
+| Nutriva Corp | `cd6ac9ef-824a-48cc-ab85-77cb3f21c5c4` | `id: 10968352`, `tag: creaos-messages`, `modes: [ALL]`, `active: true` |
+| Negocio Prueba 3 | `4f81131f-3b56-4bf5-808f-4e05176d0315` | `id: 10968353`, `tag: creaos-messages`, `modes: [ALL]`, `active: true` |
+
+Verificado con un dry-run posterior: ambos canales muestran ahora las 2 suscripciones (`creaos-account-events` + `creaos-messages`) activas. No se tocó Mongo en ningún momento — la única fuente de verdad de esta suscripción es Gupshup.
 
 ---
 
