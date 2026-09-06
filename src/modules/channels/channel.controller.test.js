@@ -1138,6 +1138,104 @@ describe('channel.controller#completeGupshupEmbeddedSignup()', () => {
     expect(refrescada.gupshup.webhookReference).toBeNull();
   });
 
+  // 06/sep/2026 (docs/implementation/known-issues.md, PR #85 — segunda
+  // suscripción de mensajería): decisión explícita fail-hard, documentada
+  // antes de implementar. Mismo patrón que el test de arriba para ACCOUNT,
+  // pero el fallo ocurre DESPUÉS de que ACCOUNT ya tuvo éxito — prueba que
+  // ese progreso parcial no se pierde.
+  describe('manejo de fallo en la suscripción de mensajería (fail-hard, PR #85)', () => {
+    test('error de Gupshup al suscribirse a eventos de MENSAJERÍA (después de que ACCOUNT ya tuvo éxito): se propaga, sesión queda failed, pero webhookReference (ACCOUNT) NO se pierde', async () => {
+      const session = await crearSesionGupshupRegistering({ gupshup: { appId: 'gs-app-ya-creada' } });
+      partnerAuth.getValidToken.mockResolvedValue('token');
+      const errorDeGupshup = Object.assign(new Error('Gupshup Partner API: fallo simulado en suscripción de mensajería'), { statusCode: 502 });
+      // ACCOUNT (tag 'creaos-account-events') tiene éxito; MENSAJERÍA (tag
+      // 'creaos-messages') falla — la única forma de diferenciar ambas
+      // llamadas es por el tag, ya que comparten mock.
+      partnerSubscriptions.subscribeToEvents.mockImplementation((appId, apikey, opts) => {
+        if (opts.tag === 'creaos-messages') return Promise.reject(errorDeGupshup);
+        return Promise.resolve({ status: 'success' });
+      });
+
+      const req = { businessId: business._id, user: requester, body: { sessionId: String(session._id) } };
+      const res = mockRes();
+      const next = jest.fn();
+
+      await completeGupshupEmbeddedSignup(req, res, next);
+
+      expect(next).toHaveBeenCalledWith(errorDeGupshup);
+      expect(partnerApps.setContactDetails).not.toHaveBeenCalled();
+      expect(partnerApps.getEmbedSignupLink).not.toHaveBeenCalled();
+      // Confirma que ACCOUNT sí corrió (y tuvo éxito) antes de que fallara mensajería.
+      expect(partnerSubscriptions.subscribeToEvents).toHaveBeenCalledTimes(2);
+
+      const refrescada = await ChannelOnboardingSession.findById(session._id);
+      expect(refrescada.status).toBe('failed');
+      expect(refrescada.error.step).toBe('gupshup_registration');
+      expect(refrescada.error.message).toBe(errorDeGupshup.message);
+      // Clave: ACCOUNT ya se había guardado (su propio await session.save())
+      // ANTES de llegar al bloque de mensajería — el fallo de este último no
+      // debe pisar ese progreso.
+      expect(refrescada.gupshup.webhookReference).toBe('gupshup:account-subscribed');
+      expect(refrescada.gupshup.messagesWebhookReference).toBeNull();
+    });
+
+    test('reintento tras el fallo de mensajería: retoma SOLO ese sub-paso, sin duplicar appId ni la suscripción ACCOUNT ya resueltos', async () => {
+      // Mismo escenario que el test anterior — deja la sesión en el estado
+      // real post-fallo (ACCOUNT resuelto, mensajería no).
+      const session = await crearSesionGupshupRegistering({ gupshup: { appId: 'gs-app-ya-creada' } });
+      partnerAuth.getValidToken.mockResolvedValue('token');
+      const errorDeGupshup = Object.assign(new Error('Gupshup Partner API: fallo simulado en suscripción de mensajería'), { statusCode: 502 });
+      partnerSubscriptions.subscribeToEvents.mockImplementation((appId, apikey, opts) => {
+        if (opts.tag === 'creaos-messages') return Promise.reject(errorDeGupshup);
+        return Promise.resolve({ status: 'success' });
+      });
+      partnerApps.setContactDetails.mockResolvedValue({ status: 'success' });
+      partnerApps.getEmbedSignupLink.mockResolvedValue({ link: 'https://embed.gupshup.io/xyz' });
+
+      const req = { businessId: business._id, user: requester, body: { sessionId: String(session._id) } };
+      await completeGupshupEmbeddedSignup(req, mockRes(), jest.fn());
+
+      // Confirma el punto de partida: falló como en el test anterior.
+      let refrescada = await ChannelOnboardingSession.findById(session._id);
+      expect(refrescada.status).toBe('failed');
+      expect(refrescada.gupshup.webhookReference).toBe('gupshup:account-subscribed');
+
+      // Segundo intento sobre la MISMA sesión — ahora Gupshup responde bien
+      // para todo. Se limpia el historial de llamadas (no la implementación
+      // de los mocks que sí se re-setean explícito abajo) para que las
+      // aserciones de "cuántas veces" de acá abajo sean SOLO de este intento.
+      jest.clearAllMocks();
+      partnerAuth.getValidToken.mockResolvedValue('token');
+      partnerApps.getAppAccessToken.mockResolvedValue({ apikey: 'apikey-real-de-la-app' });
+      partnerSubscriptions.getSubscriptions.mockResolvedValue([]);
+      partnerSubscriptions.subscribeToEvents.mockResolvedValue({ status: 'success' });
+      partnerApps.setContactDetails.mockResolvedValue({ status: 'success' });
+      partnerApps.getEmbedSignupLink.mockResolvedValue({ link: 'https://embed.gupshup.io/xyz' });
+
+      const next2 = jest.fn();
+      await completeGupshupEmbeddedSignup(req, mockRes(), next2);
+
+      expect(next2).not.toHaveBeenCalled();
+      expect(partnerApps.createApp).not.toHaveBeenCalled(); // appId ya estaba guardado
+      // El único subscribeToEvents de este segundo intento es el de
+      // mensajería — ACCOUNT ya tenía webhookReference seteado del intento
+      // anterior, así que ni siquiera se consulta getAppAccessToken/
+      // getSubscriptions para ese sub-paso.
+      expect(partnerSubscriptions.subscribeToEvents).toHaveBeenCalledTimes(1);
+      expect(partnerSubscriptions.subscribeToEvents).toHaveBeenCalledWith(
+        'gs-app-ya-creada',
+        'apikey-real-de-la-app',
+        expect.objectContaining({ tag: 'creaos-messages' })
+      );
+
+      refrescada = await ChannelOnboardingSession.findById(session._id);
+      expect(refrescada.status).toBe('gupshup_registering');
+      expect(refrescada.error).toEqual({ step: null, message: null });
+      expect(refrescada.gupshup.webhookReference).toBe('gupshup:account-subscribed');
+      expect(refrescada.gupshup.messagesWebhookReference).toBe('gupshup:messages-subscribed');
+    });
+  });
+
   test('sessionId inexistente: 404, no llama a Gupshup para nada', async () => {
     const req = { businessId: business._id, user: requester, body: { sessionId: new mongoose.Types.ObjectId().toString() } };
     const res = mockRes();
