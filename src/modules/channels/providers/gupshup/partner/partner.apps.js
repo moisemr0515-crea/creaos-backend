@@ -287,6 +287,45 @@ async function getPartnerApps(token) {
   }, 'listar apps del partner');
 }
 
+/**
+ * GET /partner/app/{appId}/waba/info — estado REAL y verificado del WABA
+ * asociado a esta app, directo de Gupshup. Auth por `Authorization` con el
+ * apikey DE LA APP (no el `token` de partner que usa el resto de este
+ * archivo — por eso NO se usa `authHeader()` acá, mandaría el header
+ * equivocado).
+ *
+ * Incidente PR-11 (docs/implementation/known-issues.md): `channelOnboarding
+ * Completion.service.js#handleGupshupAccountVerified()` la usa para poblar
+ * el `WhatsAppChannel` real en vez de confiar en `session.meta.phoneNumber/
+ * phoneNumberId/wabaId` — esos son datos de Meta, cacheados en el momento
+ * en que ESA sesión puntual completó su propio popup, y pueden quedar
+ * obsoletos o pertenecer a un intento distinto si el tenant reintentó el
+ * flujo más de una vez (mismo `appId` reusado entre sesiones, ver PR
+ * #81/#82) — confirmado en vivo: un canal terminó creado con el
+ * número/WABA de un intento abandonado, no el que realmente se verificó.
+ *
+ * @param {string} appId
+ * @param {string} apikey - de la app puntual (partnerApps.getAppAccessToken())
+ * @returns {Promise<{ phone: string, phoneId: string, wabaId: string, wabaName: string|null, accountStatus: string }>}
+ *   Shape real confirmado en vivo (05/sep/2026) — OJO con los nombres, no
+ *   coinciden con el resto del código: `phone` viene SIN el `+` inicial
+ *   (ej. `"51967424911"`), y el id del número es `phoneId`, NO
+ *   `phoneNumberId`.
+ * @throws {AppError} 400 "App is not live." si el WABA todavía no está
+ *   verificado — mapeado vía mapPartnerError() como el resto del archivo.
+ */
+async function getWabaInfo(appId, apikey) {
+  return runOrMap(async () => {
+    const { body } = await httpClient.request({
+      method: 'GET',
+      path: `/partner/app/${appId}/waba/info`,
+      headers: { Authorization: apikey },
+      // idempotent: true (default de GET) — es una lectura.
+    });
+    return body.wabaInfo;
+  }, `getWabaInfo de app ${appId}`);
+}
+
 module.exports = {
   createApp,
   setContactDetails,
@@ -296,6 +335,7 @@ module.exports = {
   getEmbedSignupLink,
   getAppAccessToken,
   getPartnerApps,
+  getWabaInfo,
   APP_NAME_MIN_LENGTH,
   APP_NAME_MAX_LENGTH,
 };
