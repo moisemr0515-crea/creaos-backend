@@ -1,6 +1,45 @@
 const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
 const { JWT_SECRET } = require('../config/env');
+const logger = require('../utils/logger');
+
+/**
+ * Incidente real de producción (06/sep/2026, docs/implementation/known-issues.md):
+ * investigando un bloqueo reportado, se encontró que un 429 de
+ * `rateLimitGeneral` es estructuralmente INVISIBLE en los logs — corre en
+ * app.js ANTES del middleware que loguea cada request (ver ese archivo), y
+ * al bloquear responde directo sin llamar a `next()`, así que ese
+ * middleware de logging nunca llega a ejecutarse para esa request. Sin este
+ * logueo explícito, confirmar (o descartar) que un limiter fue la causa de
+ * un incidente puntual requiere reconstruir todo por inferencia indirecta
+ * — exactamente lo que hubo que hacer para diagnosticar el incidente que
+ * motivó esto.
+ *
+ * `handler` reemplaza el manejo default de express-rate-limit (que solo
+ * hace `res.status(...).send(message)`, sin loguear nada) — replica ESE
+ * mismo comportamiento pero logueando antes vía nuestro logger real. No es
+ * exclusivo de rateLimitGeneral: se reusa para rateLimitLogin también, para
+ * poder distinguir en los logs cuál de los 2 disparó.
+ *
+ * @param {string} nombre - identifica el limiter en el log (ej. 'rateLimitGeneral').
+ * @param {(req: import('express').Request) => string} obtenerClave - la
+ *   misma función usada como `keyGenerator` de ese limiter — se reinvoca
+ *   acá (pura, sin efectos secundarios) solo para loguear CONTRA QUÉ clave
+ *   se bloqueó, sin depender de que express-rate-limit exponga la clave ya
+ *   calculada en `optionsUsed`.
+ * @returns {import('express-rate-limit').RateLimitRequestHandler['handler']}
+ */
+function crearHandlerBloqueo(nombre, obtenerClave) {
+  return (req, res, _next, options) => {
+    logger.warn(`[rateLimit] ${nombre} bloqueó una request`, {
+      clave: obtenerClave(req),
+      ip: req.ip,
+      method: req.method,
+      path: req.originalUrl,
+    });
+    res.status(options.statusCode).json(options.message);
+  };
+}
 
 /**
  * Clave de `rateLimitGeneral` — por usuario autenticado cuando se puede
@@ -68,6 +107,7 @@ const rateLimitGeneral = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: claveRateLimitGeneral,
+  handler: crearHandlerBloqueo('rateLimitGeneral', claveRateLimitGeneral),
   message: {
     success: false,
     message: 'Demasiadas solicitudes. Intenta de nuevo en 15 minutos.',
@@ -101,19 +141,22 @@ const rateLimitGeneral = rateLimit({
  * esto soluciona. Si se vuelve un problema, la mitigación estándar es
  * backoff progresivo en vez de bloqueo duro, no volver a IP.
  */
+function claveRateLimitLogin(req) {
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  // Sin email (body malformado/vacío — rateLimitLogin corre ANTES que
+  // validarLogin en la ruta, ver auth.routes.js) cae a IP, mismo criterio
+  // de antes — ese caso de todas formas lo rechaza el validator después.
+  return email || req.ip;
+}
+
 const rateLimitLogin = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutos
   max: 5,
   standardHeaders: true,
   legacyHeaders: false,
   skipSuccessfulRequests: true, // No contar logins exitosos
-  keyGenerator: (req) => {
-    const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
-    // Sin email (body malformado/vacío — rateLimitLogin corre ANTES que
-    // validarLogin en la ruta, ver auth.routes.js) cae a IP, mismo criterio
-    // de antes — ese caso de todas formas lo rechaza el validator después.
-    return email || req.ip;
-  },
+  keyGenerator: claveRateLimitLogin,
+  handler: crearHandlerBloqueo('rateLimitLogin', claveRateLimitLogin),
   message: {
     success: false,
     message: 'Demasiados intentos de inicio de sesión. Intenta de nuevo en 15 minutos.',
@@ -177,7 +220,10 @@ module.exports = {
   rateLimitForgotPassword,
   rateLimitRegister,
   rateLimitMissionRegenerate,
-  // Exportada aparte para poder testear la lógica de la clave sin tener que
-  // simular 100 requests reales contra el rate limiter completo.
+  // Exportadas aparte para poder testear la lógica de la clave y del
+  // logueo de bloqueo sin tener que simular requests reales contra el
+  // rate limiter completo.
   claveRateLimitGeneral,
+  claveRateLimitLogin,
+  crearHandlerBloqueo,
 };
