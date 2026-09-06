@@ -11,6 +11,72 @@ propuesto para el PR de seguimiento.
 
 ---
 
+## 2026-09-06 — Los canales DEDICATED (Embedded Signup) nunca reciben mensajes de WhatsApp entrantes — falta la suscripción `MESSAGE`/`ALL`
+
+**Estado:** RESUELTO — código implementado con tests (PR #85, `fix/gupshup-dedicated-channels-message-subscription`, mergeado y desplegado, incluye el manejo de fallo fail-hard del sub-paso de mensajería, documentado y testeado aparte) + corregidos en producción los 2 canales DEDICATED que ya existían (ver nota al final de esta entrada). Sin pendientes.
+**Prioridad:** CRÍTICA — ningún tenant onboardeado vía Embedded Signup (Nutriva Corp, "Negocio Prueba 3", y cualquier tenant futuro) puede recibir mensajes reales de WhatsApp. Gupshup ni siquiera intenta entregárnoslos: no es un fallo silencioso en nuestro código, es una suscripción que nunca se creó.
+**Detectado en:** reporte de "ningún lead/conversación nueva" al escribir a 3 números distintos (PLATFORM, Nutriva Corp, "Negocio Prueba 3") — investigado como posible incidente sistémico/infraestructura; descartado eso, la causa es específica y estructural.
+**Archivos involucrados:** [`channel.controller.js#completeGupshupEmbeddedSignup()`](../../src/modules/channels/channel.controller.js), [`partner.subscriptions.js`](../../src/modules/channels/providers/gupshup/partner/partner.subscriptions.js).
+
+### Problema
+
+`completeGupshupEmbeddedSignup()` suscribe la app a eventos de Gupshup una sola vez, siempre así ([`channel.controller.js:611-616`](../../src/modules/channels/channel.controller.js#L611)):
+
+```js
+await partnerSubscriptions.subscribeToEvents(session.gupshup.appId, apikey, {
+  url: `${BACKEND_PUBLIC_URL}/api/v1/webhooks/gupshup/onboarding/${session.gupshup.appId}`,
+  tag: 'creaos-account-events',
+  modes: ['ACCOUNT'],
+  headers: { [ONBOARDING_WEBHOOK_HEADER]: GUPSHUP_ONBOARDING_WEBHOOK_TOKEN },
+});
+```
+
+Esto suscribe **solo** el modo `ACCOUNT` (el evento `ACCOUNT_VERIFIED` que confirma el Go-Live), apuntando al webhook DEDICADO de onboarding (`/api/v1/webhooks/gupshup/onboarding/:appId`, `channelOnboardingWebhook.controller.js`) — nunca al webhook real de mensajería (`/api/v1/webhooks/gupshup`, `webhook.controller.js#gupshupWebhook()`). **En ningún lugar del código se suscribe la app a eventos de mensajería** (`modes` con algo equivalente a `MESSAGE`/`ALL`) apuntando a ese segundo endpoint.
+
+**Evidencia real** — confirmado en vivo contra Gupshup (`GET /partner/app/{appId}/subscription`) para los 2 tenants DEDICATED existentes, cada uno con **una sola suscripción, `modes: ["ACCOUNT"]`**, nada más:
+
+```json
+{ "active": true, "tag": "creaos-account-events", "modes": ["ACCOUNT"],
+  "url": ".../api/v1/webhooks/gupshup/onboarding/{appId}" }
+```
+
+Consistente con esto: la colección `InboundEvent` (creada SOLO cuando `channelResolver.resolve()` encuentra un canal — ver entrada del 05/sep) tiene **cero documentos, en toda su historia**, para el canal de Nutriva Corp o el de "Negocio Prueba 3". No es que el mensaje llegue y se pierda en nuestro pipeline — Gupshup nunca dispara el webhook porque nunca se le pidió que lo hiciera para eventos de mensajería.
+
+El canal PLATFORM (`CREAOS`, self-serve, nunca pasó por Partner API — ver entrada relacionada más abajo sobre el bloqueante de branding) SÍ recibe mensajes con normalidad: su suscripción de mensajería se configuró hace tiempo por fuera de este código (dashboard self-serve de Gupshup, `apps.gupshup.io`), independiente de `subscribeToEvents()`. Por eso el síntoma parecía "sistémico" al probar los 3 números — coincidencia de que el único canal que sí funciona es justo el que no depende de este código.
+
+**Confirmado con el dueño del producto:** Nutriva Corp no tuvo tráfico real de clientes durante el período afectado (solo uso de piloto/pruebas) — no hace falta backfill de datos, no hay nada que recuperar.
+
+### Fix propuesto
+
+**Parte 1 — código, hacia adelante:** en el mismo paso de `completeGupshupEmbeddedSignup()` donde se suscribe `ACCOUNT`, agregar una **segunda suscripción independiente** (mismo `appId`, distinto `tag`, ej. `'creaos-messages'`) con:
+- `modes`: cubrir mensajería entrante. **Ojo — no confirmado con certeza cuál es el valor exacto que espera `partner.gupshup.io` para esto** (el propio código de `partner.subscriptions.js:33-36` ya advertía que el vocabulario de este endpoint NO es el mismo que el de la API self-serve vieja, que sí usa literal `MESSAGE`). Antes de implementar, confirmar el valor exacto contra la documentación oficial de Gupshup (`partner-docs.gupshup.io`, "Set subscription for an app") o con el contacto de Partnership (Dali) — candidato más seguro por ahora: `'ALL'` (cubre mensajería entrante + el resto; nuestro `gupshupWebhook()`/`normalizeInboundEvent()` ya ignora silenciosamente cualquier evento que no sea `field: 'messages'`, así que un modo más amplio no tiene downside funcional, solo tráfico extra de webhook).
+- `url`: `${BACKEND_PUBLIC_URL}/api/v1/webhooks/gupshup` — el endpoint de mensajería real, NO el de onboarding.
+- **Deliberadamente NO se toca la suscripción `ACCOUNT` existente** (ni se fusionan los 2 modos en una sola suscripción apuntando a una sola URL) — mezclar mensajería con el endpoint/auth de onboarding (secreto dedicado, `GUPSHUP_ONBOARDING_WEBHOOK_TOKEN`) arriesgaría el flujo de Go-Live ya probado (PR #75/#76/#78/#81/#82/#83) por una ganancia que no hace falta: Gupshup documenta hasta 5 suscripciones por app, así que 2 separadas es el camino compatible con lo ya construido.
+- Mismo criterio idempotente que la Causa 2 del incidente del 05/sep (`Duplicate component tag`): chequear con `getSubscriptions()` antes de crear, para que un reintento del mismo paso de onboarding no choque.
+
+**Parte 2 — corrección para los canales DEDICATED ya existentes (Nutriva Corp, "Negocio Prueba 3"):** el fix de código de la Parte 1 solo aplica a onboardings FUTUROS — mismo patrón que el incidente del 05/sep (el fix no es retroactivo). Se necesita un **script de un solo uso** (mismo criterio que `check-*`/`fix-*` de esta sesión) que:
+1. Liste los `WhatsAppChannel` existentes con `connectionType: 'DEDICATED'` y `status: 'active'`.
+2. Para cada uno, obtenga `apikey` (`getAppAccessToken()`) y llame a `getSubscriptions()` para confirmar que efectivamente falta la suscripción de mensajería (no asumir — otro tenant futuro podría ya tenerla si el fix de código ya está desplegado para onboardings nuevos, y no hay que duplicarla).
+3. Si falta, llame a `subscribeToEvents()` con el mismo `modes`/`url`/`tag` de la Parte 1.
+4. Reporte antes/después por canal, sin ejecutar nada sin confirmación explícita (mismo protocolo que la corrección manual del `WhatsAppChannel` del 05/sep).
+
+Tests a agregar cuando se implemente: `channel.controller.test.js` (la segunda suscripción se crea junto con `ACCOUNT` en el mismo paso; es idempotente ante reintento — no duplica si ya existe; no rompe ni modifica la suscripción `ACCOUNT` existente). `partner.subscriptions.test.js` ya cubre `subscribeToEvents()`/`getSubscriptions()` en general — no debería necesitar casos nuevos salvo que el modo elegido requiera algún tratamiento especial una vez confirmado contra la documentación real.
+
+### Nota post-implementación — cerrado de punta a punta
+
+**Código (PR #85, mergeado y desplegado):** implementada la segunda suscripción tal como se propuso arriba — `tag: 'creaos-messages'`, `modes: ['ALL']` (confirmado contra la documentación oficial de Gupshup: el endpoint de Partner API no tiene `MESSAGE` en su vocabulario, a diferencia de la API self-serve vieja; `ALL` sí es válido sin restricción de versión), apuntando a `/api/v1/webhooks/gupshup` con el header `x-gupshup-webhook-token` correcto — sin tocar la suscripción `ACCOUNT` ni su webhook dedicado de onboarding. Se agregó además, como discusión aparte antes de implementar, el manejo explícito del camino de fallo: decisión **fail-hard** (si `subscribeToEvents()` de mensajería falla después de que `ACCOUNT` ya tuvo éxito, la sesión queda `failed` pero `webhookReference` de ACCOUNT no se pierde, y un reintento retoma solo el sub-paso que falló, sin duplicar nada) — se descartó fail-soft explícitamente por ser, en los hechos, reproducir el mismo bug silencioso que motivó todo este incidente. 2 tests nuevos cubren ese camino. Suite completa: 321/321.
+
+**Corrección en producción (2026-09-06), aplicada con confirmación explícita en cada paso (dry-run primero, luego `--apply`, luego verificación posterior):** el script `fix-dedicated-channels-missing-message-subscription.js` (de un solo uso, borrado después de usarse) agregó la suscripción de mensajería faltante a los 2 canales DEDICATED que ya existían:
+
+| Tenant | appId | Suscripción creada |
+|---|---|---|
+| Nutriva Corp | `cd6ac9ef-824a-48cc-ab85-77cb3f21c5c4` | `id: 10968352`, `tag: creaos-messages`, `modes: [ALL]`, `active: true` |
+| Negocio Prueba 3 | `4f81131f-3b56-4bf5-808f-4e05176d0315` | `id: 10968353`, `tag: creaos-messages`, `modes: [ALL]`, `active: true` |
+
+Verificado con un dry-run posterior: ambos canales muestran ahora las 2 suscripciones (`creaos-account-events` + `creaos-messages`) activas. No se tocó Mongo en ningún momento — la única fuente de verdad de esta suscripción es Gupshup.
+
+---
+
 ## 2026-09-05 — `handleGupshupAccountVerified()` puede completar la sesión EQUIVOCADA cuando hay varios reintentos con el mismo appId
 
 **Estado:** RESUELTO — código implementado con tests (PR #83, `fix/gupshup-account-verified-session-race`, mergeado y desplegado) + corregido en producción el dato ya guardado para "Negocio Prueba 3" (ver nota al final de esta entrada). Sin pendientes.
