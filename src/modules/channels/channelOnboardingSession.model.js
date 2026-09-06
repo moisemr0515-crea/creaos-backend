@@ -113,6 +113,14 @@ const channelOnboardingSessionSchema = new mongoose.Schema(
     gupshup: {
       appId: { type: String, default: null }, // -> WhatsAppChannel.providerAppId al completar
       webhookReference: { type: String, default: null }, // -> WhatsAppChannel.webhookReference al completar
+      // 06/sep/2026 (docs/implementation/known-issues.md): suscripción
+      // INDEPENDIENTE de `webhookReference` (arriba, modo ACCOUNT) — sin
+      // esta, Gupshup nunca reenvía los mensajes de WhatsApp entrantes
+      // reales. Deliberadamente su propio campo (no reutiliza
+      // webhookReference) porque son 2 suscripciones distintas en Gupshup,
+      // con distinto tag/url/modes, que pueden completarse en momentos
+      // distintos — ver channel.controller.js#completeGupshupEmbeddedSignup().
+      messagesWebhookReference: { type: String, default: null },
       // PR-05 (blueprint maestro §55, redefinido esta sesión — ver
       // docs/integrations/gupshup-registration-contract.md §9): link real
       // de GET /partner/app/{appId}/onboarding/embed/link, que el usuario
