@@ -83,6 +83,12 @@ describe('channelOnboardingCompletion#handleGupshupAccountVerified()', () => {
     await ChannelCredentials.deleteMany({});
     business = await Business.create({ name: 'Negocio de prueba' });
     jest.clearAllMocks();
+    // Default feliz para PR-11 (known-issues.md): el WABA "real" que
+    // devuelve Gupshup coincide con session.meta salvo que un test puntual
+    // necesite demostrar la discrepancia (esos lo pisan explícito).
+    partnerApps.getWabaInfo.mockResolvedValue({
+      phone: '16315555556', phoneId: 'pnid-real', wabaId: 'waba-real', wabaName: null, accountStatus: 'ACTIVE',
+    });
   });
 
   // Helper — sesión ya en 'gupshup_registering', con appId + phoneNumber ya
@@ -225,6 +231,83 @@ describe('channelOnboardingCompletion#handleGupshupAccountVerified()', () => {
     // perdedora hubiera podido pisar el resultado de la ganadora en el
     // save() final. Acá se ejecuta UNA sola vez.
     expect(partnerApps.getAppAccessToken).toHaveBeenCalledTimes(1);
+  });
+
+  test('PR-11 (known-issues.md): con varias sesiones reintentadas compartiendo el mismo appId en gupshup_registering, el sort reclama la MÁS RECIENTE (createdAt desc), no la primera que Mongo devuelva', async () => {
+    // Reproduce el caso real: 2 intentos del mismo tenant reutilizaron el
+    // mismo appId (fix de PR #81) y quedaron ambos en gupshup_registering
+    // simultáneamente — antes de este fix, el findOneAndUpdate sin `sort`
+    // podía reclamar cualquiera de las 2 (en la práctica, la más vieja).
+    const vieja = await crearSesionListaParaWebhook({
+      displayName: 'Intento viejo (abandonado)',
+      meta: {
+        wabaId: 'waba-viejo', phoneNumberId: 'pnid-viejo', phoneNumber: '+51940766276',
+        accessTokenCipher: channelCrypto.encrypt('token-viejo', 'onboarding:placeholder'),
+      },
+    });
+    // createdAt no es seteable en el create() de arriba de forma confiable
+    // entre 2 documentos creados en el mismo tick — se fuerza explícito para
+    // que el orden del test no dependa de timing real de reloj.
+    await ChannelOnboardingSession.updateOne({ _id: vieja._id }, { createdAt: new Date('2026-09-05T05:37:56Z') });
+
+    const reciente = await crearSesionListaParaWebhook({
+      displayName: 'Intento reciente (el que sí se verificó)',
+      meta: {
+        wabaId: 'waba-provisional-meta', phoneNumberId: 'pnid-provisional', phoneNumber: '+51967424911',
+        accessTokenCipher: channelCrypto.encrypt('token-reciente', 'onboarding:placeholder'),
+      },
+    });
+    await ChannelOnboardingSession.updateOne({ _id: reciente._id }, { createdAt: new Date('2026-09-05T17:25:08Z') });
+
+    partnerAuth.getValidToken.mockResolvedValue('partner-token-real');
+    partnerApps.getAppAccessToken.mockResolvedValue({ apikey: 'apikey-real-de-la-app' });
+
+    await handleGupshupAccountVerified('gs-app-real');
+
+    const viejaRefrescada = await ChannelOnboardingSession.findById(vieja._id);
+    const recienteRefrescada = await ChannelOnboardingSession.findById(reciente._id);
+
+    // La reciente es la que se reclamó y completó...
+    expect(recienteRefrescada.status).toBe('completed');
+    expect(recienteRefrescada.displayName).toBe('Intento reciente (el que sí se verificó)');
+    // ...la vieja queda intacta en gupshup_registering, sin reclamar.
+    expect(viejaRefrescada.status).toBe('gupshup_registering');
+
+    expect(await WhatsAppChannel.countDocuments({})).toBe(1);
+    const channel = await WhatsAppChannel.findOne({});
+    expect(channel.displayName).toBe('Intento reciente (el que sí se verificó)');
+  });
+
+  test('PR-11 (known-issues.md): el canal usa el WABA REAL de Gupshup (getWabaInfo), no session.meta, aunque session.meta tenga datos distintos/obsoletos', async () => {
+    // Reproduce el bug reportado en producción para "Negocio Prueba 3": la
+    // sesión reclamada trae en su meta un número/WABA provisorio de Meta
+    // (`session.meta`), pero el verificado y REAL según Gupshup es otro
+    // (mockeado acá vía getWabaInfo) — el canal debe usar el de Gupshup.
+    await crearSesionListaParaWebhook({
+      meta: {
+        wabaId: 'waba-provisional-de-meta', phoneNumberId: 'pnid-provisional', phoneNumber: '+51940766276',
+        accessTokenCipher: channelCrypto.encrypt('token', 'onboarding:placeholder'),
+      },
+    });
+    partnerAuth.getValidToken.mockResolvedValue('partner-token-real');
+    partnerApps.getAppAccessToken.mockResolvedValue({ apikey: 'apikey-real-de-la-app' });
+    // Respuesta real confirmada vía GET /partner/app/{appId}/waba/info para
+    // "Negocio Prueba 3": phone SIN "+" y el campo es "phoneId", no
+    // "phoneNumberId" — el mismo gotcha documentado en partner.apps.js.
+    partnerApps.getWabaInfo.mockResolvedValue({
+      phone: '51967424911', phoneId: '1261899130346864', wabaId: '1709122084547289',
+      wabaName: 'Negocio Prueba 3', accountStatus: 'ACTIVE',
+    });
+
+    await handleGupshupAccountVerified('gs-app-real');
+
+    const channel = await WhatsAppChannel.findOne({ providerAppId: 'gs-app-real' });
+    expect(channel).not.toBeNull();
+    expect(partnerApps.getWabaInfo).toHaveBeenCalledWith('gs-app-real', 'apikey-real-de-la-app');
+    // Viene de getWabaInfo(), NO de session.meta (que tenía el número viejo).
+    expect(channel.phoneNumber).toBe('+51967424911');
+    expect(channel.phoneNumberId).toBe('1261899130346864');
+    expect(channel.wabaId).toBe('1709122084547289');
   });
 
   test('error de Gupshup al pedir el apikey de la app: la sesión queda failed con error.step:"channel_creation", no crea ningún canal', async () => {

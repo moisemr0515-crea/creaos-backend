@@ -100,13 +100,25 @@ async function markFailed(session, message) {
  * diseña una vía de recuperación acá, es un caso raro y la colección es un
  * historial de auditoría que nunca se hard-borra de todos modos.
  *
+ * PR-11 (docs/implementation/known-issues.md): con `appId`/`webhookReference`
+ * reutilizables entre sesiones del mismo tenant (fixes de PR #81/#82), es
+ * normal que MÁS DE UNA sesión comparta el mismo `gsAppId` y esté
+ * simultáneamente en `gupshup_registering` — algo que no pasaba antes de
+ * esos fixes. El `findOneAndUpdate` de abajo ahora ordena por `createdAt`
+ * descendente para reclamar la sesión MÁS RECIENTE entre las candidatas
+ * (antes no tenía ningún `sort`, así que Mongo devolvía la primera según su
+ * orden interno — en la práctica, la más vieja, sin relación con cuál
+ * intento fue el que realmente se verificó). No es la solución completa
+ * por sí sola — ver el comentario sobre `getWabaInfo()` más abajo, que sí
+ * resuelve la causa de raíz independientemente de qué sesión gane acá.
+ *
  * @param {string} gsAppId
  */
 async function handleGupshupAccountVerified(gsAppId) {
   const session = await ChannelOnboardingSession.findOneAndUpdate(
     { 'gupshup.appId': gsAppId, status: 'gupshup_registering' },
     { $set: { status: 'completing' } },
-    { new: true }
+    { new: true, sort: { createdAt: -1 } }
   );
 
   if (!session) {
@@ -139,15 +151,28 @@ async function handleGupshupAccountVerified(gsAppId) {
     const token = await partnerAuth.getValidToken();
     const { apikey } = await partnerApps.getAppAccessToken(session.gupshup.appId, token);
 
+    // PR-11 (docs/implementation/known-issues.md): NO se usa
+    // session.meta.phoneNumber/phoneNumberId/wabaId para el canal real —
+    // son datos de Meta, cacheados en el momento en que ESTA sesión
+    // puntual completó su propio popup, y pueden quedar obsoletos o
+    // pertenecer a un intento distinto si el tenant reintentó el flujo más
+    // de una vez (mismo appId reusado entre sesiones, ver PR #81/#82).
+    // GET /partner/app/{appId}/waba/info es la fuente de verdad de Gupshup
+    // sobre CUÁL es el número/WABA real y verificado para este appId,
+    // independientemente de qué sesión haya ganado el reclamo de arriba —
+    // el tenantId sí es seguro tomarlo de `session` (idéntico entre todas
+    // las sesiones candidatas del mismo tenant/appId).
+    const wabaInfo = await partnerApps.getWabaInfo(session.gupshup.appId, apikey);
+
     const channel = await WhatsAppChannel.create({
       tenantId: session.tenantId,
       businessId: session.tenantId,
       connectionType: 'DEDICATED',
       status: 'active',
       onboardingStatus: 'completed',
-      phoneNumber: session.meta.phoneNumber,
-      phoneNumberId: session.meta.phoneNumberId,
-      wabaId: session.meta.wabaId,
+      phoneNumber: `+${wabaInfo.phone}`,
+      phoneNumberId: wabaInfo.phoneId,
+      wabaId: wabaInfo.wabaId,
       providerAppId: session.gupshup.appId,
       // PR-07a: el NOMBRE de la app en Gupshup (no su GUID) — mismo campo
       // que el seed de PLATFORM puebla con GUPSHUP_APP_NAME (ver

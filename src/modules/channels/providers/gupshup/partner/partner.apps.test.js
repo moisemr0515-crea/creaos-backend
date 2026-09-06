@@ -282,4 +282,61 @@ describe('partner.apps', () => {
       await expect(partnerApps.getPartnerApps(TOKEN)).rejects.toMatchObject({ statusCode: 502 });
     });
   });
+
+  // Incidente PR-11 (docs/implementation/known-issues.md): fuente de verdad
+  // real/verificada del WABA de una app, usada por channelOnboardingCompletion
+  // .service.js#handleGupshupAccountVerified() en vez de confiar en
+  // session.meta (que puede quedar obsoleto entre reintentos con el mismo appId).
+  describe('getWabaInfo()', () => {
+    const APIKEY = 'apikey-real-de-la-app';
+
+    test('happy path: GET /partner/app/{appId}/waba/info con header Authorization (apikey de la app, NO el token de partner), devuelve wabaInfo', async () => {
+      // Shape real confirmado en vivo (05/sep/2026) para "Negocio Prueba 3".
+      httpClient.request.mockResolvedValue({
+        status: 200,
+        body: {
+          status: 'success',
+          wabaInfo: {
+            accountStatus: 'ACTIVE',
+            phone: '51967424911',
+            phoneId: '1261899130346864',
+            wabaId: '1709122084547289',
+            wabaName: 'Negocio Prueba 3',
+            verifiedName: 'Negocio Prueba 3',
+          },
+        },
+        requestId: 'gsp_x',
+      });
+
+      const result = await partnerApps.getWabaInfo('app-123', APIKEY);
+
+      expect(result).toEqual({
+        accountStatus: 'ACTIVE',
+        phone: '51967424911',
+        phoneId: '1261899130346864',
+        wabaId: '1709122084547289',
+        wabaName: 'Negocio Prueba 3',
+        verifiedName: 'Negocio Prueba 3',
+      });
+      expect(httpClient.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: 'GET',
+          path: '/partner/app/app-123/waba/info',
+          headers: { Authorization: APIKEY }, // NO { token } — header distinto al resto del archivo
+        })
+      );
+    });
+
+    test('400 "App is not live." (WABA todavía no verificado): se mapea a AppError 400', async () => {
+      httpClient.request.mockRejectedValue(gupshupError(400, { message: 'App is not live.' }));
+
+      await expect(partnerApps.getWabaInfo('app-123', APIKEY)).rejects.toMatchObject({ statusCode: 400 });
+    });
+
+    test('401 Authentication Failed (apikey incorrecta): se mapea a AppError 502, no 401 (ver partner.errors.js)', async () => {
+      httpClient.request.mockRejectedValue(gupshupError(401, { message: 'Authentication Failed' }));
+
+      await expect(partnerApps.getWabaInfo('app-123', APIKEY)).rejects.toMatchObject({ statusCode: 502 });
+    });
+  });
 });
