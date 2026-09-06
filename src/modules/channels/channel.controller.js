@@ -13,7 +13,7 @@ const partnerSubscriptions = require('./providers/gupshup/partner/partner.subscr
 const { AppError } = require('../../middleware/error.middleware');
 const { respuestaExito, respuestaError } = require('../../utils/response');
 const logger = require('../../utils/logger');
-const { META_APP_ID, META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID, BACKEND_PUBLIC_URL, GUPSHUP_ONBOARDING_WEBHOOK_TOKEN } = require('../../config/env');
+const { META_APP_ID, META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID, BACKEND_PUBLIC_URL, GUPSHUP_ONBOARDING_WEBHOOK_TOKEN, GUPSHUP_WEBHOOK_HEADER, GUPSHUP_WEBHOOK_TOKEN } = require('../../config/env');
 // Constante compartida vía un archivo sin dependencias propias — NO se
 // importa directo de channelOnboardingWebhook.controller.js acá (ese módulo
 // requiere channelOnboardingCompletion.service.js, que a su vez requiere
@@ -29,6 +29,11 @@ const { ONBOARDING_WEBHOOK_HEADER } = require('./channelOnboardingWebhook.consta
 // cual a WhatsAppChannel.webhookReference al completar el onboarding — no
 // necesita conocer este valor puntual, solo hace passthrough.
 const GUPSHUP_ACCOUNT_SUBSCRIPTION_MARKER = 'gupshup:account-subscribed';
+// Mismo criterio que el marcador de arriba, para la SEGUNDA suscripción
+// (mensajería) agregada el 06/sep/2026 (docs/implementation/known-issues.md)
+// — independiente de la de ACCOUNT, ver el bloque correspondiente más abajo.
+const GUPSHUP_MESSAGES_SUBSCRIPTION_MARKER = 'gupshup:messages-subscribed';
+const GUPSHUP_MESSAGES_SUBSCRIPTION_TAG = 'creaos-messages';
 
 const DISPLAY_NAME_MAX_LENGTH = 100;
 
@@ -618,6 +623,82 @@ const completeGupshupEmbeddedSignup = async (req, res, next) => {
           }
           // Mismo criterio que appId arriba — se guarda antes de seguir,
           // así un retry no vuelve a pegarle a la Subscription API de más.
+          await session.save();
+        }
+      }
+
+      if (!session.gupshup.messagesWebhookReference) {
+        // 06/sep/2026 (docs/implementation/known-issues.md): SEGUNDA
+        // suscripción, independiente de la de ACCOUNT de arriba — sin esto,
+        // Gupshup nunca reenvía los mensajes de WhatsApp entrantes reales a
+        // nuestro webhook de mensajería (confirmado en vivo: los canales
+        // DEDICATED de Nutriva Corp y "Negocio Prueba 3" tenían únicamente
+        // la suscripción ACCOUNT — cero mensajes entregados jamás).
+        //
+        // Deliberadamente NO se fusiona con la suscripción de ACCOUNT de
+        // arriba (mismo tag/url/modes): esa apunta al webhook DEDICADO de
+        // onboarding (secreto propio, GUPSHUP_ONBOARDING_WEBHOOK_TOKEN, ver
+        // el bloque de arriba), que no sabe procesar mensajes — mezclarlas
+        // arriesgaría el flujo de Go-Live ya probado (PR #75/#76/#78/#81/
+        // #82/#83) sin necesidad: Gupshup documenta hasta 5 suscripciones
+        // por app.
+        //
+        // modes:['ALL'] en vez de un valor tipo 'MESSAGE': confirmado contra
+        // la documentación oficial de Gupshup que ese endpoint (Partner API,
+        // `partner.gupshup.io`) no tiene un valor "MESSAGE" en su
+        // vocabulario (distinto al de la API self-serve vieja, que sí lo
+        // tiene — ver partner.subscriptions.js) — 'ALL' sí es un valor
+        // soportado, sin restricción de versión. gupshupProvider.js#
+        // normalizeInboundEvent()/webhook.controller.js#gupshupWebhook() ya
+        // ignoran en silencio cualquier evento que no sea `field:'messages'`
+        // (o el account-event, interceptado aparte) — un modo más amplio no
+        // tiene downside funcional, solo tráfico extra de webhook.
+        //
+        // Mismo patrón de idempotencia que el bloque de ACCOUNT de arriba
+        // (PR-11, known-issues.md): reusar de otra sesión del mismo
+        // tenant+appId, o de una suscripción ya activa en Gupshup, antes de
+        // intentar crear una — así un reintento de este paso no choca con
+        // "Duplicate component tag."
+        const sesionConMessagesWebhookExistente = await ChannelOnboardingSession.findOne({
+          tenantId: req.businessId,
+          _id: { $ne: session._id },
+          'gupshup.appId': session.gupshup.appId,
+          'gupshup.messagesWebhookReference': { $ne: null },
+        }).sort({ createdAt: -1 }).select('gupshup.messagesWebhookReference');
+
+        if (sesionConMessagesWebhookExistente) {
+          session.gupshup.messagesWebhookReference = sesionConMessagesWebhookExistente.gupshup.messagesWebhookReference;
+          await session.save();
+        } else {
+          if (!BACKEND_PUBLIC_URL) {
+            throw new AppError('BACKEND_PUBLIC_URL no está configurado — no se puede suscribir el webhook de mensajería de Gupshup', 500);
+          }
+          if (!GUPSHUP_WEBHOOK_TOKEN) {
+            throw new AppError('GUPSHUP_WEBHOOK_TOKEN no está configurado — no se puede suscribir el webhook de mensajería de Gupshup', 500);
+          }
+
+          const { apikey } = await partnerApps.getAppAccessToken(session.gupshup.appId, token);
+
+          const suscripciones = await partnerSubscriptions.getSubscriptions(session.gupshup.appId, apikey);
+          const suscripcionExistente = suscripciones.find((s) => s.tag === GUPSHUP_MESSAGES_SUBSCRIPTION_TAG && s.active);
+
+          if (suscripcionExistente) {
+            session.gupshup.messagesWebhookReference = GUPSHUP_MESSAGES_SUBSCRIPTION_MARKER;
+          } else {
+            await partnerSubscriptions.subscribeToEvents(session.gupshup.appId, apikey, {
+              url: `${BACKEND_PUBLIC_URL}/api/v1/webhooks/gupshup`,
+              tag: GUPSHUP_MESSAGES_SUBSCRIPTION_TAG,
+              modes: ['ALL'],
+              // A diferencia del webhook de onboarding (arriba), este SÍ es
+              // /api/v1/webhooks/gupshup a secas — el mismo que ya exige
+              // GUPSHUP_WEBHOOK_TOKEN en todo POST real (webhook.service.js#
+              // verifyGupshupAuth()) para el tráfico de PLATFORM hoy. Sin
+              // pasar este header acá, Gupshup entregaría el evento sin él y
+              // gupshupWebhook() lo rechazaría con 401 "Invalid credentials".
+              headers: { [GUPSHUP_WEBHOOK_HEADER]: GUPSHUP_WEBHOOK_TOKEN },
+            });
+            session.gupshup.messagesWebhookReference = GUPSHUP_MESSAGES_SUBSCRIPTION_MARKER;
+          }
           await session.save();
         }
       }
