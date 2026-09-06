@@ -13,7 +13,7 @@ propuesto para el PR de seguimiento.
 
 ## 2026-09-05 — `handleGupshupAccountVerified()` puede completar la sesión EQUIVOCADA cuando hay varios reintentos con el mismo appId
 
-**Estado:** Abierto — diagnóstico completo y fix propuesto, sin implementar todavía.
+**Estado:** RESUELTO (código) — implementado con tests en PR `fix/gupshup-account-verified-session-race`. Pendiente aparte: corrección manual del dato ya guardado para "Negocio Prueba 3" (ver nota al final de esta entrada) — el fix solo cambia el comportamiento hacia adelante, no reprocesa el webhook `ACCOUNT_VERIFIED` que esa sesión ya consumió.
 **Prioridad:** Alta — crea un `WhatsAppChannel` real con el número de teléfono/WABA equivocado, silenciosamente (sin error, `status: 'completed'`).
 **Detectado en:** piloto PR-11, "Negocio Prueba 2" — el tenant reintentó el Embedded Signup varias veces a lo largo del día (fixes de PR #81/#82 funcionando correctamente, reusando el mismo `gupshup.appId` en cada intento). El primer intento de la mañana usó el número `+51940766276` (quedó sin completar — "App is not live"); un intento posterior, ya de tarde, usó un número distinto, `+51967424911` ("Negocio Prueba 3"), y ese sí llegó a verificarse del lado de Gupshup.
 **Archivos involucrados:** [`channelOnboardingCompletion.service.js#handleGupshupAccountVerified()`](../../src/modules/channels/channelOnboardingCompletion.service.js), [`partner.apps.js`](../../src/modules/channels/providers/gupshup/partner/partner.apps.js).
@@ -47,6 +47,12 @@ Dos cambios, complementarios — el primero mitiga, el segundo elimina la causa 
 Con el punto 2 implementado, el punto 1 deja de ser crítico (la sesión reclamada solo aporta `tenantId` — igual entre todas las candidatas del mismo tenant/appId — y sirve para marcar `status: 'completed'`/`session.channel`; el dato real del canal sale de Gupshup, no de la sesión) pero se mantiene igual como buena práctica.
 
 Tests a agregar cuando se implemente: `channelOnboardingCompletion.service.test.js` (usa `getWabaInfo()` en vez de `session.meta` para poblar el canal; con 2+ sesiones candidatas reclama la más reciente); `partner.apps.test.js` (`getWabaInfo()`: happy path con el shape real de la respuesta, mapeo de error, caso "App is not live").
+
+### Nota post-implementación — "Negocio Prueba 3" necesita corrección manual aparte
+
+El fix (`fix/gupshup-account-verified-session-race`) corrige el comportamiento HACIA ADELANTE — el próximo webhook `ACCOUNT_VERIFIED` que llegue va a reclamar la sesión correcta (punto 1) y va a poblar el canal con el dato real de Gupshup en vez del de `session.meta` (punto 2). **No corrige retroactivamente el `WhatsAppChannel` que ya quedó mal guardado hoy para "Negocio Prueba 3"**: Gupshup entrega el webhook una sola vez por evento de verificación (ya se consumió), así que no hay un nuevo webhook que vaya a reprocesar esta sesión puntual con el fix ya desplegado.
+
+Corrección manual pendiente, una vez el fix esté en producción: actualizar el `WhatsAppChannel` existente (`_id: 6a9c54b00aa43d1b1c51fb9c`, tenant "Negocio Prueba 2") de `phoneNumber: "+51940766276"` / `phoneNumberId` viejo / `wabaId: "1605050847659677"` a los valores reales confirmados vía `GET /partner/app/{appId}/waba/info`: `phoneNumber: "+51967424911"`, `phoneNumberId: "1261899130346864"`, `wabaId: "1709122084547289"`. Lo más simple es un script de un solo uso (mismo patrón que los scripts de diagnóstico de esta misma entrada) que llame a `getWabaInfo()` para este `appId` y actualice esos 3 campos del documento existente — no requiere tocar la `ChannelOnboardingSession` (ya quedó `'completed'`, no bloquea nada) ni las credenciales (el `apikey` guardado sigue siendo válido, es de la app, no del número). Queda pendiente de aprobación explícita antes de ejecutarse contra producción.
 
 ---
 
