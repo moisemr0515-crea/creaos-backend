@@ -16,6 +16,12 @@ const PROVIDERS = ['gupshup']; // se suma 'meta_cloud_api' u otros el día que a
 const STATUSES = ['pending', 'active', 'suspended', 'error', 'disconnected'];
 const ONBOARDING_STATUSES = ['not_started', 'in_progress', 'completed', 'failed'];
 const CONNECTION_TYPES = ['PLATFORM', 'DEDICATED', 'MIGRATION'];
+// PR2 (docs/implementation/known-issues.md, 07/sep/2026): fuente de verdad
+// por CANAL de qué API de Gupshup usar para enviar — reemplaza el allowlist
+// global (GUPSHUP_PARTNER_OUTBOUND_APP_IDS, PR1) como mecanismo permanente.
+// Ver gupshupProvider.js#resolveOutboundMode() para el único punto de
+// consumo real.
+const OUTBOUND_APIS = ['legacy', 'partner'];
 
 const whatsAppChannelSchema = new mongoose.Schema(
   {
@@ -38,6 +44,20 @@ const whatsAppChannelSchema = new mongoose.Schema(
     status: { type: String, enum: STATUSES, default: 'pending' },
     onboardingStatus: { type: String, enum: ONBOARDING_STATUSES, default: 'not_started' },
     connectionType: { type: String, enum: CONNECTION_TYPES, required: true },
+
+    // PR2: `required:true` + `default:'legacy'` es ÚNICAMENTE para
+    // compatibilidad con documentos ya existentes al momento de este
+    // cambio (no tenían este campo) — NO es un sustituto de la lógica
+    // explícita de onboarding. `channelOnboardingCompletion.service.js`
+    // SIEMPRE lo asigna de forma explícita ('legacy' o 'partner', nunca
+    // deja que el default decida por un canal DEDICATED real) — ver ese
+    // archivo. El default acá solo cubre el caso de un documento viejo
+    // (`.lean()` no aplica defaults de schema) leído por
+    // gupshupProvider.js#resolveOutboundMode() antes de correr el backfill
+    // — ese caso cae a 'legacy' de forma explícita en el código, no
+    // depende de este default de Mongoose tampoco (defensa en profundidad,
+    // no una única fuente de la verdad).
+    outboundApi: { type: String, enum: OUTBOUND_APIS, required: true, default: 'legacy' },
 
     // Fase 2.1 (blueprint fase-2.1-blueprint-final.md §1.2/§3): pasa de String
     // libre a ObjectId ref real hacia ChannelCredentials. El discriminador de
@@ -70,3 +90,4 @@ module.exports.PROVIDERS = PROVIDERS;
 module.exports.STATUSES = STATUSES;
 module.exports.ONBOARDING_STATUSES = ONBOARDING_STATUSES;
 module.exports.CONNECTION_TYPES = CONNECTION_TYPES;
+module.exports.OUTBOUND_APIS = OUTBOUND_APIS;

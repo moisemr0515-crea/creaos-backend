@@ -8,39 +8,57 @@ const gupshupClient = require('../../webhooks/gupshup.client');
 // sigue siendo el único camino de PLATFORM.
 const gupshupPartnerClient = require('../../webhooks/gupshup.partner.client');
 const channelCredentialsService = require('../channelCredentials.service');
-const { GUPSHUP_PARTNER_OUTBOUND_APP_IDS } = require('../../../config/env');
+const { GUPSHUP_PARTNER_OUTBOUND_KILL_SWITCH } = require('../../../config/env');
+const { AppError } = require('../../../middleware/error.middleware');
 const logger = require('../../../utils/logger');
 
 /**
- * PR1 — rollout progresivo del outbound Partner API, por `providerAppId`
- * explícito en un allowlist (GUPSHUP_PARTNER_OUTBOUND_APP_IDS), NUNCA un
- * boolean global — activar Partner para un canal no debe activarlo para
- * todos los DEDICATED a la vez.
+ * PR2 (docs/implementation/known-issues.md, 07/sep/2026): ÚNICO punto de
+ * decisión Legacy/Partner de todo el backend — reemplaza el allowlist
+ * global de PR1 (GUPSHUP_PARTNER_OUTBOUND_APP_IDS) por la fuente de verdad
+ * POR CANAL: `WhatsAppChannel.outboundApi`. El allowlist de PR1 queda
+ * declarada en env.js pero YA NO SE LEE ACÁ — solo como mecanismo temporal
+ * de transición, ver ese archivo.
  *
- * Deliberadamente NO se usa `connectionType === 'DEDICATED'` a secas como
- * criterio único — el modelo (whatsappChannel.model.js) declara un tercer
- * valor sin usar todavía, `MIGRATION`; el criterio real es la CONDICIÓN
- * TÉCNICA que la llamada a Partner API necesita (`providerAppId`, va en la
- * URL), combinada con la exclusión explícita de PLATFORM (que nunca tiene
- * `providerAppId`, pero se chequea aparte igual, por claridad y como
- * defensa en profundidad). Esto cubre `MIGRATION` automáticamente sin
- * necesitar un caso especial: si todavía no tiene `providerAppId`, cae a
- * Legacy sin más — mismo comportamiento que un DEDICATED con el appId
- * ausente del allowlist.
- *
- * Un canal DEDICATED/MIGRATION sin `providerAppId`, o con uno que no está
- * en el allowlist, sigue por Legacy sin ningún error — es el estado
- * "todavía no migrado", no una configuración rota. El caso "sí debería
- * usar Partner pero algo falla" se maneja en sendMessage() (ver más abajo),
- * no acá.
+ * Orden de chequeos, cada uno explícito (nunca un fallback implícito):
+ *   1. Kill switch de emergencia (GUPSHUP_PARTNER_OUTBOUND_KILL_SWITCH) —
+ *      fuerza Legacy para TODO, sin importar outboundApi. Mecanismo de
+ *      incidente amplio de Partner API, NO el routing normal.
+ *   2. PLATFORM → Legacy siempre. Defensa en profundidad: PLATFORM ya
+ *      debería tener outboundApi:'legacy' por diseño (nunca pasó por
+ *      Partner API, no tiene Partner App Access Token posible), pero se
+ *      chequea aparte por si algún día se edita mal a mano.
+ *   3. outboundApi === 'partner' → requiere `providerAppId` (va en la URL
+ *      de Partner API). Si falta, es una CONFIGURACIÓN INCONSISTENTE —
+ *      NUNCA cae silenciosamente a Legacy (podría enviar por el número/app
+ *      equivocado sin que nadie lo note, el mismo tipo de bug que ya
+ *      costó una investigación completa esta semana) — tira un AppError
+ *      controlado e identificable en cambio.
+ *   4. outboundApi === 'legacy', o el campo ausente (documento viejo, sin
+ *      backfill de PR2 todavía — `.lean()` no aplica defaults del schema)
+ *      → Legacy. Mismo resultado para ambos casos, ninguno es un error:
+ *      es el estado "todavía no migrado a Partner".
  *
  * @param {import('../whatsappChannel.model')} channel
- * @returns {boolean}
+ * @returns {'legacy'|'partner'}
+ * @throws {AppError} si outboundApi:'partner' pero providerAppId falta —
+ *   configuración inconsistente, requiere revisión manual (nunca un fallback).
  */
-function usaPartnerAPI(channel) {
-  if (channel.connectionType === 'PLATFORM') return false;
-  if (!channel.providerAppId) return false;
-  return GUPSHUP_PARTNER_OUTBOUND_APP_IDS.includes(channel.providerAppId);
+function resolveOutboundMode(channel) {
+  if (GUPSHUP_PARTNER_OUTBOUND_KILL_SWITCH) return 'legacy';
+  if (channel.connectionType === 'PLATFORM') return 'legacy';
+
+  if (channel.outboundApi === 'partner') {
+    if (!channel.providerAppId) {
+      throw new AppError(
+        `Canal ${channel._id} declarado outboundApi:'partner' pero sin providerAppId — configuración inconsistente, requiere revisión manual`,
+        500
+      );
+    }
+    return 'partner';
+  }
+
+  return 'legacy';
 }
 
 /**
@@ -62,9 +80,9 @@ function usaPartnerAPI(channel) {
  * arriba, en cada call site de channelService (ai.service.js/webhook.service.js/
  * outbound.worker.js), que ya envuelve sendMessage()/sendTemplate()/sendMedia()
  * en try/catch y marca el mensaje/evento como fallido sin relanzar. Esto
- * incluye el caso de un canal YA DECIDIDO para Partner (su providerAppId
- * está en el allowlist): si acá falla, el error sube tal cual — nunca se
- * reintenta silenciosamente por Legacy con una configuración incompleta.
+ * incluye el caso de un canal YA DECIDIDO para Partner (outboundApi:'partner'):
+ * si acá falla, el error sube tal cual — nunca se reintenta silenciosamente
+ * por Legacy con una configuración incompleta.
  *
  * @param {import('../whatsappChannel.model')} channel
  * @returns {Promise<{ apiKey: string, source: string, appName: string, appId: string|null }>}
@@ -102,15 +120,19 @@ class GupshupProvider extends IChannelProvider {
     // de este canal (PLATFORM: env vars de siempre; DEDICATED: apikey del
     // tenant, cifrada en ChannelCredentials desde PR-06) y arma el origen/
     // nombre de app a partir del propio documento, no de env vars globales.
+    // PR2: resolveOutboundMode() puede tirar (outboundApi:'partner' sin
+    // providerAppId) — se llama ANTES de resolverCredencialesDeEnvio() a
+    // propósito, para no gastar una consulta a ChannelCredentials/Partner
+    // API si la configuración del canal ya es inconsistente de entrada.
+    const modo = resolveOutboundMode(channel);
     const credenciales = await resolverCredencialesDeEnvio(channel);
 
-    // PR1 (docs/implementation/known-issues.md, 07/sep/2026): único punto de
-    // bifurcación Legacy/Partner para TEXTO — la IA (webhook.service.js) y
-    // el envío manual (ai.service.js#sendAgentMessage()) llegan ACÁ por el
-    // mismo camino (channelService.sendMessage()), ninguno de los 2
-    // necesita saber cuál API se usó. Nunca loguea `apiKey`/`Authorization`
-    // — solo channelId/appId, ambos públicos.
-    if (usaPartnerAPI(channel)) {
+    // Único punto de bifurcación Legacy/Partner para TEXTO — la IA
+    // (webhook.service.js) y el envío manual (ai.service.js#sendAgentMessage())
+    // llegan ACÁ por el mismo camino (channelService.sendMessage()), ninguno
+    // de los 2 necesita saber cuál API se usó. Nunca loguea
+    // `apiKey`/`Authorization` — solo channelId/appId, ambos públicos.
+    if (modo === 'partner') {
       logger.info('[GupshupProvider] outbound via Partner API', {
         channelId: String(channel._id),
         appId: credenciales.appId,
@@ -296,11 +318,12 @@ class GupshupProvider extends IChannelProvider {
   }
 }
 
-// PR1: expuesta como propiedad estática (NO como export nombrado aparte) a
+// Expuesta como propiedad estática (NO como export nombrado aparte) a
 // propósito — `module.exports` sigue siendo la clase misma, sin cambiar la
 // forma del require() que ya usan channel.service.js/inbound.gateway.js
 // (`const GupshupProvider = require(...); new GupshupProvider()`), ninguno
-// de los 2 archivos necesita tocarse. Testeable vía `GupshupProvider.usaPartnerAPI(...)`.
-GupshupProvider.usaPartnerAPI = usaPartnerAPI;
+// de los 2 archivos necesita tocarse. Testeable vía
+// `GupshupProvider.resolveOutboundMode(...)`.
+GupshupProvider.resolveOutboundMode = resolveOutboundMode;
 
 module.exports = GupshupProvider;

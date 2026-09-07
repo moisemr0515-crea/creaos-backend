@@ -185,6 +185,10 @@ describe('channelOnboardingCompletion#handleGupshupAccountVerified()', () => {
     expect(channel.webhookReference).toBe('gupshup:account-subscribed');
     expect(channel.displayName).toBe('Línea de ventas');
     expect(channel.credentialsReference).not.toBeNull();
+    // PR2 (known-issues.md): solo se confirma 'partner' en el MISMO save()
+    // que ya deja credentialsReference seteado — providerAppId y el
+    // Partner App Access Token quedaron confirmados exitosos para llegar hasta acá.
+    expect(channel.outboundApi).toBe('partner');
 
     const credentials = await ChannelCredentials.findOne({ channel: channel._id });
     expect(credentials).not.toBeNull();
@@ -340,6 +344,10 @@ describe('channelOnboardingCompletion#handleGupshupAccountVerified()', () => {
     const canalHuerfano = await WhatsAppChannel.findOne({ providerAppId: 'gs-app-real' });
     expect(canalHuerfano).not.toBeNull(); // el canal SÍ quedó creado
     expect(canalHuerfano.credentialsReference).toBeNull(); // pero sin credenciales
+    // PR2: jamás debe quedar un canal 'partner' incompleto — el
+    // upgrade a 'partner' solo ocurre en el save() final junto con
+    // credentialsReference, que acá nunca se alcanza.
+    expect(canalHuerfano.outboundApi).toBe('legacy');
 
     const refrescada = await ChannelOnboardingSession.findOne({ 'gupshup.appId': 'gs-app-real' });
     expect(refrescada.status).toBe('failed');

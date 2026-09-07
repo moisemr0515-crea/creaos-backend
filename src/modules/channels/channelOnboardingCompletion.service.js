@@ -170,6 +170,16 @@ async function handleGupshupAccountVerified(gsAppId) {
       connectionType: 'DEDICATED',
       status: 'active',
       onboardingStatus: 'completed',
+      // PR2 (docs/implementation/known-issues.md, 07/sep/2026): 'legacy'
+      // PROVISORIO acá a propósito — recién se confirma 'partner' más abajo
+      // (junto con credentialsReference), DESPUÉS de que ChannelCredentials
+      // también se haya creado con éxito. Si ese paso de abajo falla (ver
+      // la "LIMITACIÓN CONOCIDA" documentada más abajo: canal huérfano sin
+      // credenciales), este canal NUNCA debe quedar marcado 'partner' sin
+      // tener el Partner App Access Token realmente guardado — gupshupProvider.js#
+      // resolveOutboundMode() trata 'partner' como una declaración de que
+      // TODO está listo, no una intención a medias.
+      outboundApi: 'legacy',
       phoneNumber: `+${wabaInfo.phone}`,
       phoneNumberId: wabaInfo.phoneId,
       wabaId: wabaInfo.wabaId,
@@ -196,6 +206,12 @@ async function handleGupshupAccountVerified(gsAppId) {
     });
 
     channel.credentialsReference = credentials._id;
+    // PR2: recién ACÁ se confirma 'partner' — providerAppId (arriba) y el
+    // Partner App Access Token (ChannelCredentials, línea de arriba) están
+    // AMBOS confirmados creados con éxito en este punto. Si esta línea
+    // nunca se alcanza (ChannelCredentials.create() tiró), el canal quedó
+    // con el 'legacy' provisorio de arriba — nunca 'partner' a medias.
+    channel.outboundApi = 'partner';
     await channel.save();
 
     session.channel = channel._id;

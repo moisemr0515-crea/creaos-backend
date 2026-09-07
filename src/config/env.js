@@ -181,16 +181,25 @@ module.exports = {
   GUPSHUP_ONBOARDING_WEBHOOK_TOKEN: process.env.GUPSHUP_ONBOARDING_WEBHOOK_TOKEN || '',
 
   // PR1 (docs/implementation/known-issues.md, 07/sep/2026): allowlist de
-  // rollout progresivo para el outbound vía Partner API (gupshupProvider.js#
-  // usaPartnerAPI()) — por `providerAppId`, NO un boolean global. Un canal
-  // DEDICATED/MIGRATION solo envía por Partner si su `providerAppId` está
-  // explícitamente en esta lista; cualquier otro (incluido PLATFORM, que
-  // nunca tiene providerAppId) sigue por Legacy sin cambios. Vacío por
-  // default = ningún canal usa Partner todavía, mismo comportamiento de hoy.
+  // rollout progresivo para el outbound vía Partner API — SUPERADO por PR2
+  // (WhatsAppChannel.outboundApi, por canal). Ya NO lo lee
+  // gupshupProvider.js#resolveOutboundMode() — se mantiene declarada
+  // únicamente como mecanismo TEMPORAL de transición mientras se confirma
+  // que PR2 quedó estable en producción; retirarla de Railway después no
+  // requiere ningún cambio de código (nadie la consulta).
   GUPSHUP_PARTNER_OUTBOUND_APP_IDS: (process.env.GUPSHUP_PARTNER_OUTBOUND_APP_IDS || '')
     .split(',')
     .map((id) => id.trim())
     .filter(Boolean),
+
+  // PR2 (docs/implementation/known-issues.md, 07/sep/2026): kill switch de
+  // EMERGENCIA global — fuerza Legacy para TODOS los canales sin importar
+  // su outboundApi individual, sin importar connectionType. Uso previsto:
+  // un incidente amplio de la Partner API de Gupshup, NO el mecanismo
+  // normal de routing (eso es outboundApi, por canal) — ver
+  // gupshupProvider.js#resolveOutboundMode(), primer chequeo de la función.
+  // Default false/apagado: no cambia nada del comportamiento normal.
+  GUPSHUP_PARTNER_OUTBOUND_KILL_SWITCH: process.env.GUPSHUP_PARTNER_OUTBOUND_KILL_SWITCH === 'true',
 
   // URL pública de ESTE backend (no la del frontend — eso es APP_URL/FRONTEND_URL
   // arriba). BACKEND_PUBLIC_URL + '/api/v1/webhooks/gupshup/onboarding/{appId}'
