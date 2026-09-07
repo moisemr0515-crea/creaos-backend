@@ -12,11 +12,11 @@ jest.mock('../../webhooks/gupshup.client');
 // PR1 (docs/implementation/known-issues.md, 07/sep/2026): cliente Partner,
 // mockeado entero — mismo criterio que gupshup.client.js de arriba.
 jest.mock('../../webhooks/gupshup.partner.client');
-// Allowlist fija para todo el archivo — un solo appId "habilitado" alcanza
-// para probar ambas ramas (dentro/fuera de la lista) sin necesitar mocks
-// dinámicos de env por test.
+// PR2: ya no hay allowlist acá — solo el kill switch de emergencia. Default
+// apagado (false) para todo el archivo; el test específico del kill switch
+// lo pisa con jest.resetModules()+jest.doMock() (ver ese describe).
 jest.mock('../../../config/env', () => ({
-  GUPSHUP_PARTNER_OUTBOUND_APP_IDS: ['app-en-allowlist'],
+  GUPSHUP_PARTNER_OUTBOUND_KILL_SWITCH: false,
 }));
 
 const channelCredentialsService = require('../channelCredentials.service');
@@ -28,13 +28,15 @@ describe('GupshupProvider', () => {
   let provider;
 
   // Canal DEDICATED de ejemplo — mismo shape que crea
-  // channelOnboardingCompletion.service.js (PR-06/07a): providerAccountId
-  // real (no null), distinto del PLATFORM. Sin providerAppId a propósito —
-  // representa el estado ANTERIOR a la migración a Partner API (PR #81-83),
-  // sigue siendo un caso real y válido: debe seguir yendo por Legacy.
+  // channelOnboardingCompletion.service.js (PR-06/07a/PR2): providerAccountId
+  // real (no null), distinto del PLATFORM. outboundApi:'legacy' explícito a
+  // propósito — representa un canal DEDICATED que todavía no migró a
+  // Partner (o uno creado antes de PR1/PR2), sigue siendo un caso real y
+  // válido: debe seguir yendo por Legacy.
   const channelDedicado = {
     _id: 'channel-dedicado-id',
     connectionType: 'DEDICATED',
+    outboundApi: 'legacy',
     phoneNumber: '51900000001',
     providerAccountId: 'creaos507f1f77bcf86cd799439011',
   };
@@ -42,25 +44,20 @@ describe('GupshupProvider', () => {
   const channelPlatform = {
     _id: 'channel-platform-id',
     connectionType: 'PLATFORM',
+    outboundApi: 'legacy',
     phoneNumber: '51900000000',
     providerAccountId: 'CREAOS',
   };
 
-  // PR1 — fixtures nuevos para el routing Legacy/Partner por allowlist.
-  const channelDedicadoFueraDeAllowlist = {
-    _id: 'channel-fuera-allowlist-id',
+  // PR2 — canal DEDICATED correctamente provisionado y migrado a Partner:
+  // outboundApi:'partner' explícito + providerAppId presente.
+  const channelDedicadoPartner = {
+    _id: 'channel-partner-id',
     connectionType: 'DEDICATED',
-    phoneNumber: '51900000002',
-    providerAccountId: 'creaos-otro-tenant',
-    providerAppId: 'app-fuera-de-allowlist', // tiene providerAppId, pero NO está en GUPSHUP_PARTNER_OUTBOUND_APP_IDS
-  };
-
-  const channelDedicadoEnAllowlist = {
-    _id: 'channel-en-allowlist-id',
-    connectionType: 'DEDICATED',
+    outboundApi: 'partner',
     phoneNumber: '51967424911',
     providerAccountId: 'creaos6a9b96597ed1485fda9fade3',
-    providerAppId: 'app-en-allowlist',
+    providerAppId: 'app-real-de-gupshup',
   };
 
   beforeEach(() => {
@@ -68,38 +65,77 @@ describe('GupshupProvider', () => {
     provider = new GupshupProvider();
   });
 
-  // PR1: usaPartnerAPI() es el único criterio de routing — se testea
-  // directo (función pura, expuesta como GupshupProvider.usaPartnerAPI)
-  // antes de probar el "cableado" completo en sendMessage() más abajo.
-  describe('GupshupProvider.usaPartnerAPI()', () => {
-    test('PLATFORM sin providerAppId: false (Legacy)', () => {
-      expect(GupshupProvider.usaPartnerAPI(channelPlatform)).toBe(false);
+  // PR2: resolveOutboundMode() es el único criterio de routing — reemplaza
+  // usaPartnerAPI()/el allowlist de PR1. Se testea directo (función pura,
+  // expuesta como GupshupProvider.resolveOutboundMode) antes de probar el
+  // "cableado" completo en sendMessage() más abajo.
+  describe('GupshupProvider.resolveOutboundMode()', () => {
+    test('PLATFORM (outboundApi:"legacy" explícito): "legacy"', () => {
+      expect(GupshupProvider.resolveOutboundMode(channelPlatform)).toBe('legacy');
     });
 
-    test('PLATFORM con providerAppId por error (no debería pasar nunca): igual false — exclusión explícita por connectionType, no solo por ausencia de appId', () => {
-      const platformConAppIdPorError = { ...channelPlatform, providerAppId: 'app-en-allowlist' };
-      expect(GupshupProvider.usaPartnerAPI(platformConAppIdPorError)).toBe(false);
+    // Regla explícita del diseño: PLATFORM se excluye por connectionType,
+    // NO solo por su propio outboundApi — defensa en profundidad ante una
+    // edición manual errónea del campo.
+    test('PLATFORM con outboundApi:"partner" por error (no debería pasar nunca): igual "legacy" — exclusión explícita por connectionType', () => {
+      const platformConOutboundApiPorError = { ...channelPlatform, outboundApi: 'partner', providerAppId: 'app-real' };
+      expect(GupshupProvider.resolveOutboundMode(platformConOutboundApiPorError)).toBe('legacy');
     });
 
-    test('DEDICATED sin providerAppId (estado pre-Partner API): false (Legacy)', () => {
-      expect(GupshupProvider.usaPartnerAPI(channelDedicado)).toBe(false);
+    test('DEDICATED con outboundApi:"legacy" explícito: "legacy"', () => {
+      expect(GupshupProvider.resolveOutboundMode(channelDedicado)).toBe('legacy');
     });
 
-    test('DEDICATED con providerAppId FUERA del allowlist: false (Legacy) — rollout no llegó a este canal todavía', () => {
-      expect(GupshupProvider.usaPartnerAPI(channelDedicadoFueraDeAllowlist)).toBe(false);
+    // Documento viejo (pre-backfill de PR2) — .lean() no aplica defaults
+    // de schema, así que outboundApi llega undefined en memoria.
+    test('DEDICATED sin outboundApi en absoluto (documento viejo, sin backfill todavía): "legacy", sin error', () => {
+      const canalSinCampo = { _id: 'x', connectionType: 'DEDICATED', phoneNumber: '51900000009', providerAccountId: 'creaos-x' };
+      expect(GupshupProvider.resolveOutboundMode(canalSinCampo)).toBe('legacy');
     });
 
-    test('DEDICATED con providerAppId DENTRO del allowlist: true (Partner)', () => {
-      expect(GupshupProvider.usaPartnerAPI(channelDedicadoEnAllowlist)).toBe(true);
+    test('DEDICATED con outboundApi:"partner" + providerAppId presente: "partner"', () => {
+      expect(GupshupProvider.resolveOutboundMode(channelDedicadoPartner)).toBe('partner');
     });
 
-    // CAMBIO 3 del diseño: un canal sin providerAppId NUNCA puede quedar
-    // "habilitado" para Partner — es una exclusión estructural de
-    // usaPartnerAPI(), no algo que dependa de un chequeo de error aparte
-    // más adelante. providerAppId vacío ('') se trata igual que ausente.
-    test('DEDICATED con providerAppId vacío (string vacío): false — nunca queda "habilitado" por accidente', () => {
-      const canalConAppIdVacio = { ...channelDedicadoEnAllowlist, providerAppId: '' };
-      expect(GupshupProvider.usaPartnerAPI(canalConAppIdVacio)).toBe(false);
+    // Regla 6/7 del diseño: NUNCA fallback silencioso — configuración
+    // inconsistente tira, no cae a Legacy.
+    test('DEDICATED con outboundApi:"partner" pero SIN providerAppId: tira AppError controlado, NO cae a "legacy"', () => {
+      const canalInconsistente = { ...channelDedicadoPartner, providerAppId: null };
+      expect(() => GupshupProvider.resolveOutboundMode(canalInconsistente)).toThrow(
+        /declarado outboundApi:'partner' pero sin providerAppId/
+      );
+    });
+
+    test('DEDICATED con outboundApi:"partner" y providerAppId vacío (string vacío): mismo error controlado que ausente', () => {
+      const canalInconsistente = { ...channelDedicadoPartner, providerAppId: '' };
+      expect(() => GupshupProvider.resolveOutboundMode(canalInconsistente)).toThrow(
+        /declarado outboundApi:'partner' pero sin providerAppId/
+      );
+    });
+
+    // Kill switch — mecanismo de emergencia, NO el routing normal (regla 7
+    // del diseño). Se fuerza vía jest.resetModules()/jest.doMock() porque
+    // el resto del archivo necesita el mock con el switch en false.
+    describe('kill switch de emergencia (GUPSHUP_PARTNER_OUTBOUND_KILL_SWITCH)', () => {
+      // resetModules() tiene que correr ANTES de re-requerir el módulo (no
+      // solo después) — si no, la primera vez que corre este describe,
+      // require('./gupshupProvider') devuelve la instancia ya cacheada desde
+      // el require de arriba del archivo (con KILL_SWITCH:false ya cerrado
+      // por destructuring), y jest.doMock() no tiene ningún efecto real.
+      beforeEach(() => {
+        jest.resetModules();
+      });
+
+      afterEach(() => {
+        jest.resetModules();
+      });
+
+      test('kill switch activo: fuerza "legacy" incluso para un canal outboundApi:"partner" válido y completo', () => {
+        jest.doMock('../../../config/env', () => ({ GUPSHUP_PARTNER_OUTBOUND_KILL_SWITCH: true }));
+        const GupshupProviderConKillSwitch = require('./gupshupProvider');
+
+        expect(GupshupProviderConKillSwitch.resolveOutboundMode(channelDedicadoPartner)).toBe('legacy');
+      });
     });
   });
 
@@ -141,13 +177,13 @@ describe('GupshupProvider', () => {
       expect(gupshupClient.sendWhatsAppMessage).not.toHaveBeenCalled();
     });
 
-    // PR1 (docs/implementation/known-issues.md, 07/sep/2026) — routing
-    // Legacy/Partner. La IA (webhook.service.js#processGupshupMessage()) y
-    // el envío manual (ai.service.js#sendAgentMessage()) llegan ACÁ por el
-    // MISMO camino sin cambios (channelService.sendMessage()), así que
-    // probar el routing acá cubre ambos casos de uso reales sin necesitar
-    // tocar esos 2 archivos ni sus tests.
-    describe('routing Partner API (PR1)', () => {
+    // PR2 (docs/implementation/known-issues.md, 07/sep/2026) — routing
+    // Legacy/Partner por WhatsAppChannel.outboundApi. La IA
+    // (webhook.service.js#processGupshupMessage()) y el envío manual
+    // (ai.service.js#sendAgentMessage()) llegan ACÁ por el MISMO camino sin
+    // cambios (channelService.sendMessage()), así que probar el routing acá
+    // cubre ambos casos de uso reales sin necesitar tocar esos 2 archivos.
+    describe('routing Partner/Legacy por outboundApi (PR2)', () => {
       test('canal PLATFORM: sigue por Legacy, NUNCA llama a gupshupPartnerClient', async () => {
         channelCredentialsService.resolveCredentials.mockResolvedValue({ apiKey: 'apikey-del-env-de-platform' });
         gupshupClient.sendWhatsAppMessage.mockResolvedValue({ status: 'submitted' });
@@ -158,44 +194,57 @@ describe('GupshupProvider', () => {
         expect(gupshupPartnerClient.sendTextMessage).not.toHaveBeenCalled();
       });
 
-      test('canal DEDICATED con providerAppId FUERA del allowlist: sigue por Legacy', async () => {
+      test('canal DEDICATED con outboundApi:"legacy" (no migrado todavía): sigue por Legacy', async () => {
         channelCredentialsService.resolveCredentials.mockResolvedValue({ apiKey: 'apikey-real' });
         gupshupClient.sendWhatsAppMessage.mockResolvedValue({ status: 'submitted' });
 
-        await provider.sendMessage(channelDedicadoFueraDeAllowlist, '51987654321', 'hola');
+        await provider.sendMessage(channelDedicado, '51987654321', 'hola');
 
         expect(gupshupClient.sendWhatsAppMessage).toHaveBeenCalled();
         expect(gupshupPartnerClient.sendTextMessage).not.toHaveBeenCalled();
       });
 
-      test('canal DEDICATED con providerAppId DENTRO del allowlist: usa Partner con appId+Authorization correctos, NUNCA llama a Legacy', async () => {
+      test('canal DEDICATED con outboundApi:"partner" + providerAppId: usa Partner con appId+Authorization correctos, NUNCA llama a Legacy', async () => {
         channelCredentialsService.resolveCredentials.mockResolvedValue({ apiKey: 'partner-app-access-token-real' });
         gupshupPartnerClient.sendTextMessage.mockResolvedValue({ messages: [{ id: 'msg-real-1' }] });
 
-        const result = await provider.sendMessage(channelDedicadoEnAllowlist, '51923523382', 'Prueba CREA OS');
+        const result = await provider.sendMessage(channelDedicadoPartner, '51923523382', 'Prueba CREA OS');
 
         expect(gupshupPartnerClient.sendTextMessage).toHaveBeenCalledWith('51923523382', 'Prueba CREA OS', {
           apiKey: 'partner-app-access-token-real',
           source: '51967424911',
           appName: 'creaos6a9b96597ed1485fda9fade3',
-          appId: 'app-en-allowlist',
+          appId: 'app-real-de-gupshup',
         });
         expect(gupshupClient.sendWhatsAppMessage).not.toHaveBeenCalled();
         expect(result).toEqual({ messages: [{ id: 'msg-real-1' }] });
       });
 
-      // CAMBIO 3 del diseño: un canal YA DECIDIDO para Partner (su appId
-      // está en el allowlist) que falla resolviendo credenciales (ej. sin
-      // ChannelCredentials) propaga el error tal cual — jamás reintenta
-      // silenciosamente por Legacy con una configuración incompleta.
-      test('canal en el allowlist SIN ChannelCredentials: el error se propaga, NUNCA cae a Legacy', async () => {
+      // Regla 6/7 del diseño: un canal outboundApi:'partner' pero SIN
+      // providerAppId (configuración inconsistente) tira ANTES de siquiera
+      // resolver credenciales — nunca llama a ningún cliente de envío.
+      test('canal outboundApi:"partner" SIN providerAppId: tira error controlado ANTES de resolver credenciales, ningún cliente se llama', async () => {
+        const canalInconsistente = { ...channelDedicadoPartner, providerAppId: null };
+
+        await expect(provider.sendMessage(canalInconsistente, '51923523382', 'hola')).rejects.toThrow(
+          /declarado outboundApi:'partner' pero sin providerAppId/
+        );
+        expect(channelCredentialsService.resolveCredentials).not.toHaveBeenCalled();
+        expect(gupshupClient.sendWhatsAppMessage).not.toHaveBeenCalled();
+        expect(gupshupPartnerClient.sendTextMessage).not.toHaveBeenCalled();
+      });
+
+      // Canal correctamente marcado 'partner' que falla resolviendo
+      // credenciales (ej. sin ChannelCredentials) — propaga el error tal
+      // cual, jamás reintenta silenciosamente por Legacy.
+      test('canal outboundApi:"partner" SIN ChannelCredentials: el error se propaga, NUNCA cae a Legacy', async () => {
         const errorSinCredenciales = Object.assign(
-          new Error('Canal channel-en-allowlist-id sin ChannelCredentials — ¿onboarding incompleto?'),
+          new Error('Canal channel-partner-id sin ChannelCredentials — ¿onboarding incompleto?'),
           { statusCode: 500 }
         );
         channelCredentialsService.resolveCredentials.mockRejectedValue(errorSinCredenciales);
 
-        await expect(provider.sendMessage(channelDedicadoEnAllowlist, '51923523382', 'hola')).rejects.toBe(errorSinCredenciales);
+        await expect(provider.sendMessage(channelDedicadoPartner, '51923523382', 'hola')).rejects.toBe(errorSinCredenciales);
         expect(gupshupClient.sendWhatsAppMessage).not.toHaveBeenCalled();
         expect(gupshupPartnerClient.sendTextMessage).not.toHaveBeenCalled();
       });
@@ -205,12 +254,12 @@ describe('GupshupProvider', () => {
       // reintenta por Legacy — se propaga tal cual, igual que ya hace
       // Legacy hoy (ai.service.js#sendAgentMessage() ya lo captura sin
       // relanzar, marca whatsappStatus:'failed', sin cambios ahí).
-      test('canal en el allowlist, Partner API responde error real: se propaga, NUNCA reintenta por Legacy', async () => {
+      test('canal outboundApi:"partner", Partner API responde error real: se propaga, NUNCA reintenta por Legacy', async () => {
         channelCredentialsService.resolveCredentials.mockResolvedValue({ apiKey: 'partner-app-access-token-real' });
         const errorPartner = new Error('Gupshup Partner API error: 401 {"message":"Authentication Failed","status":"error"}');
         gupshupPartnerClient.sendTextMessage.mockRejectedValue(errorPartner);
 
-        await expect(provider.sendMessage(channelDedicadoEnAllowlist, '51923523382', 'hola')).rejects.toBe(errorPartner);
+        await expect(provider.sendMessage(channelDedicadoPartner, '51923523382', 'hola')).rejects.toBe(errorPartner);
         expect(gupshupClient.sendWhatsAppMessage).not.toHaveBeenCalled();
       });
     });
