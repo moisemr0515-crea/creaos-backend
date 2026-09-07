@@ -3,7 +3,45 @@ const IChannelProvider = require('../channelProvider.interface');
 // para que la llamada use siempre la referencia viva del export — permite
 // mockearlo en tests sin tocar el módulo real (ver _tmp-test-fase-1b.js).
 const gupshupClient = require('../../webhooks/gupshup.client');
+// PR1 (docs/implementation/known-issues.md, 07/sep/2026): cliente HERMANO,
+// no reemplazo — gupshup.client.js (Legacy/self-serve) queda sin tocar,
+// sigue siendo el único camino de PLATFORM.
+const gupshupPartnerClient = require('../../webhooks/gupshup.partner.client');
 const channelCredentialsService = require('../channelCredentials.service');
+const { GUPSHUP_PARTNER_OUTBOUND_APP_IDS } = require('../../../config/env');
+const logger = require('../../../utils/logger');
+
+/**
+ * PR1 — rollout progresivo del outbound Partner API, por `providerAppId`
+ * explícito en un allowlist (GUPSHUP_PARTNER_OUTBOUND_APP_IDS), NUNCA un
+ * boolean global — activar Partner para un canal no debe activarlo para
+ * todos los DEDICATED a la vez.
+ *
+ * Deliberadamente NO se usa `connectionType === 'DEDICATED'` a secas como
+ * criterio único — el modelo (whatsappChannel.model.js) declara un tercer
+ * valor sin usar todavía, `MIGRATION`; el criterio real es la CONDICIÓN
+ * TÉCNICA que la llamada a Partner API necesita (`providerAppId`, va en la
+ * URL), combinada con la exclusión explícita de PLATFORM (que nunca tiene
+ * `providerAppId`, pero se chequea aparte igual, por claridad y como
+ * defensa en profundidad). Esto cubre `MIGRATION` automáticamente sin
+ * necesitar un caso especial: si todavía no tiene `providerAppId`, cae a
+ * Legacy sin más — mismo comportamiento que un DEDICATED con el appId
+ * ausente del allowlist.
+ *
+ * Un canal DEDICATED/MIGRATION sin `providerAppId`, o con uno que no está
+ * en el allowlist, sigue por Legacy sin ningún error — es el estado
+ * "todavía no migrado", no una configuración rota. El caso "sí debería
+ * usar Partner pero algo falla" se maneja en sendMessage() (ver más abajo),
+ * no acá.
+ *
+ * @param {import('../whatsappChannel.model')} channel
+ * @returns {boolean}
+ */
+function usaPartnerAPI(channel) {
+  if (channel.connectionType === 'PLATFORM') return false;
+  if (!channel.providerAppId) return false;
+  return GUPSHUP_PARTNER_OUTBOUND_APP_IDS.includes(channel.providerAppId);
+}
 
 /**
  * PR-07a (Plan Maestro §3/§5): arma el objeto `{apiKey, source, appName}`
@@ -13,19 +51,32 @@ const channelCredentialsService = require('../channelCredentials.service');
  * propio WhatsAppChannel (`phoneNumber`/`providerAccountId`), no hace falta
  * resolveCredentials() para ellos.
  *
+ * PR1: se agrega `appId` (`channel.providerAppId`, tampoco secreto — es el
+ * GUID público de la app en Gupshup) para que gupshup.partner.client.js
+ * pueda armar la URL de Partner API. gupshup.client.js (Legacy) simplemente
+ * ignora este campo extra — no rompe nada de lo que ya funciona.
+ *
  * Errores de resolveCredentials() (canal DEDICATED sin ChannelCredentials,
  * apiKeys revocadas, dato cifrado ilegible — todos AppError fail-loud) se
  * propagan tal cual, sin capturar acá — el fail-soft ya existe una capa
  * arriba, en cada call site de channelService (ai.service.js/webhook.service.js/
  * outbound.worker.js), que ya envuelve sendMessage()/sendTemplate()/sendMedia()
- * en try/catch y marca el mensaje/evento como fallido sin relanzar.
+ * en try/catch y marca el mensaje/evento como fallido sin relanzar. Esto
+ * incluye el caso de un canal YA DECIDIDO para Partner (su providerAppId
+ * está en el allowlist): si acá falla, el error sube tal cual — nunca se
+ * reintenta silenciosamente por Legacy con una configuración incompleta.
  *
  * @param {import('../whatsappChannel.model')} channel
- * @returns {Promise<{ apiKey: string, source: string, appName: string }>}
+ * @returns {Promise<{ apiKey: string, source: string, appName: string, appId: string|null }>}
  */
 async function resolverCredencialesDeEnvio(channel) {
   const { apiKey } = await channelCredentialsService.resolveCredentials(channel);
-  return { apiKey, source: channel.phoneNumber, appName: channel.providerAccountId };
+  return {
+    apiKey,
+    source: channel.phoneNumber,
+    appName: channel.providerAccountId,
+    appId: channel.providerAppId,
+  };
 }
 
 // Tipos de media ENTRANTE soportados por normalizeInboundEvent() — mismo
@@ -52,6 +103,24 @@ class GupshupProvider extends IChannelProvider {
     // tenant, cifrada en ChannelCredentials desde PR-06) y arma el origen/
     // nombre de app a partir del propio documento, no de env vars globales.
     const credenciales = await resolverCredencialesDeEnvio(channel);
+
+    // PR1 (docs/implementation/known-issues.md, 07/sep/2026): único punto de
+    // bifurcación Legacy/Partner para TEXTO — la IA (webhook.service.js) y
+    // el envío manual (ai.service.js#sendAgentMessage()) llegan ACÁ por el
+    // mismo camino (channelService.sendMessage()), ninguno de los 2
+    // necesita saber cuál API se usó. Nunca loguea `apiKey`/`Authorization`
+    // — solo channelId/appId, ambos públicos.
+    if (usaPartnerAPI(channel)) {
+      logger.info('[GupshupProvider] outbound via Partner API', {
+        channelId: String(channel._id),
+        appId: credenciales.appId,
+      });
+      return gupshupPartnerClient.sendTextMessage(to, text, credenciales);
+    }
+
+    logger.info('[GupshupProvider] outbound via Legacy API', {
+      channelId: String(channel._id),
+    });
     return gupshupClient.sendWhatsAppMessage(to, text, credenciales);
   }
 
@@ -226,5 +295,12 @@ class GupshupProvider extends IChannelProvider {
     return { format: 'legacy', appName: rawPayload?.app };
   }
 }
+
+// PR1: expuesta como propiedad estática (NO como export nombrado aparte) a
+// propósito — `module.exports` sigue siendo la clase misma, sin cambiar la
+// forma del require() que ya usan channel.service.js/inbound.gateway.js
+// (`const GupshupProvider = require(...); new GupshupProvider()`), ninguno
+// de los 2 archivos necesita tocarse. Testeable vía `GupshupProvider.usaPartnerAPI(...)`.
+GupshupProvider.usaPartnerAPI = usaPartnerAPI;
 
 module.exports = GupshupProvider;
