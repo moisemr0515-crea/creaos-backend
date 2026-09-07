@@ -180,6 +180,18 @@ module.exports = {
   // suscripción, no solo los eventos reales.
   GUPSHUP_ONBOARDING_WEBHOOK_TOKEN: process.env.GUPSHUP_ONBOARDING_WEBHOOK_TOKEN || '',
 
+  // PR1 (docs/implementation/known-issues.md, 07/sep/2026): allowlist de
+  // rollout progresivo para el outbound vía Partner API (gupshupProvider.js#
+  // usaPartnerAPI()) — por `providerAppId`, NO un boolean global. Un canal
+  // DEDICATED/MIGRATION solo envía por Partner si su `providerAppId` está
+  // explícitamente en esta lista; cualquier otro (incluido PLATFORM, que
+  // nunca tiene providerAppId) sigue por Legacy sin cambios. Vacío por
+  // default = ningún canal usa Partner todavía, mismo comportamiento de hoy.
+  GUPSHUP_PARTNER_OUTBOUND_APP_IDS: (process.env.GUPSHUP_PARTNER_OUTBOUND_APP_IDS || '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean),
+
   // URL pública de ESTE backend (no la del frontend — eso es APP_URL/FRONTEND_URL
   // arriba). BACKEND_PUBLIC_URL + '/api/v1/webhooks/gupshup/onboarding/{appId}'
   // (channelOnboardingWebhook.controller.js) es la URL que se manda al
