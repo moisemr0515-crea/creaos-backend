@@ -327,113 +327,20 @@ async function processWhatsAppMessage({ phoneNumberId, from, name, text, msgId }
 // Tipos de media entrante soportados — mismo alcance que el envío
 // SALIENTE (ai.service.js#sendMediaMessage): imagen y video. Otros tipos
 // (audio, document, sticker, location, contacts, etc.) siguen sin
-// reconocerse — quedan fuera de alcance de este fix, se descartan igual
-// que antes.
-const TIPOS_MEDIA_ENTRANTE_SOPORTADOS = ['image', 'video'];
+// Fase 1.f (docs/implementation/known-issues.md): parseGupshupPayload(),
+// extractGupshupAppIdentifiers() y findGupshupConfig() — el camino legacy
+// que resolvía el tenant vía WebhookConfig antes de que existiera
+// WhatsAppChannel/ChannelResolver — se retiraron acá tras 17 días de
+// ventana de validación (1.e) sin incidentes. inbound.gateway.js (con
+// GupshupProvider.normalizeInboundEvent()/channelResolver.resolve()) es
+// desde entonces el único camino de identificación de mensajes entrantes.
 
-function parseGupshupPayload(body) {
-  if (body?.object === 'whatsapp_business_account' && Array.isArray(body.entry)) {
-    const results = [];
-    for (const entry of body.entry) {
-      for (const change of entry.changes || []) {
-        if (change.field !== 'messages') continue;
-        const { messages = [], contacts = [] } = change.value || {};
-        for (const msg of messages) {
-          const from = msg.from;
-          const contact = contacts.find((c) => c.wa_id === from);
-          const base = { phone: from, name: contact?.profile?.name || from, msgId: msg.id };
-
-          if (msg.type === 'text') {
-            results.push({ ...base, text: msg.text?.body || '' });
-          } else if (TIPOS_MEDIA_ENTRANTE_SOPORTADOS.includes(msg.type)) {
-            // Formato real confirmado en producción (payload capturado en
-            // logs): msg.image/msg.video = { id, mime_type, sha256, url,
-            // caption? }. `url` es TEMPORAL (Gupshup expira estos links) —
-            // se re-aloja en Cloudinary en saveInboundMessage(), nunca se
-            // guarda tal cual.
-            const mediaField = msg[msg.type];
-            if (!mediaField?.url) continue; // sin URL no hay nada que procesar
-            results.push({
-              ...base,
-              text: mediaField.caption || '',
-              mediaType: msg.type,
-              mediaSourceUrl: mediaField.url,
-            });
-          }
-          // otros tipos: se ignoran, mismo comportamiento que antes de este fix
-        }
-      }
-    }
-    return results;
-  }
-
-  if (body?.type === 'message') {
-    const phone = body.payload?.sender?.phone;
-    const name = body.payload?.sender?.name || phone;
-    const msgId = body.payload?.id;
-    const payloadType = body.payload?.type;
-
-    if (payloadType === 'text') {
-      const text = body.payload?.payload?.text;
-      if (!phone || !text) return [];
-      return [{ phone, text, name, msgId }];
-    }
-
-    if (TIPOS_MEDIA_ENTRANTE_SOPORTADOS.includes(payloadType)) {
-      // Formato legacy documentado por Gupshup: payload.payload = { url,
-      // caption?, contentType, urlExpiry } — mismo criterio, `url` temporal.
-      const mediaUrl = body.payload?.payload?.url;
-      if (!phone || !mediaUrl) return [];
-      return [{
-        phone,
-        name,
-        msgId,
-        text: body.payload?.payload?.caption || '',
-        mediaType: payloadType,
-        mediaSourceUrl: mediaUrl,
-      }];
-    }
-
-    return [];
-  }
-
-  return [];
-}
-
-function extractGupshupAppIdentifiers(body) {
-  if (body?.object === 'whatsapp_business_account' && Array.isArray(body.entry)) {
-    const entry = body.entry[0];
-    return {
-      format: 'v3',
-      gsAppId: body.gs_app_id,
-      wabaId: entry?.id,
-      phoneNumberId: entry?.changes?.[0]?.value?.metadata?.phone_number_id,
-    };
-  }
-  return { format: 'legacy', appName: body?.app };
-}
-
-async function findGupshupConfig(body) {
-  const ids = extractGupshupAppIdentifiers(body);
-  const candidates = [ids.appName, ids.gsAppId, ids.wabaId, ids.phoneNumberId].filter(Boolean);
-  if (!candidates.length) return null;
-
-  return WebhookConfig.findOne({
-    platform: 'gupshup',
-    pageId: { $in: candidates },
-    isActive: true,
-  });
-}
-
-// PR-10a: `channelId` es un parámetro NUEVO, opcional (`= null`) a
-// propósito — el único caller real, inbound.gateway.js, ya tiene el
-// WhatsAppChannel resuelto (channelResolver.resolve()) y lo pasa acá; el
-// camino legacy de webhook.controller.js (parseGupshupPayload()/
-// findGupshupConfig(), muerto hoy con WHATSAPP_CHANNEL_CORE_ENABLED=true
-// pero todavía en el código) nunca resolvió un WhatsAppChannel real, así
-// que sigue llamando a esta función sin el 3er argumento — se comporta
-// exactamente igual que antes de este PR (cae al fallback de
-// getChannelForConversation(), ver más abajo).
+// PR-10a: `channelId` queda opcional (`= null`) — el único caller,
+// inbound.gateway.js, ya tiene el WhatsAppChannel resuelto
+// (channelResolver.resolve()) y lo pasa acá; el default cubre solo el caso
+// de una Conversation sin whatsappChannel poblado (doc viejo, o creada por
+// otro camino — ver getChannelForConversation() más abajo), no un caller
+// legacy.
 async function processGupshupMessage({ phone, text, name, mediaType, mediaSourceUrl }, businessId, channelId = null) {
   logger.info('[gupshup] processGupshupMessage: inicio', { phone, textPreview: text?.slice(0, 50), mediaType, businessId });
 
@@ -676,7 +583,5 @@ module.exports = {
   processMetaLead,
   processTikTokLead,
   processWhatsAppMessage,
-  parseGupshupPayload,
-  findGupshupConfig,
   processGupshupMessage,
 };

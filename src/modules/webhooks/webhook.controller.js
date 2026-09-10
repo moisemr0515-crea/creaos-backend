@@ -4,7 +4,7 @@ const webhookService = require('./webhook.service');
 const metaOauthService = require('./metaOauth.service');
 const { AppError } = require('../../middleware/error.middleware');
 const { respuestaExito } = require('../../utils/response');
-const { WHATSAPP_VERIFY_TOKEN, WHATSAPP_APP_SECRET, META_APP_SECRET, FRONTEND_URL, WHATSAPP_CHANNEL_CORE_ENABLED } = require('../../config/env');
+const { WHATSAPP_VERIFY_TOKEN, WHATSAPP_APP_SECRET, META_APP_SECRET, FRONTEND_URL } = require('../../config/env');
 const inboundGateway = require('../channels/inbound.gateway');
 const channelOnboardingCompletion = require('../channels/channelOnboardingCompletion.service');
 const logger = require('../../utils/logger');
@@ -224,13 +224,11 @@ const gupshupWebhook = async (req, res, next) => {
 
     // PR-06 del blueprint maestro: el evento de Go-Live (`account-event` /
     // ACCOUNT_VERIFIED) que confirma que un customer terminó el Embed Signup
-    // del lado de Gupshup. Se intercepta ACÁ, antes que cualquiera de los 2
-    // caminos de mensajería de abajo — es un evento de ciclo de vida del
-    // canal, no un mensaje, y ambos caminos lo descartarían en silencio si
-    // llegara hasta ellos (`change.field !== 'messages'`). No depende de
-    // WHATSAPP_CHANNEL_CORE_ENABLED — corre siempre. Ver
-    // channelOnboardingCompletion.service.js y
-    // docs/integrations/gupshup-registration-contract.md §11.
+    // del lado de Gupshup. Se intercepta ACÁ, antes del camino de mensajería
+    // de abajo — es un evento de ciclo de vida del canal, no un mensaje, y
+    // ese camino lo descartaría en silencio si llegara hasta él
+    // (`change.field !== 'messages'`). Ver channelOnboardingCompletion.service.js
+    // y docs/integrations/gupshup-registration-contract.md §11.
     if (channelOnboardingCompletion.isAccountVerifiedEvent(payload)) {
       channelOnboardingCompletion.handleGupshupAccountVerified(payload.gs_app_id).catch((err) =>
         logger.error('[webhook] channelOnboardingCompletion.handleGupshupAccountVerified error:', { message: err.message, stack: err.stack })
@@ -238,37 +236,14 @@ const gupshupWebhook = async (req, res, next) => {
       return;
     }
 
-    // Feature flag temporal (Blueprint, Decisión 3, sub-fase 1.c) — default
-    // OFF. Con el flag apagado (estado actual), todo el código de abajo de
-    // este `if` es exactamente el que corre hoy, sin ninguna modificación.
-    if (WHATSAPP_CHANNEL_CORE_ENABLED) {
-      await inboundGateway.handle(payload).catch((err) =>
-        logger.error('[webhook] inboundGateway.handle error:', { message: err.message, stack: err.stack })
-      );
-      return;
-    }
-
-    const messages = webhookService.parseGupshupPayload(payload);
-    if (!messages.length) {
-      logger.warn('[webhook] Gupshup: payload sin mensajes de texto reconocibles', { body: payload });
-      return;
-    }
-
-    const config = await webhookService.findGupshupConfig(payload);
-    if (!config) {
-      logger.warn('[webhook] Gupshup: no hay WebhookConfig activo que matchee este payload', {
-        app: payload.app,
-        gsAppId: payload.gs_app_id,
-        wabaId: payload.entry?.[0]?.id,
-      });
-      return;
-    }
-
-    for (const msg of messages) {
-      webhookService.processGupshupMessage(msg, config.business).catch((err) =>
-        logger.error('[webhook] Gupshup processMessage error:', { message: err.message, stack: err.stack })
-      );
-    }
+    // Fase 1.f (docs/implementation/known-issues.md): único camino desde
+    // acá — retirado el feature flag WHATSAPP_CHANNEL_CORE_ENABLED y el
+    // camino legacy que resolvía el tenant vía WebhookConfig
+    // (parseGupshupPayload()/findGupshupConfig(), webhook.service.js), tras
+    // 17 días de ventana de validación (1.e) sin incidentes.
+    await inboundGateway.handle(payload).catch((err) =>
+      logger.error('[webhook] inboundGateway.handle error:', { message: err.message, stack: err.stack })
+    );
   } catch (err) {
     next(err);
   }
