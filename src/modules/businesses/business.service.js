@@ -61,7 +61,7 @@ const CAMPOS_ONBOARDING = ['productDescription', 'averageTicket', 'targetCustome
  * Actualiza datos principales del negocio (nombre, logo, industria, etc.).
  */
 const actualizarNegocio = async (businessId, datos) => {
-  const camposPermitidos = ['name', 'logo', 'industry', 'country', 'currency', 'phone', 'email', 'website', 'whatsappNumber', 'productDescription', 'averageTicket', 'targetCustomer', 'aiInstructions', 'aiSalesEnabled'];
+  const camposPermitidos = ['name', 'logo', 'industry', 'country', 'currency', 'phone', 'email', 'website', 'whatsappNumber', 'productDescription', 'averageTicket', 'targetCustomer', 'aiInstructions', 'aiPersonality', 'aiSalesEnabled'];
   const actualizacion = {};
 
   camposPermitidos.forEach((campo) => {
