@@ -1,7 +1,9 @@
 const express = require('express');
+const { body } = require('express-validator');
 const ctrl    = require('./admin.controller');
 const { authenticate }               = require('../../middleware/auth.middleware');
 const { checkRole, checkPermission } = require('../../middleware/rbac.middleware');
+const { validate } = require('../../middleware/validate.middleware');
 const { ROLES } = require('../../config/constants');
 
 const router = express.Router();
@@ -40,7 +42,21 @@ router.get('/activity/:businessId',     checkPermission('admin:read'),  ctrl.get
 router.get('/config',                   checkPermission('admin:read'),  ctrl.getBusinessConfig);
 router.put('/config',                   checkPermission('admin:write'), ctrl.updateBusinessConfig);
 router.get('/config/users',             checkPermission('admin:read'),  ctrl.getBusinessUsers);
-router.post('/config/users/invite',     checkPermission('admin:write'), ctrl.inviteUser);
+// Normalización de email (trim + lowercase + reglas por proveedor, ej.
+// Gmail ignora puntos) — mismo mecanismo exacto que ya usan /auth/register,
+// /auth/login y /auth/forgot-password (ver auth.validator.js). Sin esto,
+// un email invitado con variantes de mayúsculas/espacios/puntos no matchea
+// contra el findOne() de deduplicación ni contra un usuario que luego
+// intente loguearse con una variante distinta de la misma dirección real.
+router.post('/config/users/invite',
+  checkPermission('admin:write'),
+  [
+    body('email').trim().notEmpty().withMessage('El email es requerido')
+      .isEmail().withMessage('Formato de email inválido')
+      .normalizeEmail(),
+  ],
+  validate,
+  ctrl.inviteUser);
 router.delete('/config/users/:userId',  checkPermission('admin:write'), ctrl.removeUser);
 
 router.get('/users/:id',                checkPermission('admin:read'),  ctrl.getUser);

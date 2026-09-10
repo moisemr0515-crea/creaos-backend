@@ -431,8 +431,17 @@ const inviteUser = async (req, res, next) => {
       );
     }
 
-    const { name, email, roleSlug = 'sales' } = req.body;
-    if (!name || !email) throw new AppError('name y email son requeridos', 400);
+    const { name, roleSlug = 'sales' } = req.body;
+    if (!name || !req.body.email) throw new AppError('name y email son requeridos', 400);
+
+    // Normalización defensiva — el middleware de la ruta (body('email')...
+    // .normalizeEmail(), admin.routes.js) ya debería dejar req.body.email
+    // normalizado antes de llegar acá; esto es una segunda capa por si esta
+    // función alguna vez se invoca sin pasar por esa ruta. trim()+toLowerCase()
+    // deliberadamente simple acá (sin reglas de Gmail) — la normalización
+    // "fuerte" (que sí ignora puntos de Gmail, etc.) ya la aplicó el
+    // middleware; esto solo garantiza el piso mínimo de seguridad.
+    const email = req.body.email.trim().toLowerCase();
 
     const existing = await User.findOne({ email });
     if (existing) throw new AppError('El email ya está registrado', 409);
