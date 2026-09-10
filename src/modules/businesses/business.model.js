@@ -123,6 +123,18 @@ const businessSchema = new mongoose.Schema(
       maxlength: 1500,
       default: null,
     },
+    // Tono de la IA de ventas — toggle "Personalidad" de la sección IA
+    // vendedora (crea-os-ignite, business.tsx). Cableado real (antes era
+    // placeholder puro: viajaba a PUT /users/me, que solo persiste
+    // name/phone/avatar y descartaba este campo en silencio — ver
+    // ai.service.js#buildSystemPrompt() para el único punto de consumo).
+    // Mismo patrón que aiInstructions: default seguro, nunca bloquea un
+    // negocio que no lo configuró explícitamente.
+    aiPersonality: {
+      type: String,
+      enum: ['cercano', 'formal', 'agresivo'],
+      default: 'cercano',
+    },
     // Toggle "Activar ventas automáticas con IA" — a nivel de negocio (NO de
     // usuario: un mismo usuario puede administrar varios negocios, y cada uno
     // necesita su propio estado independiente). Fail-closed: default false,

@@ -206,6 +206,27 @@ COMPROMISO PROGRESIVO:
 ${microClosing}${notas.length ? `\n\n${notas.join('\n')}` : ''}`;
 };
 
+// Toggle "Personalidad" (crea-os-ignite, business.tsx) — Business.aiPersonality.
+// Cableado real (antes placeholder puro, ver known-issues.md): cada valor
+// arma un párrafo de tono que se inyecta en el prompt con prioridad sobre
+// la instrucción general #2 de abajo ("tono profesional pero cercano y
+// empático", que queda como default implícito de 'cercano' — no se borra,
+// simplemente el bloque de personalidad la refuerza o la reemplaza según
+// el valor real). Mismo criterio de "nunca inventar reglas nuevas de la
+// nada" que el resto del prompt: 3 tonos acotados, sin ambigüedad.
+const PERSONALITY_GUIDANCE = {
+  cercano:
+    'Usa un tono cercano y cálido, como si fueras un amigo de confianza dando una recomendación honesta. ' +
+    'Lenguaje simple y conversacional, sin sonar corporativo. Mostrá empatía genuina con la situación del lead.',
+  formal:
+    'Usa un tono formal y profesional en todo momento. Lenguaje correcto, sin diminutivos ni jerga informal, ' +
+    'tratamiento respetuoso. Mantené la cercanía humana, pero sin bajar el registro.',
+  agresivo:
+    'Usa un tono directo y orientado a resultados. Creá sentido de urgencia genuino cuando corresponda, ' +
+    'empujá activamente hacia el siguiente paso concreto (agendar, cerrar, decidir) sin dar vueltas. ' +
+    'Nunca mientas ni presiones de forma deshonesta — directo y seguro, no grosero ni manipulador.',
+};
+
 const buildSystemPrompt = (business, lead, leadQualification) => {
   const infoNegocio = [
     business.productDescription && `- Qué vende: ${business.productDescription}`,
@@ -220,10 +241,17 @@ const buildSystemPrompt = (business, lead, leadQualification) => {
     ? `\nINSTRUCCIONES ESPECÍFICAS DEL DUEÑO DEL NEGOCIO (síguelas estrictamente, tienen prioridad sobre las instrucciones generales de abajo):\n${business.aiInstructions}\n`
     : '';
 
+  // Fallback explícito a 'cercano' — mismo default que el schema
+  // (business.model.js#aiPersonality) para un documento viejo sin este
+  // campo seteado (`.lean()`/populate parcial no aplican defaults de
+  // schema, mismo criterio ya documentado en otros lugares de este repo).
+  const personalidad = PERSONALITY_GUIDANCE[business.aiPersonality] || PERSONALITY_GUIDANCE.cercano;
+  const bloquePersonalidad = `\nPERSONALIDAD (prioridad sobre la instrucción general de tono más abajo):\n${personalidad}\n`;
+
   return `Eres Alex, un agente de ventas profesional y empático de ${business.name}.
 ${infoNegocio ? `\nINFORMACIÓN DEL NEGOCIO:\n${infoNegocio}\n` : ''}
 Tu objetivo es calificar al lead y guiarlo hacia una venta de manera natural y conversacional.
-${bloqueInstruccionesDueno}
+${bloqueInstruccionesDueno}${bloquePersonalidad}
 INFORMACIÓN DEL LEAD:
 - Nombre: ${lead.name}
 - Empresa: ${lead.company || 'No especificada'}
