@@ -126,6 +126,14 @@ const revocarTodosLosRefreshTokens = async (userId) => {
  * Asigna rol Owner y envía email de verificación.
  */
 const registrar = async ({ name, email, password, businessName, phone }) => {
+  // Normalización defensiva — auth.validator.js#validarRegistro ya deja
+  // req.body.email normalizado (trim+lowercase+reglas de proveedor, ej.
+  // Gmail ignora puntos) antes de llegar acá vía el middleware de la ruta;
+  // esto es una segunda capa por si registrar() se llama alguna vez sin
+  // pasar por esa ruta. Simple a propósito (sin reglas de Gmail) — esa
+  // normalización más fuerte ya la aplicó el middleware.
+  email = email.trim().toLowerCase();
+
   // Verificar si el email ya existe antes de la transacción
   const emailExistente = await User.findOne({ email });
   if (emailExistente) {
@@ -199,6 +207,11 @@ const registrar = async ({ name, email, password, businessName, phone }) => {
  * Autentica un usuario y genera nuevos tokens.
  */
 const login = async ({ email, password }) => {
+  // Normalización defensiva — mismo criterio que registrar() arriba
+  // (auth.validator.js#validarLogin ya normaliza vía el middleware de la
+  // ruta; esto es la segunda capa).
+  email = email.trim().toLowerCase();
+
   // Incluir password en la query (por defecto está excluido)
   const usuario = await User.findOne({ email })
     .select('+password')
@@ -314,6 +327,11 @@ const refreshAccessToken = async ({ refreshToken }) => {
  * Siempre devuelve 200 aunque el email no exista (seguridad).
  */
 const forgotPassword = async ({ email }) => {
+  // Normalización defensiva — mismo criterio que registrar()/login()
+  // arriba (auth.validator.js#validarForgotPassword ya normaliza vía el
+  // middleware de la ruta; esto es la segunda capa).
+  email = email.trim().toLowerCase();
+
   const usuario = await User.findOne({ email, isActive: true });
 
   // No revelar si el email existe

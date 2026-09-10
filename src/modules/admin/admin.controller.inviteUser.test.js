@@ -139,3 +139,89 @@ describe('admin.controller#inviteUser() — bloqueo duro de plan', () => {
     expect(res.status).toHaveBeenCalledWith(201);
   });
 });
+
+// Gap de normalización (testers reales vía Play Console, sep/2026): antes de
+// este fix, inviteUser() usaba req.body.email crudo — un email con mayúsculas/
+// espacios no matcheaba el findOne() de deduplicación (podía colisionar con el
+// índice único de Mongoose recién al hacer create(), con un error feo en vez
+// del 409 controlado) ni matchearía después contra un login con otra variante
+// de la misma dirección. Estos tests llaman a inviteUser() DIRECTO (sin pasar
+// por Express) — a propósito, así prueban la normalización defensiva del
+// propio controller (admin.controller.js), no la del middleware de la ruta
+// (body('email')...normalizeEmail(), admin.routes.js, que acá ni corre).
+describe('admin.controller#inviteUser() — normalización de email', () => {
+  let business;
+  let roleSales;
+  const requester = { _id: new mongoose.Types.ObjectId(), role: { slug: 'owner' } };
+
+  beforeAll(async () => {
+    await mongoose.connect(MONGO_URI);
+    roleSales = await Role.findOneAndUpdate(
+      { slug: 'sales', business: null },
+      { name: 'Sales', slug: 'sales', business: null, isSystem: true, permissions: [] },
+      { upsert: true, new: true }
+    );
+  });
+
+  afterAll(async () => {
+    await User.deleteMany({});
+    await Subscription.deleteMany({});
+    await Plan.deleteMany({});
+    await Business.deleteMany({});
+    await Role.deleteMany({});
+    await mongoose.disconnect();
+  });
+
+  beforeEach(async () => {
+    await User.deleteMany({});
+    await Subscription.deleteMany({});
+    await Plan.deleteMany({});
+    await Business.deleteMany({});
+    business = await Business.create({ name: 'Negocio de prueba' });
+    await Plan.create({ name: 'starter', displayName: 'Plan de prueba', price: 0, limits: { maxUsers: 10 } })
+      .then((plan) => Subscription.create({ business: business._id, plan: plan._id, planName: plan.name, status: 'active', provider: 'free' }));
+  });
+
+  test('email con mayúsculas y espacios se guarda normalizado (trim + lowercase)', async () => {
+    const req = {
+      businessId: business._id,
+      user: requester,
+      body: { name: 'Nuevo Vendedor', email: '  Nuevo@Test.com  ', roleSlug: 'sales' },
+    };
+    const res = mockRes();
+    const next = jest.fn();
+
+    await inviteUser(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    const creado = await User.findOne({ business: business._id });
+    expect(creado.email).toBe('nuevo@test.com');
+  });
+
+  test('una variante de mayúsculas/espacios de un email YA invitado se rechaza como duplicado (409), no crea un segundo usuario', async () => {
+    await User.create({
+      business: business._id,
+      name: 'Ya invitado',
+      email: 'existente@test.com',
+      password: 'hash-de-prueba',
+      role: roleSales._id,
+      isActive: true,
+    });
+
+    const req = {
+      businessId: business._id,
+      user: requester,
+      body: { name: 'Variante del mismo email', email: '  Existente@Test.com  ', roleSlug: 'sales' },
+    };
+    const res = mockRes();
+    const next = jest.fn();
+
+    await inviteUser(req, res, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    const errorPasado = next.mock.calls[0][0];
+    expect(errorPasado.statusCode).toBe(409);
+    expect(errorPasado.message).toMatch(/ya está registrado/i);
+    expect(await User.countDocuments({ business: business._id })).toBe(1);
+  });
+});
