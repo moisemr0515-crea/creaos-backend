@@ -2,9 +2,11 @@
 // maestro. Este archivo (el orquestador real: channelResolver → tenantResolver
 // → InboundEvent → processGupshupMessage/enqueueInbound) no tenía NINGÚN test
 // hasta este PR, a pesar de ser el camino que corre HOY en producción para
-// todo mensaje real de WhatsApp (WHATSAPP_CHANNEL_CORE_ENABLED=true en
-// Railway) — confirmado durante la investigación de si el camino de entrada
-// ya soporta canales DEDICATED (PR-06) sin cambios de lógica.
+// todo mensaje real de WhatsApp — confirmado durante la investigación de si
+// el camino de entrada ya soporta canales DEDICATED (PR-06) sin cambios de
+// lógica. Desde la Fase 1.f (docs/implementation/known-issues.md) es el
+// ÚNICO camino, sin flag — se retiró WHATSAPP_CHANNEL_CORE_ENABLED y el
+// camino legacy tras la ventana de validación.
 //
 // WHATSAPP_QUEUE_PROCESSING_ENABLED se deja en su default (false) en este
 // archivo — es el valor real de Railway hoy, y es el camino que este archivo

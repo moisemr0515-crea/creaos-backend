@@ -19,9 +19,10 @@ const logger = require('../../utils/logger');
  *  - WHATSAPP_QUEUE_PROCESSING_ENABLED=true: encola en BullMQ, un Worker en
  *    un servicio Railway separado lo procesa vía AgentRuntime.
  *
- * Solo se llama desde webhook.controller.js#gupshupWebhook() cuando
- * WHATSAPP_CHANNEL_CORE_ENABLED === true — con ESE flag en false (default),
- * este archivo no se ejecuta nunca.
+ * Fase 1.f (docs/implementation/known-issues.md): se llama sin condición
+ * desde webhook.controller.js#gupshupWebhook() — se retiró el feature flag
+ * WHATSAPP_CHANNEL_CORE_ENABLED (y el camino legacy que reemplazó) tras la
+ * ventana de validación de 14+ días sin incidentes.
  */
 
 const gupshupProvider = new GupshupProvider();

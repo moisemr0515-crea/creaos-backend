@@ -1,9 +1,14 @@
 // Test real (Jest, commiteado) de webhook.controller.js#gupshupWebhook() —
-// PR-06 del blueprint maestro. Foco EXCLUSIVO en la interceptación nueva del
+// PR-06 del blueprint maestro. Foco EXCLUSIVO en la interceptación del
 // evento account-event/ACCOUNT_VERIFIED (channelOnboardingCompletion.service.js)
-// antes de los 2 caminos de mensajería existentes — no se agrega cobertura
-// del resto del archivo (metaWebhook, tiktokWebhook, CRUD de WebhookConfig,
-// etc.), que no se tocó en este PR y no tenía tests propios hasta ahora.
+// antes del pipeline de mensajería — no se agrega cobertura del resto del
+// archivo (metaWebhook, tiktokWebhook, CRUD de WebhookConfig, etc.), que no
+// se tocó en este PR y no tenía tests propios hasta ahora.
+//
+// Fase 1.f (docs/implementation/known-issues.md): inbound.gateway.js es
+// desde acá el único pipeline de mensajería — se retiró el feature flag
+// WHATSAPP_CHANNEL_CORE_ENABLED y el camino legacy (parseGupshupPayload()/
+// findGupshupConfig()) tras la ventana de validación de 14+ días.
 //
 // webhook.service.js y ../channels/inbound.gateway se mockean enteros — este
 // archivo no verifica su lógica interna (fuera de alcance de PR-06), solo que
@@ -47,7 +52,7 @@ describe('webhook.controller#gupshupWebhook() — interceptación de account-eve
   beforeEach(() => {
     jest.clearAllMocks();
     webhookService.verifyGupshupAuth.mockReturnValue(true);
-    webhookService.parseGupshupPayload.mockReturnValue([]);
+    inboundGateway.handle.mockResolvedValue(undefined);
   });
 
   test('auth inválida: 401, nunca llega a evaluar el payload', async () => {
@@ -82,8 +87,6 @@ describe('webhook.controller#gupshupWebhook() — interceptación de account-eve
 
     expect(channelOnboardingCompletion.isAccountVerifiedEvent).toHaveBeenCalledWith(ACCOUNT_VERIFIED_PAYLOAD);
     expect(channelOnboardingCompletion.handleGupshupAccountVerified).toHaveBeenCalledWith('gs-app-real');
-    expect(webhookService.parseGupshupPayload).not.toHaveBeenCalled();
-    expect(webhookService.findGupshupConfig).not.toHaveBeenCalled();
     expect(inboundGateway.handle).not.toHaveBeenCalled();
     expect(next).not.toHaveBeenCalled();
   });
@@ -111,9 +114,8 @@ describe('webhook.controller#gupshupWebhook() — interceptación de account-eve
     errorSpy.mockRestore();
   });
 
-  test('payload de mensajería normal (no account-event): sigue el pipeline existente, NO se llama a channelOnboardingCompletion', async () => {
+  test('payload de mensajería normal (no account-event): ACK 200, delega a inboundGateway.handle(), NO se llama a channelOnboardingCompletion', async () => {
     channelOnboardingCompletion.isAccountVerifiedEvent.mockReturnValue(false);
-    webhookService.parseGupshupPayload.mockReturnValue([]); // sin mensajes reconocibles -> corta ahí, no hace falta mockear findGupshupConfig
 
     const req = { headers: {}, body: MENSAJERIA_PAYLOAD };
     const res = mockRes();
@@ -121,9 +123,34 @@ describe('webhook.controller#gupshupWebhook() — interceptación de account-eve
 
     await gupshupWebhook(req, res, next);
     await Promise.resolve();
+    await Promise.resolve();
 
     expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith({ received: true });
     expect(channelOnboardingCompletion.handleGupshupAccountVerified).not.toHaveBeenCalled();
-    expect(webhookService.parseGupshupPayload).toHaveBeenCalledWith(MENSAJERIA_PAYLOAD);
+    expect(inboundGateway.handle).toHaveBeenCalledWith(MENSAJERIA_PAYLOAD);
+  });
+
+  test('inboundGateway.handle() rechaza: se loguea el error, nunca rompe la respuesta ya enviada', async () => {
+    channelOnboardingCompletion.isAccountVerifiedEvent.mockReturnValue(false);
+    const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => {});
+    inboundGateway.handle.mockRejectedValue(new Error('Mongo caído'));
+
+    const req = { headers: {}, body: MENSAJERIA_PAYLOAD };
+    const res = mockRes();
+    const next = jest.fn();
+
+    await gupshupWebhook(req, res, next);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(errorSpy).toHaveBeenCalledWith(
+      '[webhook] inboundGateway.handle error:',
+      expect.objectContaining({ message: 'Mongo caído' })
+    );
+    expect(next).not.toHaveBeenCalled();
+
+    errorSpy.mockRestore();
   });
 });
