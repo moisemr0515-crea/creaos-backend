@@ -11,6 +11,59 @@ propuesto para el PR de seguimiento.
 
 ---
 
+## 2026-08-23 — Fuga de revenue: el límite de leads activos nunca se aplicaba, en ningún plan (incluido Starter gratis)
+
+**Estado:** RESUELTO — código implementado con tests, mergeado a `main` el 24/ago/2026 (commit `193b090`, antes de que arrancara esta sesión) + confirmado el 11/sep/2026, con evidencia real de producción, que no había ningún negocio en riesgo al momento de activar el enforcement. Sin pendientes.
+**Prioridad:** Crítica — cualquier negocio, incluido el plan Starter gratuito, podía crear leads sin ningún límite.
+**Detectado en:** auditoría de pricing del 23/ago/2026 (Track 1), retomado el 11/sep/2026 para diagnóstico y verificación de población real antes de confirmarlo cerrado.
+**Archivos involucrados:** [`subscription.service.js#checkLeadLimit()`/`incrementLeadCount()`](../../src/modules/subscriptions/subscription.service.js), [`lead.service.js#crearLead()`/`notifyIfOverLeadLimit()`](../../src/modules/leads/lead.service.js), [`import.service.js`](../../src/modules/imports/import.service.js).
+
+### Problema
+
+`checkLeadLimit()`/`incrementLeadCount()` existían en `subscription.service.js`, pero **ningún camino de creación de leads los llamaba** — ni la creación manual, ni el import CSV/XLSX, ni los automáticos (WhatsApp entrante, automatizaciones). El límite del plan (`Plan.limits.leadsPerMonth`) nunca se aplicaba en la práctica, en ningún plan.
+
+### Fix (ya implementado, PR previo a esta sesión)
+
+`checkLeadLimit()` reescrita para contar leads **activos en vivo** (`Lead.countDocuments`: no borrados, stage que no sea won/lost de ninguno de los pipelines activos del negocio) en vez de depender de `leadsUsedThisMonth` (que `incrementLeadCount()` nunca incrementaba desde ningún caller — se deja sin uso, no se borra, por si sirve a futuro para reporting).
+
+- `lead.service.js#crearLead()` (creación manual) e `import.service.js` (CSV/XLSX): **bloqueo duro** — rechazan con 403 antes de crear si el negocio ya está en el límite.
+- `lead.service.js#notifyIfOverLeadLimit()`, para los caminos **automáticos** (WhatsApp entrante, automatizaciones): **fail-soft** a propósito — el lead se crea siempre (nunca se pierde una conversación real de WhatsApp por un límite de plan), pero marca `lead.overQuota = true` y notifica al dueño/asignado del negocio, con cooldown de 24h para no repetir el aviso en cada mensaje nuevo.
+
+Tests: `subscription.service.test.js` (`checkLeadLimit()`/`contarLeadsActivos()`, 7 casos).
+
+### Verificación de población real (11/sep/2026) — sin riesgo al activar
+
+Antes de dar el ítem por cerrado, se corrió un script ad-hoc de solo lectura (`scripts/check-plan-limits-population.js`, reusa `contarLeadsActivos()` tal cual, sin llamar a `getCurrentSubscription()` para no disparar su auto-creación de `Subscription` — sin efectos de escritura) contra **producción** (el usuario lo corrió directamente; este entorno no tiene permiso para ejecutar acciones contra la URI de producción). Resultado: **7 negocios totales, 0 por encima del límite de leads activos de su plan.** El enforcement, ya activo en producción desde el 24/ago, no le cortó el flujo a ningún negocio real.
+
+---
+
+## 2026-08-23 — `inviteUser()` no leía `Business.plan`/`Subscription`: usuarios ilimitados en cualquier plan (Case 3 — `maxUsers`)
+
+**Estado:** RESUELTO — código implementado con tests, mergeado a `main` el 24/ago/2026 (commit `28ba47c`, antes de que arrancara esta sesión) + confirmado el 11/sep/2026, con evidencia real de producción, que no había ningún negocio en riesgo al momento de activar el enforcement. Sin pendientes.
+**Prioridad:** Alta — cualquier negocio podía invitar usuarios sin límite, sin importar el plan contratado.
+**Detectado en:** auditoría de pricing del 23/ago/2026 (Track 1 #3), retomado el 11/sep/2026 junto con el ítem anterior.
+**Archivos involucrados:** [`subscription.service.js#checkUserLimit()`](../../src/modules/subscriptions/subscription.service.js), [`admin.controller.js#inviteUser()`](../../src/modules/admin/admin.controller.js).
+
+### Problema
+
+`inviteUser()` creaba usuarios nuevos sin consultar en ningún momento `Business.plan` ni la `Subscription` del negocio — `Plan.limits.maxUsers` no se aplicaba nunca. Aparte, el número que veía el cliente en la UI de precios (`plan.tsx`, copy estático "1 Usuario"/"1 Usuario"/"3 Usuarios") no tenía ninguna garantía de estar sincronizado con el seed real de `Plan.limits.maxUsers` — eran dos fuentes de verdad independientes.
+
+### Fix (ya implementado, PR previo a esta sesión)
+
+`checkUserLimit()` (nueva, mismo criterio que `checkLeadLimit()`: conteo en vivo de `User.countDocuments({business, isActive:true})`, sin contador denormalizado — liberar cupo, desactivando o borrando un usuario, ya funciona solo). Fallback fail-closed a `1` (el valor real de Starter, el plan más restrictivo) si el `Plan` no está bien poblado.
+
+`admin.controller.js#inviteUser()`: bloqueo duro al principio de la función, antes de cualquier otra validación — rechaza con 403 si el negocio ya está en su límite.
+
+Sobre el copy de `plan.tsx`: verificado el 11/sep/2026 que hoy coincide con el seed real (`plans.seed.js`: Starter=1, Closer=1, Dominator=3 — commit `4a603df chore(plans): baja maxUsers de Closer y Dominator`, ajustó el seed para alinearlo al copy ya existente). No se encontró ninguna pantalla de gestión de equipo/invitar usuarios en `crea-os-ignite` — el copy de `plan.tsx` es la única superficie del frontend que menciona el límite de usuarios hoy.
+
+Tests: `subscription.service.checkUserLimit.test.js` + `admin.controller.inviteUser.test.js`.
+
+### Verificación de población real (11/sep/2026) — sin riesgo al activar, y destraba el Case 3
+
+Mismo script ad-hoc de solo lectura de la entrada anterior (`scripts/check-plan-limits-population.js`), corrido por el usuario contra **producción**. Resultado: de los 7 negocios totales, **0 por encima del límite de usuarios activos de su plan.** Con esto, el Case 3 (`maxUsers`) del backlog queda confirmado como resuelto y sin riesgo — la pregunta pendiente que lo bloqueaba ("¿hay negocios reales ya por encima del límite?") queda contestada por la misma corrida que verificó leads.
+
+---
+
 ## 2026-09-10 — `AutomationLog.createdAt` indexado pero nunca poblado (`timestamps:false`)
 
 **Estado:** Abierto — identificado al agregar un índice nuevo al lado (Caso 7 del backlog, PR `feat/automation-time-trigger-model`), no arreglado a propósito: fuera del alcance de ese PR.
