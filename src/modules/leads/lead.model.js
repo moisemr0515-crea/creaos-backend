@@ -124,6 +124,17 @@ leadSchema.index({ business: 1, assignedTo: 1 });
 leadSchema.index({ business: 1, temperature: 1 });
 leadSchema.index({ business: 1, isDeleted: 1 });
 leadSchema.index({ business: 1, tags: 1 });
+// Para el barrido de triggers de tiempo (Caso 7 del backlog — ver
+// automations/timeTriggers.registry.js): por negocio, encontrar leads
+// "stale" (sin contacto hace N días) o "estancados" (sin cambio de etapa
+// hace N días) es un filtro por rango de fecha sobre estos 2 campos. Sin
+// estos índices, esa query sería un collection scan del negocio completo
+// en cada ciclo del barrido — antes de esto, ningún código consultaba
+// lastContactedAt/stageChangedAt como filtro (mission.service.js los
+// usaba, pero trayendo TODOS los leads del negocio y filtrando en JS, no
+// como filtro de Mongo).
+leadSchema.index({ business: 1, isDeleted: 1, lastContactedAt: 1 });
+leadSchema.index({ business: 1, isDeleted: 1, stageChangedAt: 1 });
 leadSchema.index({ name: 'text', email: 'text', phone: 'text', company: 'text' });
 // Único parcial (Blueprint §7 paso 7) — promovido desde el índice no-único
 // original una vez confirmado que no quedan duplicados activos (Problema 4,

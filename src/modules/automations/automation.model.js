@@ -8,6 +8,17 @@ const TRIGGER_TYPES = [
   'conversation_started',
   'lead_temperature_changed',
   'manual',
+  // Triggers "de tiempo" (Caso 7 del backlog) — a diferencia de los de
+  // arriba, nadie los dispara con un evento puntual: un job repetible los
+  // reevalúa periódicamente contra todos los leads activos de cada negocio
+  // (ver src/modules/automations/timeTriggers.registry.js y
+  // src/modules/automations/workers/automationSweep.worker.js). Bloquean
+  // hoy a las automatizaciones semilla "Seguimientos automáticos"/"Cierre
+  // automático" (Caso 5, ver docs/implementation/known-issues.md) — este
+  // PR agrega solo la capacidad del motor, no la lógica de negocio de qué
+  // umbral usa cada una (eso lo define Caso 5 al cablearse de verdad).
+  'lead_stale',
+  'stage_stalled',
 ];
 
 const ACTION_TYPES = [
@@ -84,6 +95,14 @@ const automationSchema = new mongoose.Schema(
 
 automationSchema.index({ business: 1, isActive: 1, isDeleted: 1 });
 automationSchema.index({ business: 1, 'trigger.type': 1, isActive: 1, isDeleted: 1 });
+// Sin `business` como prefijo, a propósito — el índice de arriba sirve para
+// "qué automatizaciones tiene ESTE negocio" (el caso de uso de siempre,
+// triggerAutomations() ya conoce el business del lead que disparó el
+// evento). El job de barrido de triggers de tiempo (Caso 7) hace la
+// pregunta inversa: "en TODOS los negocios, qué automatizaciones activas
+// tienen un trigger de tiempo" — sin este índice, esa query escanearía la
+// colección completa en cada ciclo del barrido.
+automationSchema.index({ 'trigger.type': 1, isActive: 1, isDeleted: 1 });
 // Como mucho 1 'followup' y 1 'auto_close' por negocio — protege el upsert
 // del seed lazy contra condiciones de carrera (dos requests concurrentes
 // intentando sembrar al mismo tiempo). 'custom' queda fuera del filtro, así
