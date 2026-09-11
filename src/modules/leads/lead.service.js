@@ -10,6 +10,7 @@ const subscriptionService = require('../subscriptions/subscription.service');
 const { AppError } = require('../../middleware/error.middleware');
 const { triggerAutomations } = require('../automations/automation.engine');
 const { normalizeToE164 } = require('../../utils/phone');
+const { escapeRegex } = require('../../utils/regex');
 const logger = require('../../utils/logger');
 
 const crearLead = async (businessId, actor, data) => {
@@ -126,6 +127,70 @@ const obtenerLead = async (businessId, leadId) => {
   return lead;
 };
 
+/**
+ * Resuelve `search` (listarLeads()) contra 2 criterios distintos y une los
+ * resultados — mutando `query` para que quede filtrando por `_id: {$in:...}`,
+ * listo para que el resto de listarLeads() siga exactamente igual que antes.
+ *
+ * IMPORTANTE — por qué son 2 queries separadas y no un solo `$or`: MongoDB
+ * NO permite combinar `$text` con `$or`/`$nor` junto a otros operadores en
+ * la misma query. Probado en vivo contra Mongo: `{$or:[{$text:...},
+ * {phone:{$regex:...}}]}` tira `planner returned error :: caused by ::
+ * No query solutions` — el índice de texto no se puede anidar dentro de un
+ * `$or`. No es una limitación de este código ni una decisión de diseño
+ * "simplificable" — si en algún momento alguien intenta unificar esto en
+ * un solo `find()`, va a chocar con el mismo error del motor.
+ *
+ * `name`/`email`/`company` siguen resolviéndose por `$text` (tokenizado
+ * por palabras completas — funciona bien para texto real). `phone` NO
+ * puede usar `$text` (un teléfono es un solo token largo, sin espacios
+ * que tokenizar: buscar "922" nunca matchea "+51922800127" por $text) —
+ * se resuelve aparte, por `$regex` de substring, ver buscarPorTelefono().
+ */
+const aplicarFiltroDeBusqueda = async (query, search) => {
+  const [porTexto, porTelefono] = await Promise.all([
+    Lead.distinct('_id', { ...query, $text: { $search: search } }),
+    buscarPorTelefono(query, search),
+  ]);
+
+  const idsUnicos = new Set([...porTexto, ...porTelefono].map((id) => id.toString()));
+  query._id = { $in: [...idsUnicos] };
+};
+
+/**
+ * `phone` se guarda siempre normalizado a E.164 sin separadores
+ * (normalizeToE164(), utils/phone.js — ej. "+51922800127"), así que el
+ * término de búsqueda se limpia de todo lo que no sea dígito con el mismo
+ * criterio antes de buscarlo como substring: si no, buscar "922 800 127"
+ * (con espacios, como lo escribiría alguien de forma natural) nunca
+ * matchearía el dato guardado sin espacios.
+ *
+ * escapeRegex() es defensa en profundidad, no estrictamente necesaria hoy
+ * (un string ya reducido a solo dígitos no tiene nada que escapar) — pero
+ * blinda igual contra caracteres especiales de regex (rompen la query) o
+ * un patrón costoso tipo ReDoS si esta función alguna vez deja de limpiar
+ * antes de escapar, o el criterio de limpieza cambia.
+ *
+ * Sin anclar (no `^.../`): busca el substring en cualquier posición del
+ * teléfono — a propósito, es justo lo que $text no podía hacer. Límite
+ * conocido: un $regex sin anclar no puede resolverse con el índice de
+ * `phone` (ningún índice B-tree puede indexar substrings en posición
+ * arbitraria) — Mongo sí usa el índice {business:1, isDeleted:1} ya
+ * existente para acotar el scan al negocio antes de aplicar el regex, así
+ * que hoy es barato (cientos de leads por negocio, como mucho). Si algún
+ * negocio real escala a varios miles de leads activos, esto empieza a
+ * pesar — no es un problema hoy, pero no autoresolverlo con un índice
+ * nuevo: no existe un índice que resuelva substrings en posición
+ * arbitraria sin una solución aparte (ej. Atlas Search).
+ */
+const buscarPorTelefono = (query, search) => {
+  const soloDigitos = search.replace(/\D/g, '');
+  if (!soloDigitos) return Promise.resolve([]);
+
+  const regex = new RegExp(escapeRegex(soloDigitos));
+  return Lead.distinct('_id', { ...query, phone: regex });
+};
+
 const listarLeads = async (businessId, filtros, actorId, ownOnly = false) => {
   const {
     page = 1,
@@ -152,10 +217,6 @@ const listarLeads = async (businessId, filtros, actorId, ownOnly = false) => {
 
   if (!includeArchived) {
     query.isArchived = false;
-  }
-
-  if (search) {
-    query.$text = { $search: search };
   }
 
   if (stage) {
@@ -185,6 +246,13 @@ const listarLeads = async (businessId, filtros, actorId, ownOnly = false) => {
     query.createdAt = {};
     if (dateFrom) query.createdAt.$gte = new Date(dateFrom);
     if (dateTo) query.createdAt.$lte = new Date(dateTo);
+  }
+
+  // Va al final, después de aplicar el resto de los filtros — necesita el
+  // `query` ya completo (business/stage/temperature/etc.) como base común
+  // para las 2 sub-búsquedas de abajo.
+  if (search) {
+    await aplicarFiltroDeBusqueda(query, search);
   }
 
   const sort = { [sortBy]: sortOrder === 'asc' ? 1 : -1 };
