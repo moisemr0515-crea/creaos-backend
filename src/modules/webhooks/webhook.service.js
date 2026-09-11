@@ -8,6 +8,7 @@ const channelService = require('../channels/channel.service');
 const notificationService = require('../admin/notification.service');
 const pushService = require('../push/push.service');
 const leadService = require('../leads/lead.service');
+const pipelineService = require('../pipeline/pipeline.service');
 const { normalizeToE164 } = require('../../utils/phone');
 const logger = require('../../utils/logger');
 const {
@@ -295,8 +296,18 @@ async function processWhatsAppMessage({ phoneNumberId, from, name, text, msgId }
   let lead = await Lead.findOne({ business: config.business, phone: from, isDeleted: false });
 
   if (!lead) {
+    // Incidente de producción (11/sep/2026, docs/implementation/known-issues.md)
+    // — sin esto el lead queda sin `pipeline`, invisible en el tablero de
+    // Pipeline aunque el $match de obtenerTablero() ya lo tolere como
+    // mitigación (no hay que depender de esa red de seguridad si se puede
+    // setear bien acá). obtenerOCrearDefault() reusa exactamente la misma
+    // resolución que crearLead() (creación manual) — sin userId real acá
+    // (no hay un actor humano), createdBy queda ausente si hace falta
+    // crear el pipeline default por primera vez (campo opcional).
+    const pipeline = await pipelineService.obtenerOCrearDefault(config.business);
     lead = await Lead.create({
       business:    config.business,
+      pipeline:    pipeline._id,
       name:        name || from,
       phone:       from,
       source:      'whatsapp',
@@ -378,8 +389,16 @@ async function processGupshupMessage({ phone, text, name, mediaType, mediaSource
   const resumenActividad = text?.slice(0, 100) || (mediaType ? `[${mediaType}]` : '');
 
   if (!lead) {
+    // Incidente de producción (11/sep/2026, docs/implementation/known-issues.md)
+    // — este es el handler que corre el tráfico REAL de WhatsApp hoy
+    // (inbound.gateway.js → processGupshupMessage()), así que es el más
+    // urgente de los 3 puntos corregidos en este mismo commit. Ver el
+    // comentario completo junto al mismo fix en processWhatsAppMessage()
+    // más arriba en este archivo.
+    const pipeline = await pipelineService.obtenerOCrearDefault(businessId);
     lead = await Lead.create({
       business:   businessId,
+      pipeline:   pipeline._id,
       name:       name || phoneNormalizado,
       phone:      phoneNormalizado,
       source:     'whatsapp',
