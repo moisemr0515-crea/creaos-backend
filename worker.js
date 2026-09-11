@@ -20,6 +20,11 @@ const { getInboundQueue } = require('./src/modules/channels/queues/inbound.queue
 const { getOutboundQueue } = require('./src/modules/channels/queues/outbound.queue');
 const { startInboundWorker } = require('./src/modules/channels/workers/inbound.worker');
 const { startOutboundWorker } = require('./src/modules/channels/workers/outbound.worker');
+// Caso 7 del backlog — motor de automatizaciones, trigger por tiempo.
+const { getAutomationSweepQueue, scheduleAutomationSweep } = require('./src/modules/automations/queues/automationSweep.queue');
+const { getAutomationExecuteQueue } = require('./src/modules/automations/queues/automationExecute.queue');
+const { startAutomationSweepWorker } = require('./src/modules/automations/workers/automationSweep.worker');
+const { startAutomationExecuteWorker } = require('./src/modules/automations/workers/automationExecute.worker');
 
 // Puerto propio, distinto del de la API — Railway lo usa solo para su
 // healthcheck de este servicio, no queda expuesto públicamente salvo que se
@@ -29,6 +34,8 @@ const WORKER_PORT = process.env.WORKER_PORT || 3002;
 
 let inboundWorker;
 let outboundWorker;
+let automationSweepWorker;
+let automationExecuteWorker;
 let httpServer;
 
 const iniciar = async () => {
@@ -38,18 +45,31 @@ const iniciar = async () => {
 
     inboundWorker = startInboundWorker();
     outboundWorker = startOutboundWorker();
+    automationSweepWorker = startAutomationSweepWorker();
+    automationExecuteWorker = startAutomationExecuteWorker();
+    // Idempotente (upsertJobScheduler) — seguro de llamar en cada boot,
+    // incluso con varias instancias de este worker arrancando a la vez
+    // (rolling restart de Railway).
+    await scheduleAutomationSweep();
 
     httpServer = http.createServer(async (req, res) => {
       if (req.url === '/health') {
         try {
-          const [inboundCounts, outboundCounts] = await Promise.all([
+          const [inboundCounts, outboundCounts, sweepCounts, executeCounts] = await Promise.all([
             getInboundQueue().getJobCounts(),
             getOutboundQueue().getJobCounts(),
+            getAutomationSweepQueue().getJobCounts(),
+            getAutomationExecuteQueue().getJobCounts(),
           ]);
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
             status: 'ok',
-            queues: { [QUEUE_NAMES.INBOUND]: inboundCounts, [QUEUE_NAMES.OUTBOUND]: outboundCounts },
+            queues: {
+              [QUEUE_NAMES.INBOUND]: inboundCounts,
+              [QUEUE_NAMES.OUTBOUND]: outboundCounts,
+              [QUEUE_NAMES.AUTOMATION_SWEEP]: sweepCounts,
+              [QUEUE_NAMES.AUTOMATION_EXECUTE]: executeCounts,
+            },
           }));
         } catch (err) {
           res.writeHead(503, { 'Content-Type': 'application/json' });
@@ -68,7 +88,8 @@ const iniciar = async () => {
 ╠════════════════════════════════════════╣
 ║  Puerto  : ${WORKER_PORT}
 ║  Entorno : ${process.env.NODE_ENV}
-║  Colas   : ${QUEUE_NAMES.INBOUND}, ${QUEUE_NAMES.OUTBOUND}, ${QUEUE_NAMES.DEAD_LETTER}
+║  Colas   : ${QUEUE_NAMES.INBOUND}, ${QUEUE_NAMES.OUTBOUND}, ${QUEUE_NAMES.DEAD_LETTER},
+║            ${QUEUE_NAMES.AUTOMATION_SWEEP}, ${QUEUE_NAMES.AUTOMATION_EXECUTE}
 ╚════════════════════════════════════════╝
       `);
     });
@@ -84,6 +105,8 @@ const apagar = async (señal) => {
     if (httpServer) await new Promise((resolve) => httpServer.close(resolve));
     if (inboundWorker) await inboundWorker.close();
     if (outboundWorker) await outboundWorker.close();
+    if (automationSweepWorker) await automationSweepWorker.close();
+    if (automationExecuteWorker) await automationExecuteWorker.close();
     await disconnectQueueConnection();
     await disconnectRedis();
     await disconnectMongoDB();

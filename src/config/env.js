@@ -219,4 +219,17 @@ module.exports = {
   // validado en la sub-fase 1.c. Solo con este flag en true el mensaje pasa
   // por BullMQ/worker en su lugar.
   WHATSAPP_QUEUE_PROCESSING_ENABLED: process.env.WHATSAPP_QUEUE_PROCESSING_ENABLED === 'true',
+
+  // Caso 7 del backlog (motor de automatizaciones, trigger por tiempo) —
+  // automationSweep.worker.js. Ambas con default: no son obligatorias, y un
+  // valor inválido/ausente no debe impedir que el worker arranque.
+  //
+  // Cada cuánto corre el barrido que reevalúa leads contra los triggers de
+  // tiempo (lead_stale/stage_stalled). 15 minutos por default — la
+  // condición es "N días", no hace falta más resolución que eso.
+  AUTOMATION_SWEEP_INTERVAL_MS: parseInt(process.env.AUTOMATION_SWEEP_INTERVAL_MS, 10) || 15 * 60 * 1000,
+  // Ventana mínima entre dos ejecuciones de la MISMA automatización sobre
+  // el MISMO lead — sin esto, un lead que sigue cumpliendo la condición se
+  // re-encolaría en cada ciclo del barrido. 24h por default.
+  AUTOMATION_COOLDOWN_HOURS: parseInt(process.env.AUTOMATION_COOLDOWN_HOURS, 10) || 24,
 };
