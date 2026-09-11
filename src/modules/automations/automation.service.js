@@ -3,6 +3,9 @@ const AutomationLog = require('./automation-log.model');
 const { runAutomation } = require('./automation.engine');
 const Lead          = require('../leads/lead.model');
 const subscriptionService = require('../subscriptions/subscription.service');
+// Sin riesgo de ciclo: pipeline.service.js solo requiere Pipeline/Lead/
+// AppError, nada de automations/.
+const pipelineService = require('../pipeline/pipeline.service');
 const { AppError }  = require('../../middleware/error.middleware');
 const logger        = require('../../utils/logger');
 
@@ -69,32 +72,108 @@ const verificarLimiteAutomatizaciones = async (businessId, excludeAutomationId =
 // ─── Seed lazy de las automatizaciones "de producto" ─────────────────────────
 
 /**
- * Placeholder de las 2 automatizaciones fijas que controlan los toggles
- * "Seguimientos automáticos" / "Cierre automático" del frontend (business.tsx).
- * Quedan con trigger 'manual' + una acción inofensiva (add_note) porque el
- * motor de automatizaciones todavía no tiene un trigger basado en tiempo/
- * inactividad ("N días sin seguimiento") — ese trabajo queda para un ticket
- * separado. El alcance de este fix es el límite de plan sobre el toggle, no
- * la lógica de negocio de qué hace la automatización al dispararse.
+ * Las 2 automatizaciones fijas que controlan los toggles "Seguimientos
+ * automáticos" / "Cierre automático" del frontend (business.tsx — hoy
+ * ocultos, PR E1/E2 de esta secuencia los vuelve a mostrar cableados de
+ * verdad). Caso 5 del backlog, PR C/6: cablea el trigger y la acción real
+ * de cada una — el motor ya soporta trigger por tiempo (Caso 7) y la
+ * acción send_template (PR A). `trigger.conditions` usa el umbral por
+ * default acordado (mismos días que ya usa mission.service.js, para que
+ * la "misión del día" y la automatización real hablen de lo mismo) — el
+ * usuario podrá cambiarlo desde la UI (PR E1), esto es solo el valor
+ * inicial con el que nace un negocio nuevo.
+ *
+ * `actions` de 'followup' queda con config:{} a propósito — sin
+ * templateId todavía (PR E2 agrega el selector de plantilla en la UI). Si
+ * alguien activara esta automatización antes de configurar una plantilla
+ * (hoy solo posible pegándole directo a la API, no hay UI para eso
+ * todavía), execSendTemplate() falla limpio y queda registrado en su
+ * AutomationLog — no es un no-op silencioso, ver automation.engine.js.
+ *
+ * `actions` de 'auto_close' NO está acá — se arma dinámicamente por
+ * negocio en sembrarUnaAutomatizacion(), porque change_stage necesita la
+ * key real de la etapa "ganada" del pipeline de CADA negocio (no hay una
+ * key fija — cada uno configura su propio pipeline).
  */
 const AUTOMATIZACIONES_SEMILLA = [
   {
     type: 'followup',
     name: 'Seguimientos automáticos',
     description:
-      'Placeholder — la lógica real de "leads sin seguimiento hace N días" necesita un trigger por tiempo que aún no existe en el motor. Actívala cuando esa pieza esté lista.',
-    trigger: { type: 'manual', conditions: [] },
-    actions: [{ order: 1, type: 'add_note', config: { content: 'Seguimiento automático (placeholder)' }, delay: 0 }],
+      'Le manda un WhatsApp al lead cuando pasa varios días sin contactarlo — texto libre si la conversación sigue abierta, o una plantilla aprobada si no. Configurá el umbral de días y la plantilla en Mi Negocio.',
+    trigger: {
+      type: 'lead_stale',
+      conditions: [{ field: 'daysThreshold', operator: 'greater_than', value: 3 }],
+    },
+    actions: [{ order: 1, type: 'send_template', config: {}, delay: 0 }],
   },
   {
     type: 'auto_close',
     name: 'Cierre automático',
     description:
-      'Placeholder — la lógica real de cierre automático de oportunidades avanzadas necesita un trigger por tiempo/probabilidad que aún no existe en el motor.',
-    trigger: { type: 'manual', conditions: [] },
-    actions: [{ order: 1, type: 'add_note', config: { content: 'Cierre automático (placeholder)' }, delay: 0 }],
+      'Mueve al lead a la etapa ganada del pipeline cuando pasa varios días sin avanzar de etapa, sin intervención humana. Configurá el umbral de días en Mi Negocio.',
+    trigger: {
+      type: 'stage_stalled',
+      conditions: [{ field: 'daysThreshold', operator: 'greater_than', value: 7 }],
+    },
+    // Se completa en sembrarUnaAutomatizacion() — ver comentario de arriba.
+    actions: null,
   },
 ];
+
+/**
+ * Arma el payload final de UNA semilla para UN negocio puntual — separado
+ * de asegurarAutomatizacionesSemilla() para poder resolver 'auto_close'
+ * (que necesita datos específicos del negocio) sin bifurcar toda la
+ * función. Devuelve `null` (no siembra nada) cuando la semilla no se
+ * puede armar para este negocio — hoy el único caso es 'auto_close' sin
+ * ninguna etapa "ganada" configurada en el pipeline.
+ */
+const resolverAccionesSemilla = async (businessId, userId, semilla) => {
+  if (semilla.type !== 'auto_close') return semilla.actions;
+
+  const pipeline = await pipelineService.obtenerOCrearDefault(businessId, userId);
+  const etapaGanada = pipeline.stages.find((s) => s.isWon);
+
+  if (!etapaGanada) {
+    logger.warn(
+      `[automations] negocio ${businessId} no tiene ninguna etapa marcada como "ganada" en su pipeline — ` +
+      `se salta la semilla "${semilla.name}" (change_stage necesita una etapa destino real). No bloquea el resto del seed.`,
+      { businessId, pipelineId: pipeline._id }
+    );
+    return null;
+  }
+
+  return [{ order: 1, type: 'change_stage', config: { stage: etapaGanada.key }, delay: 0 }];
+};
+
+/**
+ * Siembra UNA automatización para UN negocio — separado de
+ * asegurarAutomatizacionesSemilla() (que dispara las 2 en paralelo) para
+ * que un fallo resolviendo 'auto_close' (ej. sin etapa ganada) no le
+ * pegue a 'followup', y viceversa.
+ */
+const sembrarUnaAutomatizacion = async (businessId, userId, semilla) => {
+  const actions = await resolverAccionesSemilla(businessId, userId, semilla);
+  if (!actions) return null; // sin acciones válidas para este negocio — no siembra nada, no revienta el resto
+
+  return Automation.findOneAndUpdate(
+    { business: businessId, type: semilla.type },
+    {
+      $setOnInsert: {
+        business: businessId,
+        createdBy: userId,
+        name: semilla.name,
+        description: semilla.description,
+        type: semilla.type,
+        trigger: semilla.trigger,
+        actions,
+        isActive: false,
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+};
 
 /**
  * Crea las automatizaciones semilla si el negocio todavía no las tiene
@@ -104,24 +183,7 @@ const AUTOMATIZACIONES_SEMILLA = [
  */
 const asegurarAutomatizacionesSemilla = async (businessId, userId) => {
   await Promise.all(
-    AUTOMATIZACIONES_SEMILLA.map((semilla) =>
-      Automation.findOneAndUpdate(
-        { business: businessId, type: semilla.type },
-        {
-          $setOnInsert: {
-            business: businessId,
-            createdBy: userId,
-            name: semilla.name,
-            description: semilla.description,
-            type: semilla.type,
-            trigger: semilla.trigger,
-            actions: semilla.actions,
-            isActive: false,
-          },
-        },
-        { upsert: true, new: true, setDefaultsOnInsert: true }
-      )
-    )
+    AUTOMATIZACIONES_SEMILLA.map((semilla) => sembrarUnaAutomatizacion(businessId, userId, semilla))
   );
 };
 
@@ -298,4 +360,9 @@ module.exports = {
   testAutomation,
   obtenerEstadoAutomatizaciones,
   verificarLimiteAutomatizaciones,
+  // Exportados para tests directos y focalizados (Caso 5, PR C/6) — antes
+  // solo se ejercitaban indirecto vía listAutomations()/
+  // obtenerEstadoAutomatizaciones().
+  asegurarAutomatizacionesSemilla,
+  AUTOMATIZACIONES_SEMILLA,
 };
