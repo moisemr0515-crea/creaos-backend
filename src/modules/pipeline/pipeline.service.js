@@ -154,6 +154,12 @@ const obtenerTablero = async (businessId, pipelineId, search) => {
               closeProbability: '$closeProbability',
               createdAt: '$createdAt',
               stageChangedAt: '$stageChangedAt',
+              // Necesario para la alerta "sin respuesta hace Nh" de la
+              // tarjeta del Kanban (crea-os-ignite, pipeline.tsx) — faltaba
+              // en la proyección original de este PR, encontrado al migrar
+              // el frontend a este endpoint (backlog "buscador + paginación
+              // real del Kanban", PR D/5).
+              lastContactedAt: '$lastContactedAt',
             },
             sortBy: { createdAt: -1 },
             n: CORTE_INICIAL_POR_COLUMNA,

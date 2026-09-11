@@ -92,6 +92,16 @@ describe('pipeline.service#obtenerTablero()', () => {
     expect(columnaNuevo.totalValue).toBe(500); // 10 * 50, no 7 * 50
   });
 
+  test('leads incluye lastContactedAt — necesario para la alerta "sin respuesta" de la tarjeta del Kanban (frontend)', async () => {
+    const hace3dias = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+    await Lead.create({ business: business._id, pipeline: pipeline._id, pipelineStage: 'nuevo', name: 'Con contacto', lastContactedAt: hace3dias });
+
+    const { tablero } = await obtenerTablero(business._id, pipeline._id);
+    const columnaNuevo = tablero.find((c) => c.stage === 'nuevo');
+
+    expect(new Date(columnaNuevo.leads[0].lastContactedAt).getTime()).toBe(hace3dias.getTime());
+  });
+
   test('avgCloseProbability: usa closeProbability explícito cuando existe', async () => {
     await Lead.create({ business: business._id, pipeline: pipeline._id, pipelineStage: 'nuevo', name: 'A', closeProbability: 80 });
     await Lead.create({ business: business._id, pipeline: pipeline._id, pipelineStage: 'nuevo', name: 'B', closeProbability: 40 });
