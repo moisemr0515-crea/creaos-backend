@@ -152,4 +152,44 @@ describe('pipeline.service#obtenerTablero()', () => {
     expect(columnaNuevo.count).toBe(1);
     expect(columnaNuevo.leads[0].name).toBe('María García');
   });
+
+  // Incidente de producción (11/sep/2026) — leads creados por caminos
+  // automáticos (WhatsApp entrante, ads, automatizaciones) nunca seteaban
+  // `pipeline`; un $match estricto por pipeline._id los excluía del
+  // tablero por completo. Ver el comentario en obtenerTablero().
+  describe('leads sin el campo pipeline seteado (incidente de producción)', () => {
+    test('un lead sin `pipeline` (campo ausente) aparece igual en el tablero, como si perteneciera al pipeline pedido', async () => {
+      await Lead.create({ business: business._id, pipeline: pipeline._id, pipelineStage: 'nuevo', name: 'Con pipeline' });
+      await Lead.create({ business: business._id, pipelineStage: 'nuevo', name: 'Sin pipeline (WhatsApp)', source: 'whatsapp' });
+
+      const { tablero } = await obtenerTablero(business._id, pipeline._id);
+      const columnaNuevo = tablero.find((c) => c.stage === 'nuevo');
+
+      expect(columnaNuevo.count).toBe(2);
+      expect(columnaNuevo.leads.map((l) => l.name).sort()).toEqual(['Con pipeline', 'Sin pipeline (WhatsApp)']);
+    });
+
+    test('un lead con `pipeline` apuntando a OTRO pipeline del negocio NO aparece (el $or no es un pase libre)', async () => {
+      const otroPipeline = await Pipeline.create({ business: business._id, name: 'Otro pipeline', stages: STAGES, isActive: true });
+      await Lead.create({ business: business._id, pipeline: otroPipeline._id, pipelineStage: 'nuevo', name: 'De otro pipeline' });
+      await Lead.create({ business: business._id, pipelineStage: 'nuevo', name: 'Sin pipeline' });
+
+      const { tablero } = await obtenerTablero(business._id, pipeline._id);
+      const columnaNuevo = tablero.find((c) => c.stage === 'nuevo');
+
+      expect(columnaNuevo.count).toBe(1);
+      expect(columnaNuevo.leads[0].name).toBe('Sin pipeline');
+    });
+
+    test('combinado con search: un lead sin pipeline igual se filtra por el término de búsqueda (el $or no lo exime del filtro de texto)', async () => {
+      await Lead.create({ business: business._id, pipelineStage: 'nuevo', name: 'María sin pipeline', phone: '+51922800127' });
+      await Lead.create({ business: business._id, pipelineStage: 'nuevo', name: 'Pedro sin pipeline', phone: '+51900111000' });
+
+      const { tablero } = await obtenerTablero(business._id, pipeline._id, '922');
+      const columnaNuevo = tablero.find((c) => c.stage === 'nuevo');
+
+      expect(columnaNuevo.count).toBe(1);
+      expect(columnaNuevo.leads[0].name).toBe('María sin pipeline');
+    });
+  });
 });

@@ -127,7 +127,24 @@ const obtenerTablero = async (businessId, pipelineId, search) => {
 
   const query = {
     business: pipeline.business,
-    pipeline: pipeline._id,
+    // Incidente de producción (11/sep/2026): la mayoría de los caminos de
+    // creación AUTOMÁTICA de leads (WhatsApp entrante — processGupshupMessage(),
+    // el que corre tráfico real hoy, ads, automatizaciones — ver
+    // docs/implementation/known-issues.md) nunca seteaban `pipeline`. Un
+    // `pipeline: pipeline._id` estricto acá los excluía del tablero por
+    // completo y en silencio — confirmado con datos reales: 11 leads
+    // huérfanos en 3 de los 5 negocios reales con actividad. Se trata un
+    // lead SIN el campo `pipeline` seteado como perteneciente al pipeline
+    // que se está pidiendo — seguro hoy porque ningún negocio real tiene
+    // más de un pipeline activo (verificado contra producción antes de
+    // este fix). Permanente, no un parche temporal: aunque el backfill
+    // (script aparte) y el fix hacia adelante en los puntos de creación
+    // cierren el problema de raíz, esto queda como red de seguridad barata
+    // ante cualquier camino futuro que se olvide de setear `pipeline`.
+    $or: [
+      { pipeline: pipeline._id },
+      { pipeline: { $exists: false } },
+    ],
     isDeleted: false,
     isArchived: false,
   };
