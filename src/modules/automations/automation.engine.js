@@ -12,6 +12,10 @@ const Conversation    = require('../ai/conversation.model');
 // Referencia al módulo completo (no se destructura createNotification acá)
 // — misma convención de "referencia viva" que el resto del repo.
 const notificationService = require('../admin/notification.service');
+// channel.service.js no tiene ninguna dependencia de automations/ (ni
+// directa ni transitiva) — a diferencia de lead.service.js más abajo, este
+// require es seguro arriba del archivo, sin riesgo de ciclo.
+const channelService = require('../channels/channel.service');
 const logger = require('../../utils/logger');
 
 // ─── Condition evaluation ─────────────────────────────────────────────────────
@@ -242,6 +246,109 @@ async function execWait(config) {
   return { waited: seconds };
 }
 
+/**
+ * Caso 5 del backlog — la acción real detrás de "Seguimientos automáticos":
+ * le manda un WhatsApp de verdad al lead. Texto libre si la ventana de 24h
+ * está abierta (config.text); si no, una plantilla aprobada (config.
+ * templateId/templateParams) — Meta rechaza texto libre fuera de ventana,
+ * solo admite reabrir con plantilla (mismo criterio que
+ * ai.service.js#sendAgentMessage()/sendTemplateMessage()).
+ *
+ * Un lead "stale" por definición lleva varios días sin contacto — en la
+ * práctica, la ventana casi siempre va a estar cerrada para este caso de
+ * uso, así que config.templateId no es opcional "por si acaso": sin una
+ * plantilla aprobada configurada, esta acción falla siempre que dispare
+ * sobre un lead realmente stale. Eso es intencional (fail loud, no un
+ * no-op silencioso) — ver el AutomationLog de la acción fallida.
+ *
+ * A diferencia de ai.service.js#sendTemplateMessage()/sendAgentMessage()
+ * (envío MANUAL de un agente humano, que SÍ apagan conversation.aiEnabled
+ * porque un humano tomó control), acá NO se toca aiEnabled a propósito: el
+ * objetivo de esta acción es exactamente lo contrario — que la IA siga
+ * pudiendo responder si el lead contesta al seguimiento automático. Por
+ * eso no se reusa sendTemplateMessage() tal cual (además de que esa función
+ * trabaja sobre un conversationId ya conocido, no sobre un lead).
+ */
+async function execSendTemplate(config, lead) {
+  if (!lead.phone) throw new Error('send_template: el lead no tiene un número de teléfono registrado');
+
+  let conversation = await Conversation.findOne({
+    business: lead.business,
+    lead: lead._id,
+    status: 'active',
+    isDeleted: false,
+  });
+  if (!conversation) {
+    conversation = await Conversation.create({
+      business: lead.business,
+      lead: lead._id,
+      channel: 'whatsapp',
+      status: 'active',
+      aiEnabled: true,
+    });
+  }
+  if (conversation.channel !== 'whatsapp') {
+    throw new Error('send_template: la conversación de este lead no es por WhatsApp');
+  }
+
+  const { windowOpen } = conversation.getWindowState();
+  const usarTextoLibre = windowOpen && Boolean(config.text);
+  const template = !usarTextoLibre && config.templateId
+    ? { id: config.templateId, params: config.templateParams || [] }
+    : null;
+
+  if (!usarTextoLibre && !template) {
+    throw new Error(
+      windowOpen
+        ? 'send_template: no hay texto ni plantilla configurados en la acción'
+        : 'send_template: la ventana de 24h de WhatsApp está cerrada y no hay una plantilla aprobada configurada'
+    );
+  }
+
+  const channel = await channelService.getChannelForConversation(conversation, lead.business);
+  if (!channel) {
+    throw new Error(`send_template: no hay un WhatsAppChannel activo para el negocio ${lead.business}`);
+  }
+
+  const mensaje = {
+    role: 'assistant',
+    content: template ? `[Plantilla: ${template.id}]` : config.text,
+    timestamp: new Date(),
+    sentBy: 'automation',
+    whatsappStatus: 'sent',
+    whatsappError: null,
+    metadata: template
+      ? { isTemplate: true, templateId: template.id, templateParams: template.params, sentByAutomation: true }
+      : { sentByAutomation: true },
+  };
+
+  try {
+    if (template) {
+      await channelService.sendTemplate(channel._id, lead.phone, template);
+    } else {
+      await channelService.sendMessage(channel._id, lead.phone, config.text);
+    }
+  } catch (error) {
+    // Mismo criterio que sendTemplateMessage(): el intento de envío queda
+    // registrado en el historial de la conversación aunque haya fallado
+    // (visible para un humano que revise el chat) — pero acá SÍ se relanza
+    // el error, para que runAutomation() marque esta acción puntual como
+    // 'failed' en el AutomationLog (sendTemplateMessage() no relanza porque
+    // ahí el caller es un humano viendo la UI del chat, no el motor de
+    // automatizaciones).
+    mensaje.whatsappStatus = 'failed';
+    mensaje.whatsappError = error.message;
+    conversation.messages.push(mensaje);
+    await conversation.save();
+    throw error;
+  }
+
+  conversation.messages.push(mensaje);
+  await conversation.save();
+
+  return { conversationId: conversation._id, sentVia: template ? 'template' : 'text', templateId: template?.id ?? null };
+}
+
 // ─── Action dispatcher ────────────────────────────────────────────────────────
 
 async function executeAction(action, lead) {
@@ -254,6 +361,7 @@ async function executeAction(action, lead) {
     case 'create_lead':          return execCreateLead(action.config, lead);
     case 'start_ai_conversation':return execStartAIConversation(action.config, lead);
     case 'send_notification':    return execSendNotification(action.config, lead);
+    case 'send_template':        return execSendTemplate(action.config, lead);
     case 'wait':                 return execWait(action.config);
     default:                     throw new Error(`Tipo de acción desconocido: ${action.type}`);
   }
@@ -338,4 +446,4 @@ async function triggerAutomations(triggerType, lead, triggerData = {}) {
   }
 }
 
-module.exports = { triggerAutomations, conditionsMet, runAutomation };
+module.exports = { triggerAutomations, conditionsMet, runAutomation, executeAction, execSendTemplate };

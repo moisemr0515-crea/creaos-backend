@@ -31,6 +31,12 @@ const ACTION_TYPES = [
   'start_ai_conversation',
   'send_notification',
   'wait',
+  // Caso 5 del backlog (fix de fondo de "Seguimiento automático") — manda
+  // un WhatsApp real al lead: texto libre si la ventana de 24h está
+  // abierta, o una plantilla aprobada si no (ver
+  // automation.engine.js#execSendTemplate()). config: { templateId?,
+  // templateParams?, text? }.
+  'send_template',
 ];
 
 const CONDITION_OPERATORS = ['equals', 'not_equals', 'contains', 'greater_than', 'less_than'];
