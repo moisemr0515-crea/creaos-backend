@@ -345,7 +345,7 @@ Queda para retomar junto con el resto de Track 5.
 
 ## 2026-09-10 — "Seguimiento automático" / "Cierre asistido por IA" (panel de negocio y precios): placeholder en 3 capas, y además anunciado como feature de un plan pago
 
-**Estado:** Resuelto parcialmente (09/sep/2026) — toggle oculto en `business.tsx` (crea-os-ignite) y copy de `plan.tsx` corregido de "incluido" a "Próximamente". El fix de fondo (automatización real) sigue bloqueado, ver "Decisión pendiente" abajo.
+**Estado:** RESUELTO (11/sep/2026) — las 3 capas diagnosticadas acá (persistencia rota, automatización real desconectada, sin trigger de tiempo) quedaron cerradas de punta a punta con lógica real: WhatsApp real vía `send_template`, umbral configurable, semilla cableada + migración para negocios ya sembrados, y UI real (toggle, umbral, selector de plantilla) — 6 PRs, blueprint aprobado antes de escribir código, mergeados a `main` en ambos repos y verificados con evidencia. Ver "Cierre — fix de fondo implementado" al final de esta entrada.
 **Prioridad:** Alta — a diferencia de "Nivel"/"Personalidad", esto también se vendía como feature incluida en el plan Closer (`plan.tsx`), no solo un toggle de configuración interna.
 **Detectado en:** backlog Caso 5, auditado a fondo el 09/sep/2026 (mismo ciclo que Casos #12/#15 de leads).
 **Archivos involucrados:** [`automation.service.js`](../../src/modules/automations/automation.service.js) (seed + toggle real), [`automation.engine.js#triggerAutomations()`](../../src/modules/automations/automation.engine.js), [`automation.model.js#TRIGGER_TYPES`](../../src/modules/automations/automation.model.js), [`user.controller.js#updateMiPerfil()`](../../src/modules/users/user.controller.js), [`business.tsx`](../../../crea-os-ignite/src/routes/business.tsx) y [`plan.tsx`](../../../crea-os-ignite/src/routes/plan.tsx) (frontend), [`lib/api/automations.ts`](../../../crea-os-ignite/src/lib/api/automations.ts).
@@ -370,6 +370,25 @@ Tres fallas independientes apiladas, no una sola:
 ### Decisión pendiente — el fix de fondo depende del Caso 7
 
 No alcanza con cablear el toggle a la automatización real (capas 1+2): sin resolver primero el Caso 7 (agregar un trigger por tiempo/cron al motor de automatizaciones — `automation.model.js#TRIGGER_TYPES` + un scheduler que lo dispare periódicamente), la automatización seguiría sin ejecutar nada real aunque el toggle "funcionara". El desarrollo real, una vez resuelto el Caso 7, todavía requiere definir la lógica de negocio concreta: qué es "un lead sin seguimiento hace N días" y qué señales ameritan proponer un cierre. Queda documentado para retomar junto con el Caso 7.
+
+### Cierre — fix de fondo implementado (11/sep/2026)
+
+Con el Caso 7 resuelto (motor de triggers de tiempo — `lead_stale`/`stage_stalled`, workers de barrido/ejecución vía BullMQ, PRs `feat/automation-time-trigger-model`, `feat/automation-time-triggers-registry`, `feat/automation-sweep-worker`), se retomó y cerró este caso. Decisiones de producto confirmadas explícitamente antes de escribir código: "Seguimiento automático" v1 manda un mensaje real de WhatsApp (no solo una notificación interna), respetando la ventana de 24h; el umbral de días es configurable por el usuario en la UI (ya no hardcodeado); "Cierre automático" ejecuta `change_stage` sin gate humano (a diferencia de "Nivel", que sigue oculto — ver entrada del 24/ago); y un script de migración cubre los negocios que ya tenían las automatizaciones semilla sembradas con el shape viejo (`trigger.type:'manual'`, congelado para siempre por el `$setOnInsert` del seed).
+
+6 PRs, blueprint completo aprobado antes de empezar, en orden de dependencia — los 4 primeros de `creaos-backend`, los 2 últimos de `crea-os-ignite`, todos mergeados a `main` y verificados con evidencia real (`git branch -r --merged origin/main` + hash de commit, no por memoria de conversación):
+
+| PR | Qué resuelve | Commit | Merge |
+|---|---|---|---|
+| A — `feat/automation-send-template-action` | Acción real `send_template` en el motor (`automation.engine.js`) — WhatsApp real vía `channelService`, respeta la ventana de 24h (texto libre si está abierta, plantilla si está cerrada), deliberadamente NO toca `conversation.aiEnabled` (una automatización no es un agente humano "tomando control") | `e7b516b` | #98 |
+| B — `feat/automation-stage-stalled-notification` | Guardrail: notificación interna + push al usuario asignado cuando el trigger `stage_stalled` ejecuta `change_stage` con éxito — acotado a ese trigger, no se filtra a `change_stage` en general | `030c7f1` | #99 |
+| C — `feat/automation-seed-real-triggers` | Semilla (`AUTOMATIZACIONES_SEMILLA`) cableada a triggers/acciones reales (`lead_stale`/`stage_stalled`, ya no `manual`) — resuelve la etapa "ganada" real de cada negocio vía `pipelineService`, salteando y logueando (sin bloquear al resto) el negocio que no tenga ninguna | `7de8c43` | #100 |
+| D — `feat/automation-seed-migration` | Script de migración de un solo uso (`scripts/migrate-automation-seeds-real-triggers.js`) para negocios que ya tenían las 2 automatizaciones semilla sembradas con el shape viejo — preserva name/description editados a mano, mismo criterio "saltear y loguear" del PR C, idempotente | `da59317` | #101 |
+| E1 — `feat/automation-toggle-real-wiring` | UI real en `business.tsx`: toggle (`isActive`, `PATCH /automations/:id/toggle`) + umbral de días (`trigger.conditions`, `PATCH /automations/:id`) contra el `Automation` real del negocio — ya no el booleano fake `Profile.auto_followup_enabled`/`auto_close_enabled` (descartado en silencio por `PUT /users/me`, causa raíz original de este hallazgo) | `ddffb5a` | #23 (crea-os-ignite) |
+| E2 — `feat/automation-template-picker` | Selector real de plantilla de WhatsApp para "Seguimientos automáticos" (única automatización con acción `send_template`) — solo lista plantillas aprobadas SIN variables (`{{...}}`); completar variables queda fuera de v1 a propósito, sin UI para eso todavía | `f0348eb` | #24 (crea-os-ignite) |
+
+Verificación: suite completa de `creaos-backend` en 467/467 (48 suites) al cierre del PR D. `crea-os-ignite` no tiene test runner de frontend — verificación vía `tsc --noEmit` + `eslint` (sin hallazgos reales, filtrando el ruido preexistente de `prettier/prettier` por CRLF de Windows) en cada uno de E1/E2.
+
+**Fuera de alcance de v1, a propósito (no es deuda oculta):** completar variables de plantilla (`{{1}}`, etc.) en "Seguimientos automáticos" — las plantillas con variables se excluyen del selector hasta que exista esa UI, decisión explícita del usuario al aprobar el PR E2.
 
 ---
 
