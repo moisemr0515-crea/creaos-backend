@@ -11,6 +11,40 @@ propuesto para el PR de seguimiento.
 
 ---
 
+## 2026-09-11 — Incidente de producción: leads sin `pipeline` seteado invisibles en el Kanban tras la migración a GET /pipeline/:id/board
+
+**Estado:** Mitigación en producción (este commit) — restaura visibilidad ya. Backfill retroactivo y fix hacia adelante en los puntos de creación **pendientes**, blueprint aprobado, PRs por escribir. Esta entrada se actualiza a medida que avanzan.
+**Prioridad:** Crítica — bloquea además el lanzamiento de una campaña de Facebook Ads con tráfico directo a WhatsApp prevista para los próximos días (cada lead nuevo por esa vía seguiría invisible hasta el fix hacia adelante).
+**Detectado en:** reporte de producción real, horas después de mergear el PR D del backlog "buscador + paginación real del Kanban" — un negocio real (CREA OS, 11 leads activos) mostraba solo 4 en Pipeline.
+**Archivos involucrados:** [`pipeline.service.js#obtenerTablero()`](../../src/modules/pipeline/pipeline.service.js) (mitigación, este commit); pendientes: [`webhook.service.js`](../../src/modules/webhooks/webhook.service.js) (`processGupshupMessage()` línea ~381 — el que corre tráfico real hoy; `processWhatsAppMessage()` línea ~298; `processMetaLead()`/`processTikTokLead()`), [`automation.engine.js#execCreateLead()`](../../src/modules/automations/automation.engine.js), [`inbound.worker.js#processInboundJob()`](../../src/modules/channels/workers/inbound.worker.js) (worker BullMQ, hoy inactivo en producción).
+
+### Problema
+
+`obtenerTablero()` (PR D del backlog "buscador + paginación real del Kanban") empezó a exigir `pipeline: pipeline._id` exacto en el `$match` de la agregación. Ningún código anterior a ese PR filtraba por ese campo (el viejo `pipeline.tsx` agrupaba client-side solo por `pipelineStage`, vía `stageKeyOf()`) — así que el hueco ya existía, pero era invisible: cualquier lead SIN el campo `pipeline` seteado (Mongoose lo deja simplemente ausente, no hay default) pasaba desapercibido con el código viejo y desaparece del todo con el nuevo, sin ningún error.
+
+**Causa raíz real:** casi ningún camino de creación AUTOMÁTICA de leads setea `pipeline` — solo `crearLead()` (manual) e `import.service.js` (CSV) lo hacen. `processGupshupMessage()` (el handler real de WhatsApp entrante en producción hoy), `processWhatsAppMessage()`, `processMetaLead()`/`processTikTokLead()` (ads), `execCreateLead()` (automatizaciones) y `processInboundJob()` (worker) nunca lo asignaron.
+
+**Evidencia real, verificada contra producción (11/sep/2026), los 7 negocios:**
+
+| Negocio | Leads activos | Visibles antes de este fix | Huérfanos (sin `pipeline`) | Fuente |
+|---|---|---|---|---|
+| CREA OS | 11 | 4 | 7 | 100% `whatsapp` |
+| Nutriva Corp | 6 | 3 | 3 | 100% `whatsapp` |
+| Negocio Prueba 2 | 4 | 3 | 1 | `whatsapp` |
+| Billions | 3 | 3 | 0 | — |
+| Te Quiero Industrias | 3 | 3 | 0 | — |
+| Myrel Company / Nutriva | 0 | — | — | sin pipeline default, sin actividad |
+
+**Total: 11 leads huérfanos en producción, en 3 de los 5 negocios reales con actividad — todos `source:'whatsapp'`.**
+
+### Blueprint aprobado, 3 partes
+
+1. **Mitigación inmediata (este commit, permanente, no temporal):** `obtenerTablero()` trata un lead sin `pipeline` seteado como perteneciente al pipeline que se está pidiendo (`$or: [{pipeline: pipeline._id}, {pipeline: {$exists:false}}]`) — seguro hoy porque ningún negocio real tiene más de un pipeline activo (verificado antes del fix). Se deja permanente como red de seguridad, no se retira después del backfill/fix hacia adelante.
+2. **Backfill retroactivo (PR aparte, pendiente):** script de un solo uso que asigna el pipeline default a los leads huérfanos existentes, negocio por negocio — saltea y loguea (sin asumir) cualquier negocio con 0 o 2+ pipelines activos.
+3. **Fix hacia adelante (PR aparte, pendiente, bloqueante de negocio):** agregar `pipeline: pipeline._id` a los 6 puntos de creación listados arriba. `processGupshupMessage()` primero — bloqueante para la campaña de Facebook Ads con tráfico a WhatsApp.
+
+---
+
 ## 2026-09-11 — `estimated_value`/`last_contact_at` siempre en 0/null en toda la app (crea-os-ignite) — `normalizeLead()` no reconoce los nombres reales del backend
 
 **Estado:** Abierto — identificado al migrar Pipeline a `GET /pipeline/:id/board` (backlog "buscador + paginación real del Kanban", PR D/5), no arreglado a propósito: decisión explícita del usuario, mismo criterio que la mención original ya dejaba anotada — es un bug real y separado, no se toca de paso.
