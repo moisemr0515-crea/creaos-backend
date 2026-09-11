@@ -13,7 +13,7 @@ propuesto para el PR de seguimiento.
 
 ## 2026-09-11 — Incidente de producción: leads sin `pipeline` seteado invisibles en el Kanban tras la migración a GET /pipeline/:id/board
 
-**Estado:** Mitigación en producción (este commit) — restaura visibilidad ya. Backfill retroactivo y fix hacia adelante en los puntos de creación **pendientes**, blueprint aprobado, PRs por escribir. Esta entrada se actualiza a medida que avanzan.
+**Estado:** Partes 1, 2 y 3a **completas y en producción**. Parte 3b (ads Meta/TikTok + automatizaciones) pendiente, sin urgencia — ver "Cierre parcial" al final de esta entrada.
 **Prioridad:** Crítica — bloquea además el lanzamiento de una campaña de Facebook Ads con tráfico directo a WhatsApp prevista para los próximos días (cada lead nuevo por esa vía seguiría invisible hasta el fix hacia adelante).
 **Detectado en:** reporte de producción real, horas después de mergear el PR D del backlog "buscador + paginación real del Kanban" — un negocio real (CREA OS, 11 leads activos) mostraba solo 4 en Pipeline.
 **Archivos involucrados:** [`pipeline.service.js#obtenerTablero()`](../../src/modules/pipeline/pipeline.service.js) (mitigación, este commit); pendientes: [`webhook.service.js`](../../src/modules/webhooks/webhook.service.js) (`processGupshupMessage()` línea ~381 — el que corre tráfico real hoy; `processWhatsAppMessage()` línea ~298; `processMetaLead()`/`processTikTokLead()`), [`automation.engine.js#execCreateLead()`](../../src/modules/automations/automation.engine.js), [`inbound.worker.js#processInboundJob()`](../../src/modules/channels/workers/inbound.worker.js) (worker BullMQ, hoy inactivo en producción).
@@ -41,7 +41,28 @@ propuesto para el PR de seguimiento.
 
 1. **Mitigación inmediata (este commit, permanente, no temporal):** `obtenerTablero()` trata un lead sin `pipeline` seteado como perteneciente al pipeline que se está pidiendo (`$or: [{pipeline: pipeline._id}, {pipeline: {$exists:false}}]`) — seguro hoy porque ningún negocio real tiene más de un pipeline activo (verificado antes del fix). Se deja permanente como red de seguridad, no se retira después del backfill/fix hacia adelante.
 2. **Backfill retroactivo (PR aparte, pendiente):** script de un solo uso que asigna el pipeline default a los leads huérfanos existentes, negocio por negocio — saltea y loguea (sin asumir) cualquier negocio con 0 o 2+ pipelines activos.
-3. **Fix hacia adelante (PR aparte, pendiente, bloqueante de negocio):** agregar `pipeline: pipeline._id` a los 6 puntos de creación listados arriba. `processGupshupMessage()` primero — bloqueante para la campaña de Facebook Ads con tráfico a WhatsApp.
+3. **Fix hacia adelante, partido en 2 por urgencia real de negocio:**
+   - **3a (bloqueante de negocio — completo):** `processGupshupMessage()`, `processWhatsAppMessage()`, `processInboundJob()` — los 3 puntos de ingesta de WhatsApp, `processGupshupMessage()` el más urgente por ser el que corre tráfico real hoy.
+   - **3b (sin urgencia — pendiente):** `processMetaLead()`/`processTikTokLead()` (ads) y `execCreateLead()` (automatizaciones). Mismo fix, menor impacto inmediato — no bloquea nada, se retoma más adelante.
+
+### Cierre parcial — partes 1, 2 y 3a (11/sep/2026)
+
+**Parte 1 (mitigación, permanente):** mergeada y en producción — `obtenerTablero()` trata un lead sin `pipeline` como perteneciente al pipeline pedido. Restauró la visibilidad de los 11 leads huérfanos originales de inmediato.
+
+**Parte 3a (fix hacia adelante, WhatsApp):** mergeada y en producción — `processGupshupMessage()`, `processWhatsAppMessage()` y `processInboundJob()` ya setean `pipeline` al crear un lead nuevo. Con esto, la campaña de Facebook Ads con tráfico a WhatsApp deja de estar bloqueada.
+
+**Parte 2 (backfill):** corrido contra producción el 11/sep/2026, después de mergear la parte 3a. Resultado real:
+
+```
+✅ CREA OS: 10 leads backfilleados
+✅ Nutriva Corp: 3 leads backfilleados
+✅ Negocio Prueba 2: 1 lead backfilleado
+Resumen: 3 negocios backfilleados (14 leads en total), 0 salteados.
+```
+
+**14 leads, no los 11 originales** — entre el diagnóstico inicial y el deploy de la parte 3a hubo una ventana donde `processGupshupMessage()` todavía no seteaba `pipeline`, así que 3 leads nuevos de WhatsApp (todos de CREA OS) se sumaron a la lista de huérfanos en ese lapso. Esperado, no una señal de que el fix esté incompleto — confirmado aparte con una query de solo lectura: **0 leads sin `pipeline` en toda la producción** después de correr el script.
+
+**Pendiente, sin urgencia:** parte 3b (ads Meta/TikTok, automatizaciones) — mismo patrón de fix, PR aparte, se retoma sin apuro.
 
 ---
 
