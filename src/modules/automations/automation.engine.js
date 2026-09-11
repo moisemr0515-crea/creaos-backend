@@ -421,6 +421,17 @@ async function runAutomation(automation, lead, triggerData) {
     $inc: incDelta,
     $set: { 'stats.lastExecutedAt': completedAt },
   });
+
+  // Antes esta función no devolvía nada — los 2 callers existentes la usan
+  // fire-and-forget (triggerAutomations()) o esperan el save sin mirar el
+  // resultado (automationExecute.worker.js, hasta este cambio). Agregado
+  // para Caso 5 del backlog: el guardrail de notificación de
+  // automationExecute.worker.js#processExecuteJob() necesita saber si la
+  // acción change_stage de ESTA ejecución puntual realmente tuvo éxito
+  // (no alcanza con "isActive:true" ni con overallStatus solo, si la
+  // automatización tuviera más de una acción) — puramente aditivo, no
+  // rompe a ningún caller existente que ignoraba el valor de retorno.
+  return { status: overallStatus, actionsExecuted };
 }
 
 // ─── Public trigger entry point ───────────────────────────────────────────────
