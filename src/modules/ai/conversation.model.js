@@ -59,7 +59,14 @@ const messageSchema = new mongoose.Schema(
     // un mensaje del lead es semánticamente incorrecto y confunde a
     // cualquier consumidor (UI, reportes) que mire sentBy sin filtrar por
     // role primero. Ver ai.service.js#saveInboundMessage().
-    sentBy: { type: String, enum: ['ai', 'agent', 'lead', 'system'], default: 'ai' },
+    //
+    // 'automation' agregado para Caso 5 del backlog (automation.engine.js#
+    // execSendTemplate()) — un mensaje que mandó una Automation de tiempo
+    // (ej. "Seguimientos automáticos"), distinto tanto de 'ai' (respuesta
+    // en vivo de generateReply()) como de 'agent' (un humano lo mandó a
+    // mano) — para que UI/reportes puedan distinguir "la IA respondió en
+    // el chat" de "un seguimiento programado se disparó solo".
+    sentBy: { type: String, enum: ['ai', 'agent', 'lead', 'system', 'automation'], default: 'ai' },
     // Estado del envío real por WhatsApp de ESTE mensaje puntual — no de la
     // conversación entera, porque una misma conversación puede tener
     // mensajes que sí intentaron salir por WhatsApp y otros que no (ej. un
