@@ -125,13 +125,17 @@ function extractDaysThreshold(conditions) {
  * @param {Date} [now] - inyectable para tests; default new Date()
  * @returns {object} filtro de Mongo (sin business/isDeleted — los agrega el llamador)
  */
-function buildLeadCandidateFilter(triggerType, conditions, now = new Date()) {
+function assertTriggerDeTiempo(triggerType) {
   if (!esTriggerDeTiempo(triggerType)) {
     throw new Error(
       `timeTriggers.registry: tipo de trigger desconocido "${triggerType}" — los soportados son: ` +
       `${TIME_TRIGGER_TYPES.join(', ')}.`
     );
   }
+}
+
+function buildLeadCandidateFilter(triggerType, conditions, now = new Date()) {
+  assertTriggerDeTiempo(triggerType);
 
   const dias = extractDaysThreshold(conditions);
   const cutoff = new Date(now.getTime() - dias * DAY_MS);
@@ -157,10 +161,75 @@ function buildLeadCandidateFilterForAutomation(automation, now = new Date()) {
   return buildLeadCandidateFilter(automation?.trigger?.type, automation?.trigger?.conditions, now);
 }
 
+/**
+ * Recheck (PR 3/3, automationExecute.worker.js): cuántos días pasaron desde
+ * el campo real del lead (o su fallback a createdAt) para este trigger de
+ * tiempo — mismo criterio de fallback y mismo redondeo (Math.floor) que
+ * mission.service.js#diasDesde(), por consistencia con la única otra
+ * lógica de "días sin seguimiento" que ya existe en el backend.
+ *
+ * Devuelve `null` si el lead no tiene NI el campo real NI createdAt (no
+ * debería pasar nunca en la práctica — createdAt siempre lo pone
+ * Mongoose — pero es una lectura defensiva, no una excepción, porque no es
+ * una configuración inválida: es el lead el que no tiene datos).
+ *
+ * No usa automation.engine.js#getField()/evaluateCondition() a propósito:
+ * ese evaluador genérico espera que `cond.field` sea un path DENTRO del
+ * lead a mirar (ej. 'pipelineStage') — acá `field: 'daysThreshold'` es el
+ * NOMBRE DEL PARÁMETRO de configuración, no un path del lead, así que no
+ * encaja con ese mecanismo sin decorar el lead con un campo virtual que
+ * conditionsMet() no sabría producir. Esta función aplica la misma lógica
+ * (mismo extractDaysThreshold(), mismo campo real/fallback) del lado de JS
+ * en vez de Mongo — así el filtro del sweep y el recheck de ejecución usan
+ * exactamente la misma fuente de verdad y no pueden desincronizarse.
+ *
+ * @param {object} lead - documento (o lean object) de Lead
+ * @param {string} triggerType - 'lead_stale' | 'stage_stalled'
+ * @param {Date} [now]
+ * @returns {number|null}
+ */
+function computeDaysSince(lead, triggerType, now = new Date()) {
+  assertTriggerDeTiempo(triggerType);
+
+  const { realField, fallbackField } = TIME_TRIGGER_FIELDS[triggerType];
+  const fecha = lead?.[realField] || lead?.[fallbackField];
+  if (!fecha) return null;
+
+  return Math.floor((now.getTime() - new Date(fecha).getTime()) / DAY_MS);
+}
+
+/**
+ * Recheck completo: ¿la condición de tiempo de esta Automation sigue
+ * siendo cierta para este lead, AHORA? Usado por automationExecute.worker.js
+ * justo antes de ejecutar — el barrido pudo haber encontrado a este lead
+ * como candidato varios minutos (o más, si la cola tiene backlog) antes de
+ * que este job corriera de verdad; en el medio, alguien pudo haberlo
+ * contactado (o haber cambiado de etapa), y ya no correspondería ejecutar
+ * la automatización.
+ *
+ * Fail-closed: si el lead no tiene fecha base (computeDaysSince devuelve
+ * null), se considera que la condición NO se cumple — nunca ejecuta sobre
+ * un dato ausente.
+ *
+ * @param {{trigger: {type: string, conditions: Array}}} automation
+ * @param {object} lead
+ * @param {Date} [now]
+ * @returns {boolean}
+ */
+function conditionStillTrue(automation, lead, now = new Date()) {
+  const dias = computeDaysSince(lead, automation?.trigger?.type, now);
+  if (dias === null) return false;
+
+  const umbral = extractDaysThreshold(automation?.trigger?.conditions);
+  return dias > umbral;
+}
+
 module.exports = {
   TIME_TRIGGER_TYPES,
   DAYS_THRESHOLD_FIELD,
   extractDaysThreshold,
   buildLeadCandidateFilter,
   buildLeadCandidateFilterForAutomation,
+  computeDaysSince,
+  conditionStillTrue,
 };

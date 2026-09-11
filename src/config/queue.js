@@ -38,6 +38,13 @@ const QUEUE_NAMES = {
   INBOUND: 'whatsapp-inbound',
   OUTBOUND: 'whatsapp-outbound',
   DEAD_LETTER: 'whatsapp-dead-letter',
+  // Caso 7 del backlog — motor de automatizaciones, trigger por tiempo.
+  // AUTOMATION_SWEEP: un job repetible que pregunta "qué leads cumplen una
+  // condición de tiempo ahora" y encola AUTOMATION_EXECUTE por cada match
+  // (mismo patrón Gateway→Queue→Worker que whatsapp-inbound/outbound, ver
+  // automations/workers/automationSweep.worker.js).
+  AUTOMATION_SWEEP: 'automation-sweep',
+  AUTOMATION_EXECUTE: 'automation-execute',
 };
 
 // Config compartida de reintentos — 3 intentos con backoff exponencial

@@ -1,14 +1,16 @@
 // Test puro (Jest, sin Mongo real) de timeTriggers.registry.js — Caso 7 del
-// backlog, PR 2/3. Cubre extractDaysThreshold() y buildLeadCandidateFilter()
-// (+ su wrapper sobre un Automation) de forma aislada: dado un trigger.type
-// y trigger.conditions, ¿el filtro de Mongo generado es exactamente el
-// esperado? Sin conexión a base de datos — este módulo es 100% síncrono.
+// backlog. Cubre extractDaysThreshold()/buildLeadCandidateFilter() (PR 2/3,
+// el filtro de Mongo del barrido) y computeDaysSince()/conditionStillTrue()
+// (PR 3/3, el recheck antes de ejecutar) de forma aislada. Sin conexión a
+// base de datos — este módulo es 100% síncrono.
 const {
   TIME_TRIGGER_TYPES,
   DAYS_THRESHOLD_FIELD,
   extractDaysThreshold,
   buildLeadCandidateFilter,
   buildLeadCandidateFilterForAutomation,
+  computeDaysSince,
+  conditionStillTrue,
 } = require('./timeTriggers.registry');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -160,5 +162,75 @@ describe('timeTriggers.registry — buildLeadCandidateFilterForAutomation()', ()
 
   test('propaga un error claro (no revienta con TypeError) si la Automation viene sin trigger', () => {
     expect(() => buildLeadCandidateFilterForAutomation({}, now)).toThrow(/tipo de trigger desconocido/);
+  });
+});
+
+describe('timeTriggers.registry — computeDaysSince() (recheck, PR 3/3)', () => {
+  const now = new Date('2026-09-15T12:00:00.000Z');
+
+  test('lead_stale: calcula los días desde lastContactedAt', () => {
+    const lead = { lastContactedAt: new Date(now.getTime() - 5 * DAY_MS), createdAt: new Date(now.getTime() - 30 * DAY_MS) };
+    expect(computeDaysSince(lead, 'lead_stale', now)).toBe(5);
+  });
+
+  test('lead_stale: cae a createdAt si lastContactedAt no está seteado', () => {
+    const lead = { lastContactedAt: null, createdAt: new Date(now.getTime() - 10 * DAY_MS) };
+    expect(computeDaysSince(lead, 'lead_stale', now)).toBe(10);
+  });
+
+  test('stage_stalled: calcula los días desde stageChangedAt, con el mismo fallback', () => {
+    const conFecha = { stageChangedAt: new Date(now.getTime() - 8 * DAY_MS) };
+    expect(computeDaysSince(conFecha, 'stage_stalled', now)).toBe(8);
+
+    const sinFecha = { stageChangedAt: undefined, createdAt: new Date(now.getTime() - 2 * DAY_MS) };
+    expect(computeDaysSince(sinFecha, 'stage_stalled', now)).toBe(2);
+  });
+
+  test('redondea hacia abajo (Math.floor), igual que mission.service.js#diasDesde()', () => {
+    const lead = { lastContactedAt: new Date(now.getTime() - 2.9 * DAY_MS) };
+    expect(computeDaysSince(lead, 'lead_stale', now)).toBe(2);
+  });
+
+  test('devuelve null si el lead no tiene ni el campo real ni createdAt (defensivo, no debería pasar en la práctica)', () => {
+    expect(computeDaysSince({}, 'lead_stale', now)).toBeNull();
+  });
+
+  test('lanza el mismo error de tipo desconocido que buildLeadCandidateFilter() para un triggerType inválido', () => {
+    expect(() => computeDaysSince({ lastContactedAt: now }, 'lead_created', now)).toThrow(/tipo de trigger desconocido/);
+  });
+});
+
+describe('timeTriggers.registry — conditionStillTrue() (recheck, PR 3/3)', () => {
+  const now = new Date('2026-09-15T12:00:00.000Z');
+  const automationLeadStale = (umbral) => ({
+    trigger: { type: 'lead_stale', conditions: [{ field: DAYS_THRESHOLD_FIELD, operator: 'greater_than', value: umbral }] },
+  });
+
+  test('true si el lead sigue sin contacto más allá del umbral', () => {
+    const lead = { lastContactedAt: new Date(now.getTime() - 5 * DAY_MS) };
+    expect(conditionStillTrue(automationLeadStale(3), lead, now)).toBe(true);
+  });
+
+  test('false si al lead ya lo contactaron y ya no supera el umbral (caso central del recheck)', () => {
+    // Este es exactamente el escenario que motiva el recheck: el barrido lo
+    // encontró stale, pero alguien lo contactó mientras el job esperaba en
+    // la cola de ejecución.
+    const lead = { lastContactedAt: new Date(now.getTime() - 1 * DAY_MS) };
+    expect(conditionStillTrue(automationLeadStale(3), lead, now)).toBe(false);
+  });
+
+  test('false exactamente en el umbral (greater_than es estricto, no greater_or_equal)', () => {
+    const lead = { lastContactedAt: new Date(now.getTime() - 3 * DAY_MS) };
+    expect(conditionStillTrue(automationLeadStale(3), lead, now)).toBe(false);
+  });
+
+  test('false (fail-closed) si el lead no tiene fecha base', () => {
+    expect(conditionStillTrue(automationLeadStale(3), {}, now)).toBe(false);
+  });
+
+  test('propaga el error de umbral inválido si la Automation quedó mal configurada', () => {
+    const automation = { trigger: { type: 'lead_stale', conditions: [] } };
+    const lead = { lastContactedAt: new Date(now.getTime() - 5 * DAY_MS) };
+    expect(() => conditionStillTrue(automation, lead, now)).toThrow(/falta la condición/);
   });
 });
