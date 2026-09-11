@@ -297,7 +297,7 @@ Para el momento en que se corrigió la Causa 4 (PR #78), el evento `ACCOUNT_VERI
 
 ## 2026-08-24 — "Nivel" y "Personalidad" de la IA (panel de negocio): ni persisten, ni hay lógica real esperándolos
 
-**Estado:** Abierto — diagnóstico completo, sin implementar. Necesita decisión de producto antes de código (Track 5 del roadmap, no un fix chico de Track 1).
+**Estado:** Resuelto parcialmente (09/sep/2026) — "Personalidad" cableada de punta a punta (Business.aiPersonality + allowlist + bloque condicional en `buildSystemPrompt()`, creaos-backend PR #94; guardado movido a `updateCurrentBusiness()` en `business.tsx`, crea-os-ignite). "Nivel" NO se cableó — sigue oculto en la UI a propósito (bloque comentado en `business.tsx`, crea-os-ignite PR #19) porque "Cierre automático" necesita el guardrail de `update_lead_stage` (ver entrada del 2026-09-10 más abajo, Caso 5/7) que todavía no existe.
 **Prioridad:** Media — no rompe nada activo, pero el usuario ve "Cambios guardados" sobre una selección que se pierde en el camino, siempre.
 **Detectado en:** auditoría de pricing del 23/ago/2026 (Track 1 #4), investigación pedida explícitamente sin implementación.
 **Archivos involucrados:** [`business.tsx`](../../../crea-os-ignite/src/routes/business.tsx) (frontend, UI + guardado), [`user.controller.js#updateMiPerfil()`](../../src/modules/users/user.controller.js), [`ai.service.js#buildSystemPrompt()`](../../src/modules/ai/ai.service.js), `Business.model.js`/`User.model.js` (backend, sin campo).
@@ -319,6 +319,36 @@ No hay "alcance propuesto para el PR" único acá — depende de qué se decida:
 - **Sacar la feature de la UI** mientras no haya presupuesto de producto para la lógica real, para no seguir mostrando un control que no hace nada.
 
 Queda para retomar junto con el resto de Track 5.
+
+---
+
+## 2026-09-10 — "Seguimiento automático" / "Cierre asistido por IA" (panel de negocio y precios): placeholder en 3 capas, y además anunciado como feature de un plan pago
+
+**Estado:** Resuelto parcialmente (09/sep/2026) — toggle oculto en `business.tsx` (crea-os-ignite) y copy de `plan.tsx` corregido de "incluido" a "Próximamente". El fix de fondo (automatización real) sigue bloqueado, ver "Decisión pendiente" abajo.
+**Prioridad:** Alta — a diferencia de "Nivel"/"Personalidad", esto también se vendía como feature incluida en el plan Closer (`plan.tsx`), no solo un toggle de configuración interna.
+**Detectado en:** backlog Caso 5, auditado a fondo el 09/sep/2026 (mismo ciclo que Casos #12/#15 de leads).
+**Archivos involucrados:** [`automation.service.js`](../../src/modules/automations/automation.service.js) (seed + toggle real), [`automation.engine.js#triggerAutomations()`](../../src/modules/automations/automation.engine.js), [`automation.model.js#TRIGGER_TYPES`](../../src/modules/automations/automation.model.js), [`user.controller.js#updateMiPerfil()`](../../src/modules/users/user.controller.js), [`business.tsx`](../../../crea-os-ignite/src/routes/business.tsx) y [`plan.tsx`](../../../crea-os-ignite/src/routes/plan.tsx) (frontend), [`lib/api/automations.ts`](../../../crea-os-ignite/src/lib/api/automations.ts).
+
+### Problema
+
+Tres fallas independientes apiladas, no una sola:
+
+**1. El toggle de `business.tsx` no persiste — mismo bug de ruteo que Nivel/Personalidad.** `auto_followup_enabled`/`auto_close_enabled` no existen en ningún modelo del backend (ni `Business.model.js` ni `User.model.js`) y viajan por `save()`/`updateMe()` → `PUT /api/v1/users/me`, que solo persiste `{name, phone, avatar}` — sin validador Joi, así que la request nunca falla: 200 OK, toast "Cambios guardados", y no se guarda nada. Peor que el bug de temperatura en Leads (que sí devuelve 400): acá el usuario ve éxito falso.
+
+**2. Aunque persistiera, no tocaría la automatización real — son dos modelos de datos desconectados.** El backend SÍ tiene un CRUD completo y funcional de automatizaciones (`automation.service.js`: `createAutomation`, `toggleActive`, `verificarLimiteAutomatizaciones` con enforcement real de plan, endpoints `PATCH /automations/:id/toggle`, `GET /automations/limit`). Se siembran 2 automatizaciones reales por negocio (`AUTOMATIZACIONES_SEMILLA`, `automation.service.js:80-97`, `type:'followup'`/`type:'auto_close'`). Pero **nada en el frontend llama a `toggleAutomation()`** (`lib/api/automations.ts:55-60`) — no existe una pantalla `/automations`. La única función de esa API que se usa es `getAutomationLimit()`, y solo para calcular el candado de plan del toggle roto de arriba — un mecanismo real, reusado para gatear una función que no existe.
+
+**3. Aunque se conectaran las capas 1 y 2, seguiría sin ejecutar nada — bloqueado por el Caso 7.** Las automatizaciones semilla tienen `trigger: { type: 'manual' }` (`automation.service.js:86,94`). `triggerAutomations()` (`automation.engine.js:320-339`) solo dispara automatizaciones cuyo `trigger.type` matchea un evento real (`lead_created`, `lead_assigned`, `lead_stage_changed`) — nunca se invoca con `'manual'`. La única forma de ejecutar una automatización `manual` es el endpoint de test explícito (`testAutomation()`, un lead a la vez). `TRIGGER_TYPES` (`automation.model.js:3-11`) no tiene ningún trigger de tiempo/cron — y "seguimiento a los N días sin contacto" / "cierre cuando hay señales de inactividad" son, por definición, condiciones de tiempo. Esto es el Caso 7 del backlog: el motor de automatizaciones no soporta trigger por tiempo, solo por evento.
+
+**Hallazgo adicional, fuera del alcance original del caso:** el texto exacto "Seguimiento automático" / "Cierre asistido por IA" aparecía en `plan.tsx` como feature incluida del plan Closer (pago) — no solo un toggle de configuración. Un negocio que paga específicamente por esta línea de la comparación de planes no recibe ningún comportamiento real, sin importar cuánto pague.
+
+### Decisión implementada (09/sep/2026)
+
+- **`business.tsx`:** todo el bloque "Automatizaciones" (los 2 `AutomationToggle`, su estado, el fetch de `getAutomationLimit()`, y el modal de upgrade asociado) queda comentado, no borrado — mismo patrón que "Nivel". Documentado inline por qué (bloqueado por este mismo hallazgo, Caso 7).
+- **`plan.tsx`:** "Seguimiento automático" y "Cierre asistido por IA" se movieron de `features` (check verde, "incluido") a un nuevo `comingSoon` (ícono de reloj, "Próximamente") en la card de Closer — decisión ya tomada en la auditoría de pricing de agosto (Track 2), pendiente de ejecución hasta ahora.
+
+### Decisión pendiente — el fix de fondo depende del Caso 7
+
+No alcanza con cablear el toggle a la automatización real (capas 1+2): sin resolver primero el Caso 7 (agregar un trigger por tiempo/cron al motor de automatizaciones — `automation.model.js#TRIGGER_TYPES` + un scheduler que lo dispare periódicamente), la automatización seguiría sin ejecutar nada real aunque el toggle "funcionara". El desarrollo real, una vez resuelto el Caso 7, todavía requiere definir la lógica de negocio concreta: qué es "un lead sin seguimiento hace N días" y qué señales ameritan proponer un cierre. Queda documentado para retomar junto con el Caso 7.
 
 ---
 
