@@ -7,6 +7,7 @@ const OutboundEvent = require('../outboundEvent.model');
 const Business = require('../../businesses/business.model');
 const Lead = require('../../leads/lead.model');
 const leadService = require('../../leads/lead.service');
+const pipelineService = require('../../pipeline/pipeline.service');
 const Conversation = require('../../ai/conversation.model');
 const aiService = require('../../ai/ai.service');
 const notificationService = require('../../admin/notification.service');
@@ -75,8 +76,14 @@ async function ensureLeadAndConversation({ businessId, phone, text, name, mediaT
   const resumenActividad = text?.slice(0, 100) || (mediaType ? `[${mediaType}]` : '');
 
   if (!lead) {
+    // Incidente de producción (11/sep/2026, docs/implementation/known-issues.md)
+    // — mismo fix que su duplicado en webhook.service.js#processGupshupMessage()
+    // (ver la nota de diseño arriba: duplicación deliberada, un bug en un
+    // lado no afecta al otro — así que había que corregir este lado aparte).
+    const pipeline = await pipelineService.obtenerOCrearDefault(businessId);
     lead = await Lead.create({
       business: businessId,
+      pipeline: pipeline._id,
       name: name || phoneNormalizado,
       phone: phoneNormalizado,
       source: 'whatsapp',

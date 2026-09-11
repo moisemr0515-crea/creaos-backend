@@ -27,6 +27,7 @@ jest.mock('../queues/outbound.queue', () => ({
 
 const mongoose = require('mongoose');
 const Business = require('../../businesses/business.model');
+const Pipeline = require('../../pipeline/pipeline.model');
 const Lead = require('../../leads/lead.model');
 const Conversation = require('../../ai/conversation.model');
 const InboundEvent = require('../inboundEvent.model');
@@ -61,6 +62,7 @@ describe('inbound.worker#processInboundJob() — paridad con processGupshupMessa
     await InboundEvent.deleteMany({});
     await Conversation.deleteMany({});
     await Lead.deleteMany({});
+    await Pipeline.deleteMany({});
     await User.deleteMany({});
     await Business.deleteMany({});
     await Role.deleteMany({});
@@ -75,6 +77,7 @@ describe('inbound.worker#processInboundJob() — paridad con processGupshupMessa
     await InboundEvent.deleteMany({});
     await Conversation.deleteMany({});
     await Lead.deleteMany({});
+    await Pipeline.deleteMany({});
     await User.deleteMany({});
     await Business.deleteMany({});
     business = await Business.create({ name: 'Negocio de prueba' });
@@ -159,6 +162,23 @@ describe('inbound.worker#processInboundJob() — paridad con processGupshupMessa
 
     const conversation = await Conversation.findOne({ business: business._id });
     expect(qualifySpy).toHaveBeenCalledWith(conversation._id, expect.objectContaining({ _id: conversation.lead }));
+  });
+
+  // Incidente de producción (11/sep/2026, docs/implementation/known-issues.md)
+  // — el lead nuevo creado acá (duplicado deliberado de
+  // processGupshupMessage(), ver la nota de diseño al inicio del archivo)
+  // quedaba sin `pipeline`, invisible en Pipeline (GET /pipeline/:id/board).
+  test('el lead nuevo creado por un mensaje entrante queda con pipeline seteado al default del negocio', async () => {
+    jest.spyOn(aiService, 'generateReply').mockResolvedValue({ reply: null, tokensUsed: 5 });
+
+    const event = await crearInboundEvent();
+    await processInboundJob({ data: { inboundEventId: event._id } });
+
+    const pipeline = await Pipeline.findOne({ business: business._id, isDefault: true, isActive: true });
+    expect(pipeline).not.toBeNull();
+
+    const lead = await Lead.findOne({ business: business._id, phone: PHONE });
+    expect(lead.pipeline?.toString()).toBe(pipeline._id.toString());
   });
 
   test('qualifyLead() NO se dispara si la IA decide no responder (reply:null)', async () => {
