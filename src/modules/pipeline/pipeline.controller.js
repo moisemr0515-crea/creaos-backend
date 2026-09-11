@@ -1,7 +1,13 @@
 const pipelineService = require('./pipeline.service');
-const { validateBody } = require('../../shared/utils/validate');
+const { validateBody, validateQuery } = require('../../shared/utils/validate');
 const { respuestaExito } = require('../../utils/response');
 const Joi = require('joi');
+
+// Mismo límite que search en listLeadsSchema (lead.validator.js) — un solo
+// campo, no amerita moverlo a un archivo .validator.js aparte todavía.
+const getBoardSchema = Joi.object({
+  search: Joi.string().max(200).optional().allow(''),
+});
 
 const createPipelineSchema = Joi.object({
   name:        Joi.string().max(100).required(),
@@ -69,7 +75,8 @@ const updatePipeline = async (req, res, next) => {
 
 const getBoard = async (req, res, next) => {
   try {
-    const { pipeline, tablero } = await pipelineService.obtenerTablero(req.businessId, req.params.id);
+    const { search } = await validateQuery(getBoardSchema, req.query);
+    const { pipeline, tablero } = await pipelineService.obtenerTablero(req.businessId, req.params.id, search);
     return respuestaExito(res, { message: 'Tablero obtenido exitosamente', data: { pipeline, tablero } });
   } catch (err) {
     next(err);
