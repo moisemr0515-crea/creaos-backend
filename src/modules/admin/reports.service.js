@@ -94,7 +94,11 @@ const getConversionsReport = async (businessId, { startDate, endDate } = {}) => 
     Lead.countDocuments({ ...match, pipelineStage: 'won' }),
     Lead.aggregate([
       { $match: { ...match, pipelineStage: 'won' } },
-      { $group: { _id: null, total: { $sum: '$potentialValue' } } },
+      // actualValue (monto real cobrado) con fallback a potentialValue para
+      // leads que se cerraron antes de que actualValue existiera, o que se
+      // movieron a 'won' por un camino que nunca llegó a setearlo (ver
+      // lead.model.js#actualValue).
+      { $group: { _id: null, total: { $sum: { $ifNull: ['$actualValue', '$potentialValue'] } } } },
     ]),
     Lead.aggregate([
       { $match: match },
@@ -106,7 +110,8 @@ const getConversionsReport = async (businessId, { startDate, endDate } = {}) => 
           },
           total: { $sum: 1 },
           won:   { $sum: { $cond: [{ $eq: ['$pipelineStage', 'won'] }, 1, 0] } },
-          value: { $sum: { $cond: [{ $eq: ['$pipelineStage', 'won'] }, '$potentialValue', 0] } },
+          // Mismo criterio que el total de arriba: actualValue con fallback a potentialValue.
+          value: { $sum: { $cond: [{ $eq: ['$pipelineStage', 'won'] }, { $ifNull: ['$actualValue', '$potentialValue'] }, 0] } },
         },
       },
       { $sort: { '_id.year': 1, '_id.month': 1 } },

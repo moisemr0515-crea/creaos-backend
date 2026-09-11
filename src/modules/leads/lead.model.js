@@ -81,6 +81,16 @@ const leadSchema = new mongoose.Schema(
     pipeline: { type: mongoose.Schema.Types.ObjectId, ref: 'Pipeline' },
     stageChangedAt: Date,
     potentialValue: { type: Number, min: 0, default: 0 },
+    // Monto real cobrado al cerrar la venta (pantalla "Cerrar venta" del
+    // frontend) — distinto de potentialValue, que es la estimación previa
+    // al cierre y sigue existiendo tal cual para leads abiertos. Sin
+    // default a propósito: undefined significa "todavía no se confirmó un
+    // cierre real", que es distinto de "se cerró en $0". Un lead nunca
+    // debería tener este campo seteado si no pasó por una etapa 'won' del
+    // pipeline alguna vez (ver reports.service.js#getConversionsReport,
+    // que usa actualValue con fallback a potentialValue para leads viejos
+    // que se cerraron antes de que este campo existiera).
+    actualValue: { type: Number, min: 0 },
     currency: { type: String, default: 'USD', uppercase: true },
     closeProbability: { type: Number, min: 0, max: 100, default: 0 },
     assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
