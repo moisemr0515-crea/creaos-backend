@@ -11,6 +11,37 @@ propuesto para el PR de seguimiento.
 
 ---
 
+## 2026-09-11 — `estimated_value`/`last_contact_at` siempre en 0/null en toda la app (crea-os-ignite) — `normalizeLead()` no reconoce los nombres reales del backend
+
+**Estado:** Abierto — identificado al migrar Pipeline a `GET /pipeline/:id/board` (backlog "buscador + paginación real del Kanban", PR D/5), no arreglado a propósito: decisión explícita del usuario, mismo criterio que la mención original ya dejaba anotada — es un bug real y separado, no se toca de paso.
+**Prioridad:** Media-alta — no rompe nada (no tira error, no bloquea ningún flujo), pero 2 datos visibles en toda la UI de leads (💰 valor estimado, 🎯 valor ponderado por probabilidad, y la alerta "sin respuesta hace Nh") muestran siempre 0/nada, en cualquier pantalla, para cualquier negocio — silencioso, fácil de no notar y atribuir a "no hay datos" en vez de a un bug.
+**Detectado en:** un comentario YA EXISTENTE en el código (`lib/api/leads.ts:218-221`, crea-os-ignite) que ya marcaba la mitad de este problema (`estimated_value`) como "bug real, preexistente y separado... documentado aparte, fuera de alcance" de un fix anterior — nunca había llegado a este archivo. Se encontró la segunda mitad (`last_contact_at`) al mapear qué campos necesita `LeadCardView` (Pipeline) contra lo que devuelve el backend.
+**Archivos involucrados:** [`lib/api/leads.ts#normalizeLead()`](../../../crea-os-ignite/src/lib/api/leads.ts) (crea-os-ignite, el bug vive acá) — no en el backend, que sí manda los campos con sus nombres reales de Mongoose.
+
+### Problema
+
+`normalizeLead()` arma cada `Lead` del frontend leyendo el JSON crudo del backend con `pick(r, ...nombresPosibles)` — pero para 2 campos, ninguno de los nombres que busca coincide con el nombre real que manda el backend (Mongoose, sin ningún transform de por medio, ver `lead.model.js`):
+
+| Campo del frontend | `pick()` busca | Backend realmente manda |
+|---|---|---|
+| `estimated_value` | `estimated_value`, `estimatedValue`, `valorEstimado` | `potentialValue` |
+| `last_contact_at` | `last_contact_at`, `lastContactAt`, `lastContact` | `lastContactedAt` |
+
+Como ninguna variante matchea, los dos campos caen siempre al fallback (`0` y `null` respectivamente) — para CUALQUIER lead, en CUALQUIER pantalla que use `normalizeLead()` (Leads, Pipeline, dashboard, stats, notificaciones, `SendWithAIModal`, business — los mismos 6+ lugares mencionados en el comentario de `listLeadsPage()`). Efecto visible: la tarjeta 💰 valor / 🎯 ponderado de Pipeline siempre en `$0`; la alerta "sin respuesta hace Nh" nunca se dispara (no hay forma de calcular `hoursSince` sin `last_contact_at` real).
+
+`toBackendLeadPatch()` (mismo archivo) SÍ mapea bien estos 2 campos para la escritura (`patch.actual_value → actualValue`, `patch.last_contact_at → lastContactedAt`, etc. — ojo, ni siquiera es el mismo par: `actual_value`/`actualValue` está bien, es específicamente `estimated_value`/`potentialValue` el que falta) — el bug es puramente de lectura.
+
+### Alcance propuesto para el PR de seguimiento
+
+Agregar el nombre real del backend a la lista de `pick()` de cada campo en `normalizeLead()`:
+```ts
+estimated_value: toNum(pick(r, "estimated_value", "estimatedValue", "valorEstimado", "potentialValue")),
+last_contact_at: (pick<string>(r, "last_contact_at", "lastContactAt", "lastContact", "lastContactedAt") ?? null) as string | null,
+```
+Cambio de 2 líneas, mismo patrón que el resto de la función — pero reactiva un valor visible en TODAS las pantallas que muestran leads de golpe, así que conviene un PR chico y aislado, con captura de pantalla antes/después, no colado dentro de otro PR (mismo motivo por el que no se hizo acá, al encontrarlo durante PR D del blueprint de Pipeline).
+
+---
+
 ## 2026-08-23 — Fuga de revenue: el límite de leads activos nunca se aplicaba, en ningún plan (incluido Starter gratis)
 
 **Estado:** RESUELTO — código implementado con tests, mergeado a `main` el 24/ago/2026 (commit `193b090`, antes de que arrancara esta sesión) + confirmado el 11/sep/2026, con evidencia real de producción, que no había ningún negocio en riesgo al momento de activar el enforcement. Sin pendientes.
