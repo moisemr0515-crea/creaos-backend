@@ -7,6 +7,7 @@
 // el frontend ahora consume: page/limit/total/totalPages.
 const mongoose = require('mongoose');
 const Business = require('../businesses/business.model');
+const Pipeline = require('../pipeline/pipeline.model');
 const Lead = require('./lead.model');
 const { listarLeads } = require('./lead.service');
 const { listLeads } = require('./lead.controller');
@@ -93,6 +94,58 @@ describe('lead.service#listarLeads() — paginación', () => {
 
     expect(leads).toHaveLength(10);
     expect(total).toBe(25); // el total real no depende del limit pedido
+  });
+});
+
+// Filtro `pipeline` (backlog "buscador + paginación real del Kanban", PR A)
+// — acota `stage` a UN pipeline específico. Necesario para que el "ver más"
+// por columna del Kanban no mezcle leads de 2 pipelines del mismo negocio
+// que compartan una stage.key (ver el comentario en listLeadsSchema).
+describe('lead.service#listarLeads() — filtro pipeline', () => {
+  let business;
+
+  beforeAll(async () => {
+    await mongoose.connect(MONGO_URI);
+  });
+
+  afterAll(async () => {
+    await Lead.deleteMany({});
+    await Pipeline.deleteMany({});
+    await Business.deleteMany({});
+    await mongoose.disconnect();
+  });
+
+  beforeEach(async () => {
+    await Lead.deleteMany({});
+    await Pipeline.deleteMany({});
+    business = await Business.create({ name: 'Negocio de prueba' });
+  });
+
+  const STAGES = [{ key: 'nuevo', name: 'Nuevo', order: 1, isWon: false, isLost: false }];
+
+  test('con `pipeline`: solo devuelve leads de ESE pipeline, aunque otro comparta la misma stage.key', async () => {
+    const pipelineA = await Pipeline.create({ business: business._id, name: 'Pipeline A', stages: STAGES, isDefault: true, isActive: true });
+    const pipelineB = await Pipeline.create({ business: business._id, name: 'Pipeline B', stages: STAGES, isActive: true });
+
+    await Lead.create({ business: business._id, name: 'Lead de A', pipeline: pipelineA._id, pipelineStage: 'nuevo' });
+    await Lead.create({ business: business._id, name: 'Lead de B', pipeline: pipelineB._id, pipelineStage: 'nuevo' });
+
+    const { leads, total } = await listarLeads(business._id, { stage: 'nuevo', pipeline: pipelineA._id.toString() }, null, false);
+
+    expect(total).toBe(1);
+    expect(leads[0].name).toBe('Lead de A');
+  });
+
+  test('sin `pipeline`: sigue devolviendo leads de todos los pipelines que matcheen el resto de los filtros (sin regresión)', async () => {
+    const pipelineA = await Pipeline.create({ business: business._id, name: 'Pipeline A', stages: STAGES, isDefault: true, isActive: true });
+    const pipelineB = await Pipeline.create({ business: business._id, name: 'Pipeline B', stages: STAGES, isActive: true });
+
+    await Lead.create({ business: business._id, name: 'Lead de A', pipeline: pipelineA._id, pipelineStage: 'nuevo' });
+    await Lead.create({ business: business._id, name: 'Lead de B', pipeline: pipelineB._id, pipelineStage: 'nuevo' });
+
+    const { total } = await listarLeads(business._id, { stage: 'nuevo' }, null, false);
+
+    expect(total).toBe(2);
   });
 });
 
