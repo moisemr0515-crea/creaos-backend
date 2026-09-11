@@ -48,6 +48,8 @@ const updateLeadSchema = Joi.object({
   tags:              Joi.array().items(Joi.string().trim()),
   pipelineStage:     stageValue,
   potentialValue:    Joi.number().min(0),
+  // Monto real cobrado al cerrar la venta — ver lead.model.js#actualValue.
+  actualValue:       Joi.number().min(0),
   currency:          Joi.string().length(3).uppercase(),
   assignedTo:        objectId.optional().allow(null),
   expectedCloseDate: Joi.date().iso().optional().allow(null),
