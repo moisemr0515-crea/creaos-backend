@@ -365,4 +365,9 @@ module.exports = {
   // obtenerEstadoAutomatizaciones().
   asegurarAutomatizacionesSemilla,
   AUTOMATIZACIONES_SEMILLA,
+  // resolverAccionesSemilla también para PR D/6 (migración de negocios ya
+  // sembrados con el shape viejo) — reusa tal cual la misma resolución de
+  // la etapa "ganada" por negocio que ya usa el seed de negocios nuevos,
+  // en vez de duplicarla en el script de migración.
+  resolverAccionesSemilla,
 };
