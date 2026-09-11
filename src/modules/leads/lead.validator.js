@@ -103,6 +103,13 @@ const listLeadsSchema = Joi.object({
   includeArchived: Joi.boolean().default(false),
   dateFrom:        Joi.date().iso().optional(),
   dateTo:          Joi.date().iso().optional(),
+  // Opcional — acota `stage` a UN pipeline específico. Sin esto, un negocio
+  // con 2+ pipelines activos que compartan una stage.key vería leads de
+  // ambos mezclados al filtrar solo por `stage` (caso de borde, la mayoría
+  // de los negocios tiene 1 solo pipeline) — necesario para que el "ver
+  // más" por columna del Kanban (Pipeline, backlog "buscador + paginación
+  // real") quede acotado al pipeline exacto que se está mirando.
+  pipeline: objectId.optional(),
 });
 
 const bulkActionSchema = Joi.object({

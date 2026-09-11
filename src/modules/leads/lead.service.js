@@ -197,6 +197,7 @@ const listarLeads = async (businessId, filtros, actorId, ownOnly = false) => {
     limit = 20,
     search,
     stage,
+    pipeline,
     temperature,
     source,
     assignedTo,
@@ -221,6 +222,11 @@ const listarLeads = async (businessId, filtros, actorId, ownOnly = false) => {
 
   if (stage) {
     query.pipelineStage = { $in: Array.isArray(stage) ? stage : [stage] };
+  }
+  // Acota `stage` a UN pipeline específico — ver el comentario en
+  // listLeadsSchema (lead.validator.js) sobre por qué hace falta.
+  if (pipeline) {
+    query.pipeline = pipeline;
   }
   if (temperature) {
     query.temperature = { $in: Array.isArray(temperature) ? temperature : [temperature] };
