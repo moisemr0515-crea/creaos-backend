@@ -9,14 +9,27 @@ const { OPENAI_MODEL } = require('../../config/env');
  * nueva — el objetivo es fijar el contrato ahora para que Bloque C lo
  * sustituya después sin tocar Worker/Gateway (Blueprint §4.7).
  *
- * Usa generateReply(), NO chat() — asume que el mensaje entrante del lead
- * YA está guardado en conversation.messages antes de llegar acá (lo hace
- * inbound.worker.js#processInboundJob(), SIEMPRE, sin importar si esta
- * clase termina generando una respuesta o no — mismo criterio que
- * webhook.service.js#processGupshupMessage(), ver ai.service.js#
- * saveInboundMessage() para el porqué). Si esto llamara a chat() en vez de
- * generateReply(), el mensaje del lead quedaría duplicado en
- * conversation.messages.
+ * CREA SALES AI™ C.3, Etapa C3.1b: desde acá se llama a
+ * aiService.runAgent() (Etapa C3.1) en vez de generateReply() directo —
+ * unifica este camino (todavía apagado por WHATSAPP_QUEUE_PROCESSING_ENABLED)
+ * con el mismo Runtime Contract que ya usa el camino activo en producción
+ * (webhook.service.js#processGupshupMessage()). El AgentRuntimeOutput que
+ * este método devuelve NO cambia de forma — sigue siendo
+ * {reply, actions, aiEnabled, metadata} tal cual esperaba
+ * inbound.worker.js#processInboundJob() desde antes de C.3 — runAgent()
+ * solo agrega el vocabulario nuevo (outcome/toolsUsed/knowledgeSources/
+ * correlationId) que esta clase no necesita exponer todavía (queda para
+ * cuando el Worker mismo se actualice a consumirlo, fuera de alcance de
+ * este PR).
+ *
+ * Usa generateReply() (vía runAgent()), NO chat() — asume que el mensaje
+ * entrante del lead YA está guardado en conversation.messages antes de
+ * llegar acá (lo hace inbound.worker.js#processInboundJob(), SIEMPRE, sin
+ * importar si esta clase termina generando una respuesta o no — mismo
+ * criterio que webhook.service.js#processGupshupMessage(), ver
+ * ai.service.js#saveInboundMessage() para el porqué). Si esto llamara a
+ * chat() en vez de generateReply()/runAgent(), el mensaje del lead
+ * quedaría duplicado en conversation.messages.
  *
  * AgentRuntimeInput solo trae `leadId` (no el Lead completo) — se re-consulta
  * acá porque ai.service.js#generateReply()/buildSystemPrompt() necesita
@@ -34,13 +47,20 @@ class DefaultAgentRuntime extends IAgentRuntime {
       return { reply: null, actions: [], aiEnabled: false, metadata: { tokensUsed: 0, model: OPENAI_MODEL } };
     }
 
-    const { reply, tokensUsed } = await aiService.generateReply(input.conversationId, input.businessContext, lead);
+    // input.businessContext debe ser el documento Business COMPLETO desde
+    // la Etapa C3.1b — ver agentRuntime.interface.js para el porqué
+    // (gap real encontrado en la auditoría de C.3, §3.3).
+    const result = await aiService.runAgent({
+      conversationId: input.conversationId,
+      business: input.businessContext,
+      lead,
+    });
 
     return {
-      reply,
+      reply: result.responseText,
       actions: [], // M01-44 no implementado — Bloque C, fuera de alcance
       aiEnabled: true,
-      metadata: { tokensUsed, model: OPENAI_MODEL },
+      metadata: { tokensUsed: result.tokensUsed, model: OPENAI_MODEL },
     };
   }
 }

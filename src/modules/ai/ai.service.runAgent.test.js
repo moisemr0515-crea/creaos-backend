@@ -92,6 +92,11 @@ describe('ai.service#runAgent() — Runtime Contract (C.3, Etapa C3.1)', () => {
         toolsUsed: [],
         knowledgeSources: [],
         correlationId: expect.any(String),
+        // tokensUsed — agregado en la Etapa C3.1b (DefaultAgentRuntime lo
+        // necesitaba, ver ai.service.js#runAgent()) — no es del contrato
+        // literal de la spec, se verifica igual acá para no dejar un campo
+        // sin cubrir en el test que define el shape completo.
+        tokensUsed: expect.any(Number),
       });
       expect(resultado.correlationId).toMatch(UUID_V4_REGEX);
     });

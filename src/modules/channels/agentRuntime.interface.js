@@ -14,7 +14,16 @@
  * @property {string} conversationId
  * @property {string} leadId
  * @property {{text: string, providerMessageId: string, timestamp: Date}} message
- * @property {{name: string, productDescription?: string, targetCustomer?: string, pdfSummary?: string, pdfExtractedText?: string, aiInstructions?: string}} businessContext
+ * @property {object} businessContext — el documento Business COMPLETO
+ *   (Mongoose), no un subconjunto elegido a mano. Hasta la Etapa C3.1b de
+ *   C.3 (docs/implementation/c3-runtime-current-state.md §3.3) este campo
+ *   traía solo 6 campos (name/productDescription/targetCustomer/
+ *   pdfSummary/pdfExtractedText/aiInstructions) — le faltaban `_id` (que
+ *   TODAS las tools de Product Intelligence/Business Knowledge necesitan
+ *   para escopar por tenant) y `aiPersonality` (que buildSystemPrompt()
+ *   usa) — un gap real que hubiera roto esas tools en silencio si este
+ *   camino se hubiera activado tal cual. Se corrigió pasando el documento
+ *   completo en vez de seguir manteniendo una lista de campos a mano.
  * @property {Array<{role: string, content: string}>} conversationHistory
  *
  * @typedef {object} AgentRuntimeOutput
