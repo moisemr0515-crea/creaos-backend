@@ -28,10 +28,12 @@ const PLANS = [
       'Soporte por email',
     ],
     limits: {
-      // Alineado con el copy de creaosapp.com/plan ("Gestioná hasta 10
-      // oportunidades de venta activas") — antes decía 5 acá, mismatch
-      // encontrado en la auditoría de pricing del 23/ago/2026.
-      leadsPerMonth:      10,
+      // Track 2, segunda vuelta (sesión de sincronización /plan del
+      // 11/sep/2026): se sube de 10 a 20, mismo criterio que
+      // closer/dominator más abajo — el copy pasa a "Gestiona hasta 20
+      // oportunidades de venta activas", nunca se baja, así que ningún
+      // negocio Starter existente puede quedar sobre el límite por esto.
+      leadsPerMonth:      20,
       aiEnabled:          false,
       automationsEnabled: false,
       maxActiveAutomations: 0,
