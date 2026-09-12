@@ -59,10 +59,17 @@ const PLANS = [
       'Soporte prioritario',
     ],
     limits: {
-      leadsPerMonth:      100,
+      // Track 2 (sesión de sincronización /plan del 11/sep/2026): el copy
+      // de plan.tsx ("Gestiona hasta 300 oportunidades de venta activas")
+      // era el correcto — este seed estaba desactualizado (100), no al
+      // revés. Se sube el tope real para que coincida con lo que el
+      // producto ya promete públicamente; nunca se baja, así que ningún
+      // negocio existente puede quedar "sobre el límite" por este cambio
+      // (mismo criterio ya usado para maxUsers más abajo).
+      leadsPerMonth:      300,
       aiEnabled:          true,
       automationsEnabled: true,
-      maxActiveAutomations: 20,
+      maxActiveAutomations: 100,
       whatsappEnabled:    true,
       multiUser:          true,
       // Cambio de negocio confirmado por Moises (24/ago/2026) — no es fix
@@ -92,10 +99,13 @@ const PLANS = [
       'Soporte dedicado',
     ],
     limits: {
-      leadsPerMonth:      300,
+      // Track 2 — ver comentario equivalente en 'closer' arriba: el copy
+      // de plan.tsx ("Gestiona hasta 1000 oportunidades de venta activas")
+      // ya era correcto, este seed (300) estaba desactualizado.
+      leadsPerMonth:      1000,
       aiEnabled:          true,
       automationsEnabled: true,
-      maxActiveAutomations: 100,
+      maxActiveAutomations: 400,
       whatsappEnabled:    true,
       multiUser:          true,
       // Cambio de negocio confirmado por Moises (24/ago/2026) — no es fix
