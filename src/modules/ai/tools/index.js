@@ -6,14 +6,20 @@ const Lead = require('../../leads/lead.model');
 const leadService = require('../../leads/lead.service');
 const notificationService = require('../../admin/notification.service');
 const pushService = require('../../push/push.service');
+// CREA Product Intelligence™ V1.0, Etapa 6/10 — mismo criterio que
+// leadService de arriba: se reusa product.service.js tal cual (Etapas 2/3,
+// ya mergeadas), sin duplicar ninguna de sus reglas (aislamiento por
+// tenant, resolución de moneda, invariantes de stock).
+const productService = require('../../products/product.service');
 
 /**
  * Registro de tools reales que el modelo puede invocar durante
- * generateReply() (ver ai.service.js): escalate_to_human (PR33) y
- * update_lead_stage (PR38). El catálogo completo (Módulo 24/44 de
- * docs/modules) queda para PRs posteriores; este archivo está pensado
- * para crecer agregando entradas a TOOL_SCHEMAS + TOOL_EXECUTORS, no para
- * reestructurarse.
+ * generateReply() (ver ai.service.js): escalate_to_human (PR33),
+ * update_lead_stage (PR38), y search_products/check_stock/get_price (CREA
+ * Product Intelligence™ V1.0, Etapa 6/10). El catálogo completo (Módulo
+ * 24/44 de docs/modules) queda para PRs posteriores; este archivo está
+ * pensado para crecer agregando entradas a TOOL_SCHEMAS + TOOL_EXECUTORS, no
+ * para reestructurarse.
  *
  * Nota de alcance sobre escalate_to_human: NO reutiliza
  * ai.controller.js#escalate() tal cual — ese es un handler de Express
@@ -27,6 +33,14 @@ const pushService = require('../../push/push.service');
  * update_lead_stage (PR38) es distinto: lead.service.js#cambiarEtapa() ya
  * es un service standalone (no atado a un controller de Express), así que
  * acá SÍ se reutiliza tal cual, sin duplicar nada — ver executor abajo.
+ *
+ * search_products/check_stock/get_price son el mismo caso que
+ * update_lead_stage: product.service.js (Etapas 2/3) ya es standalone, se
+ * reusa tal cual. El único dato de tenant que reciben es `context.business`
+ * — el mismo objeto ya resuelto por generateReply() a partir del
+ * canal/webhook (nunca de `args`, documento maestro §6/§25: "la IA nunca
+ * debe elegir o inventar el tenant_id"). Las 3 comparten resolverProductId()
+ * para el fallback a `conversation.activeProduct` (documento §21).
  */
 
 const TOOL_SCHEMAS = [
@@ -78,6 +92,80 @@ const TOOL_SCHEMAS = [
           },
         },
         required: ['stage'],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'search_products',
+      description:
+        'Busca productos del catálogo REAL de este negocio por nombre, marca, categoría o palabras clave. Úsala ' +
+        'SIEMPRE que el lead pregunte si tienen un producto, pida presentaciones/variantes, o mencione algo que ' +
+        'podría ser un producto del catálogo (ej. "¿tienen moringa?", "¿tienen aceite de coco?") — nunca afirmes ' +
+        'ni descartes la existencia de un producto sin llamar a esta tool primero. Devuelve como máximo 5 ' +
+        'coincidencias con su productId — usalo después en check_stock/get_price para confirmar disponibilidad o ' +
+        'precio real antes de responder.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description:
+              'Términos de búsqueda, en las palabras reales que usó el lead (ej. "pastillas de moringa"). No ' +
+              'inventes ni completes el nombre de un producto que el lead no mencionó.',
+          },
+        },
+        required: ['query'],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'check_stock',
+      description:
+        'Consulta el stock REAL y disponible de un producto de este negocio. Úsala SIEMPRE antes de decirle al ' +
+        'lead que un producto tiene o no tiene stock — nunca asumas ni inventes disponibilidad. Si la tool falla ' +
+        'o no encuentra el producto, decilo de forma natural (ej. "no puedo confirmar el stock ahora mismo") en ' +
+        'vez de afirmar un número. Si no tenés el productId a mano, podés omitirlo cuando el lead se refiere al ' +
+        'producto del que ya se venía hablando en esta conversación.',
+      parameters: {
+        type: 'object',
+        properties: {
+          productId: {
+            type: 'string',
+            description:
+              'ID del producto (de un resultado previo de search_products en esta misma conversación). Opcional ' +
+              'si ya hay un producto identificado antes en la conversación.',
+          },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_price',
+      description:
+        'Consulta el precio REAL de un producto de este negocio. Úsala SIEMPRE antes de mencionar o confirmar un ' +
+        'precio — nunca inventes, estimes ni redondees un precio que no te devolvió esta tool. Si la tool falla, ' +
+        'no encuentra el producto, o el producto no tiene precio cargado, decilo de forma natural (ej. "dejame ' +
+        'confirmar el precio y te aviso") en vez de afirmar un número. Si no tenés el productId a mano, podés ' +
+        'omitirlo cuando el lead se refiere al producto del que ya se venía hablando en esta conversación.',
+      parameters: {
+        type: 'object',
+        properties: {
+          productId: {
+            type: 'string',
+            description:
+              'ID del producto (de un resultado previo de search_products en esta misma conversación). Opcional ' +
+              'si ya hay un producto identificado antes en la conversación.',
+          },
+        },
         additionalProperties: false,
       },
     },
@@ -271,9 +359,95 @@ const updateLeadStage = async (args, { conversation }) => {
   };
 };
 
+/**
+ * Resuelve qué productId usar en check_stock/get_price: el que mandó el
+ * modelo en `args` si vino, o si no, el de `conversation.activeProduct`
+ * (documento maestro §21) — el que dejó el último search_products exitoso
+ * de esta misma conversación. Devuelve '' si ninguno de los dos existe, para
+ * que el caller decida el mensaje de error sin repetir esta lógica.
+ */
+const resolverProductId = (args, conversation) => {
+  const productId = typeof args?.productId === 'string' ? args.productId.trim() : '';
+  if (productId) return productId;
+  return conversation.activeProduct?.productId ? conversation.activeProduct.productId.toString() : '';
+};
+
+/**
+ * search_products() — documento maestro §13/§15. Reusa tal cual
+ * product.service.js#buscarProductos() (Etapa 2), que ya resuelve el
+ * aislamiento por tenant (`business._id`, nunca un id que venga de `args`),
+ * el índice de texto en español, y el filtro `active:true`.
+ *
+ * Además de devolver los matches al modelo, actualiza
+ * `conversation.activeProduct` EN MEMORIA (documento §21) — mismo criterio
+ * fail-soft/no-save-propio que escalateToHuman/updateLeadStage: la
+ * persistencia real la hace generateReply() en su único save() al final del
+ * loop. Solo pisa el producto activo cuando HAY al menos un resultado — una
+ * búsqueda sin resultados no debe borrar el contexto de un producto
+ * identificado en un turno anterior (ej. el lead pregunta algo ambiguo a
+ * mitad de la conversación sobre el MISMO producto ya encontrado antes).
+ */
+const searchProducts = async (args, { conversation, business }) => {
+  const query = typeof args?.query === 'string' ? args.query.trim() : '';
+  if (!query) {
+    return { success: false, error: 'Falta el parámetro "query" (obligatorio).' };
+  }
+
+  const matches = await productService.buscarProductos(business._id, query);
+
+  if (matches.length > 0) {
+    conversation.activeProduct = {
+      productId: matches[0].productId,
+      name: matches[0].name,
+      lastSearchQuery: query,
+      updatedAt: new Date(),
+    };
+  }
+
+  return { success: true, matches };
+};
+
+/**
+ * check_stock() — documento maestro §17/§22 (regla anti-alucinación). No
+ * envuelve el error en su propio try/catch a propósito — mismo criterio que
+ * updateLeadStage: si product.service.js#consultarStock() lanza (producto
+ * no encontrado/desactivado, id malformado), lo captura executeToolCall()
+ * de abajo, que ya devuelve `{success:false, error:...}` sin propagar —
+ * suficiente para que el modelo "indique de forma natural" el fallo en vez
+ * de inventar un stock, sin duplicar el manejo de errores acá.
+ */
+const checkStock = async (args, { conversation, business }) => {
+  const productId = resolverProductId(args, conversation);
+  if (!productId) {
+    return { success: false, error: 'Falta el productId y no hay ningún producto identificado antes en esta conversación. Usa search_products primero.' };
+  }
+
+  const stock = await productService.consultarStock(business._id, productId);
+  return { success: true, ...stock };
+};
+
+/**
+ * get_price() — documento maestro §18/§22. Mismo criterio que checkStock:
+ * sin try/catch propio, `priceAvailable:false` (del service) es la señal de
+ * "no inventes un precio", y cualquier error real lo maneja
+ * executeToolCall().
+ */
+const getPrice = async (args, { conversation, business }) => {
+  const productId = resolverProductId(args, conversation);
+  if (!productId) {
+    return { success: false, error: 'Falta el productId y no hay ningún producto identificado antes en esta conversación. Usa search_products primero.' };
+  }
+
+  const precio = await productService.consultarPrecio(business._id, productId);
+  return { success: true, ...precio };
+};
+
 const TOOL_EXECUTORS = {
   escalate_to_human: escalateToHuman,
   update_lead_stage: updateLeadStage,
+  search_products: searchProducts,
+  check_stock: checkStock,
+  get_price: getPrice,
 };
 
 /**

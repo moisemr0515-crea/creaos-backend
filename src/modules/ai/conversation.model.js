@@ -115,6 +115,27 @@ const leadQualificationSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// CREA Product Intelligence™ V1.0, Etapa 6/10 (documento maestro §21,
+// "contexto conversacional") — mismo patrón que leadQualificationSchema de
+// arriba: un subdocumento opcional, sin _id propio, que las tools de
+// producto (ver ai/tools/index.js#searchProducts) mutan EN MEMORIA sobre el
+// documento que generateReply() ya tiene cargado, sin guardar aparte (mismo
+// criterio que escalateToHuman/updateLeadStage — un único conversation.save()
+// al final del loop). No es un sistema de memoria nuevo: es exactamente lo
+// que pide el documento maestro ("no crear un sistema paralelo si ya existe
+// contexto conversacional, agregar si hace falta activeProductId/
+// activeProductName") — resuelve el caso "¿tienen moringa?" → "¿cuánto
+// cuesta?" sin que el lead tenga que repetir el nombre del producto.
+const activeProductSchema = new mongoose.Schema(
+  {
+    productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+    name: String,
+    lastSearchQuery: String,
+    updatedAt: Date,
+  },
+  { _id: false }
+);
+
 const conversationSchema = new mongoose.Schema(
   {
     business:   { type: mongoose.Schema.Types.ObjectId, ref: 'Business', required: true, index: true },
@@ -149,6 +170,7 @@ const conversationSchema = new mongoose.Schema(
     resolvedAt:  Date,
     summary:    String,
     leadQualification: leadQualificationSchema,
+    activeProduct: activeProductSchema,
     totalTokensUsed: { type: Number, default: 0 },
     isDeleted:  { type: Boolean, default: false },
     // Timestamp del último mensaje de WhatsApp ENTRANTE real (del lead, no
