@@ -110,10 +110,22 @@ const PLANS = [
       maxActiveAutomations: 400,
       whatsappEnabled:    true,
       multiUser:          true,
-      // Cambio de negocio confirmado por Moises (24/ago/2026) — no es fix
-      // de mismatch, es bajar el límite real: 10→3. Ver mismo comentario
-      // en el plan 'closer' arriba.
-      maxUsers:           3,
+      // Auditoría de billing (12/sep/2026): baja de 3 a 1, alineado al copy
+      // real de plan.tsx desde la auditoría de pricing del 23/ago/2026
+      // ("1 Usuario" en Dominator — el flujo de invitación multiusuario
+      // está roto: sin UI para invitar, contraseña temporal nunca enviada,
+      // ver known-issues.md). Ese copy nunca se reflejó acá en Plan.limits,
+      // así que quedó invisible mientras el panel de negocio mostraba
+      // "Starter" para toda cuenta (bug corregido en PR #32) — al pasar a
+      // leer Plan.limits en vivo, la inconsistencia se hizo visible.
+      // Auditado antes de bajarlo: el único negocio Dominator real es
+      // CREA OS (cuenta interna), con 2 usuarios activos hoy — confirmado
+      // y aceptado explícitamente por Moises que quede así (no hay plan
+      // superior al que subirla esta vez). No afecta a los 2 usuarios
+      // existentes (checkUserLimit() solo bloquea invitaciones NUEVAS, no
+      // desactiva a nadie) — bloquearía un tercer usuario si se intentara
+      // invitar, hasta que el flujo de invitación real se arregle.
+      maxUsers:           1,
       advancedReports:    true,
     },
     isActive: true,
