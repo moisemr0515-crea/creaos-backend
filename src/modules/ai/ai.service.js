@@ -685,6 +685,39 @@ const derivarOutcome = (toolsUsed, needsClarification) => {
 };
 
 /**
+ * logAgentRunTrace() — C.3, Etapa C3.4 (Trace, spec §5.5). Un único
+ * `logger.info()` estructurado por ejecución de runAgent() — mismo
+ * criterio ya usado por C.2 (auditoría, decisión #3: "logger.info() para
+ * V1, no una colección de Mongo dedicada — dejamos la colección para
+ * cuando el volumen de negocios lo justifique") sobre la infraestructura
+ * de logging que YA existe (utils/logger.js, winston con JSON estructurado
+ * en producción) — nunca una plataforma de observabilidad nueva.
+ *
+ * NUNCA guarda chain-of-thought (regla no-negociable #9): ni el texto de
+ * la respuesta (`responseText`), ni los mensajes intercambiados con
+ * OpenAI — solo la metadata de AgentRunTrace tal cual la define la spec
+ * (correlationId/tenantId/conversationId/leadId/toolsUsed/outcome/
+ * durationMs/errorCode/createdAt). `tenantId`/`conversationId`/`leadId`
+ * se convierten a string explícitamente — nunca se loguea un ObjectId ni
+ * un documento Mongoose completo (evita filtrar campos del negocio/lead
+ * en los logs por accidente si alguna vez alguien pasa el documento
+ * entero en vez del id).
+ */
+const logAgentRunTrace = ({ correlationId, tenantId, conversationId, leadId, toolsUsed, outcome, durationMs, errorCode }) => {
+  logger.info('AGENT_RUN', {
+    correlationId,
+    tenantId,
+    conversationId,
+    leadId,
+    toolsUsed,
+    outcome,
+    durationMs,
+    errorCode,
+    createdAt: new Date().toISOString(),
+  });
+};
+
+/**
  * runAgent() — C.3 Architecture & Agent Runtime V1 (docs/architecture-runtime/
  * CREA_SALES_AI_C3_..., §5.1). Envoltorio de generateReply() que expone el
  * vocabulario que pide la spec (`outcome`/`toolsUsed`/`knowledgeSources`/
@@ -712,11 +745,22 @@ const derivarOutcome = (toolsUsed, needsClarification) => {
  * camino de colas) — nunca un fallo real queda indistinguible de "el
  * agente respondió normalmente".
  *
+ * CREA SALES AI™ C.3, Etapa C3.4 (Trace) — al final de cada ejecución
+ * (éxito o error) se emite un AgentRunTrace vía logAgentRunTrace(), con
+ * `durationMs` medido desde la entrada a esta función. Logging aditivo
+ * puro: no cambia nada del `return`/comportamiento de las Etapas C3.1-C3.3
+ * (ver esas notas más arriba), solo agrega una línea de log estructurada
+ * más por ejecución.
+ *
  * @param {{ conversationId: string, business: object, lead: object, correlationId?: string }} input
  * @returns {Promise<{ outcome: 'answer'|'clarify'|'action'|'handoff'|'error', responseText: string|null, toolsUsed: string[], knowledgeSources: string[], correlationId: string, tokensUsed: number, errorCode?: string }>}
  */
 const runAgent = async ({ conversationId, business, lead, correlationId } = {}) => {
   const runId = correlationId || uuidv4();
+  const startedAt = Date.now();
+  const tenantId = business?._id ? String(business._id) : undefined;
+  const leadIdStr = lead?._id ? String(lead._id) : undefined;
+  const conversationIdStr = conversationId ? String(conversationId) : undefined;
 
   try {
     // module.exports.generateReply(...) en vez de la const local — mismo
@@ -739,8 +783,20 @@ const runAgent = async ({ conversationId, business, lead, correlationId } = {}) 
       needsClarification = false,
     } = await module.exports.generateReply(conversationId, business, lead);
 
+    const outcome = derivarOutcome(toolsUsed, needsClarification);
+
+    logAgentRunTrace({
+      correlationId: runId,
+      tenantId,
+      conversationId: conversationIdStr,
+      leadId: leadIdStr,
+      toolsUsed,
+      outcome,
+      durationMs: Date.now() - startedAt,
+    });
+
     return {
-      outcome: derivarOutcome(toolsUsed, needsClarification),
+      outcome,
       responseText: reply,
       toolsUsed,
       knowledgeSources,
@@ -749,6 +805,18 @@ const runAgent = async ({ conversationId, business, lead, correlationId } = {}) 
     };
   } catch (error) {
     logger.error(`runAgent(): generateReply() falló, se normaliza a outcome:'error' (correlationId=${runId}): ${error.message}`);
+
+    logAgentRunTrace({
+      correlationId: runId,
+      tenantId,
+      conversationId: conversationIdStr,
+      leadId: leadIdStr,
+      toolsUsed: [],
+      outcome: 'error',
+      durationMs: Date.now() - startedAt,
+      errorCode: error.message,
+    });
+
     return {
       outcome: 'error',
       responseText: null,
