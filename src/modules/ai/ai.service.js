@@ -11,6 +11,10 @@ const channelService = require('../channels/channel.service');
 const cloudinaryUtil = require('../../utils/cloudinary');
 const logger = require('../../utils/logger');
 const { TOOL_SCHEMAS, executeToolCall } = require('./tools');
+// C.3 — Architecture & Agent Runtime V1, Etapa C3.1 (Runtime Contract) —
+// mismo paquete que ya usa webhook.controller.js para generar
+// correlationId, ver runAgent() más abajo.
+const { v4: uuidv4 } = require('uuid');
 
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
@@ -470,6 +474,39 @@ const saveInboundMessage = async (conversationId, text, media) => {
  * al final (cuando ya hay texto final que devolver) — nunca saves
  * parciales a mitad del loop.
  */
+
+/**
+ * C.3 — Etapa C3.1 (Runtime Contract). Traduce el resultado ya devuelto por
+ * una tool (nunca vuelve a consultar Mongo — usa exactamente lo que el
+ * modelo ya vio) a entradas de `knowledgeSources` para el AgentRunResult.
+ * Deliberadamente GRUESO, no por documento individual: `search_products`/
+ * `check_stock`/`get_price` (Product Intelligence) colapsan a
+ * `'product_catalog'`; `search_business_knowledge` (C.2) aporta
+ * `policy:<code>` por cada Policy real que vino en el resultado, más un
+ * `'faq'` genérico si vinieron FAQs (el tool ya recorta el resultado sin
+ * exponer un id estable de FAQ al modelo — Etapa 6 de C.2 — así que no hay
+ * un identificador más fino que registrar sin tocar ese contrato, fuera de
+ * alcance de C3.1). Nunca lanza — un `result` con forma inesperada
+ * simplemente no aporta ninguna fuente, no rompe el turno.
+ */
+const PRODUCT_INTELLIGENCE_TOOL_NAMES = new Set(['search_products', 'check_stock', 'get_price']);
+
+const registrarFuentesDeConocimiento = (nombreTool, result, knowledgeSources) => {
+  if (!result?.success) return;
+
+  if (PRODUCT_INTELLIGENCE_TOOL_NAMES.has(nombreTool)) {
+    knowledgeSources.add('product_catalog');
+    return;
+  }
+
+  if (nombreTool === 'search_business_knowledge') {
+    for (const policy of result.policies || []) {
+      if (policy?.code) knowledgeSources.add(`policy:${policy.code}`);
+    }
+    if ((result.faqs || []).length > 0) knowledgeSources.add('faq');
+  }
+};
+
 const generateReply = async (conversationId, business, lead) => {
   const conversation = await Conversation.findById(conversationId);
   if (!conversation) throw new AppError('Conversación no encontrada', 404);
@@ -500,6 +537,17 @@ const generateReply = async (conversationId, business, lead) => {
   const selectedModel = selectModel(conversation, conversation.leadQualification, recentMessages);
 
   let totalTokensUsed = 0;
+
+  // C.3 — Etapa C3.1 (Runtime Contract). generateReply() YA sabía, durante
+  // el loop, qué tools se ejecutaron y qué conocimiento real sustentó la
+  // respuesta — simplemente nunca se lo devolvía a quien la llama. Acá se
+  // recolecta esa información (sin cambiar en nada el comportamiento
+  // existente: mismo reply, mismo guardado) para exponerla como campos
+  // NUEVOS del resultado (`toolsUsed`/`knowledgeSources`), que runAgent()
+  // usa para construir el AgentRunResult que pide la spec de C.3. `Set`
+  // para no duplicar si la misma tool se llama más de una vez en el turno.
+  const toolsUsed = new Set();
+  const knowledgeSources = new Set();
 
   for (let iteration = 1; iteration <= MAX_TOOL_ITERATIONS; iteration += 1) {
     const completion = await openai.chat.completions.create({
@@ -539,7 +587,13 @@ const generateReply = async (conversationId, business, lead) => {
       conversation.totalTokensUsed += totalTokensUsed;
       await conversation.save();
 
-      return { reply, tokensUsed: totalTokensUsed, conversationId: conversation._id };
+      return {
+        reply,
+        tokensUsed: totalTokensUsed,
+        conversationId: conversation._id,
+        toolsUsed: [...toolsUsed],
+        knowledgeSources: [...knowledgeSources],
+      };
     }
 
     // El modelo pidió ejecutar 1+ tools antes de responder — se guarda el
@@ -564,6 +618,14 @@ const generateReply = async (conversationId, business, lead) => {
       const result = await executeToolCall(toolCall, { conversation, business, lead });
       const resultContent = JSON.stringify(result);
 
+      // C.3 — Etapa C3.1: se registra la tool pedida por el modelo TAL CUAL
+      // (incluso si executeToolCall() devolvió success:false — el modelo la
+      // "usó", aunque haya fallado; esa distinción queda en el propio
+      // resultado, no en si se cuenta o no como tool usada) y, si aportó
+      // conocimiento real, su fuente.
+      toolsUsed.add(toolCall.function?.name);
+      registrarFuentesDeConocimiento(toolCall.function?.name, result, knowledgeSources);
+
       apiMessages.push({ role: 'tool', tool_call_id: toolCall.id, content: resultContent });
       conversation.messages.push({
         role: 'tool',
@@ -582,6 +644,78 @@ const generateReply = async (conversationId, business, lead) => {
   // una respuesta de texto en MAX_TOOL_ITERATIONS vueltas — no debería
   // pasar en uso normal (ver comentario de MAX_TOOL_ITERATIONS).
   throw new AppError('El agente no pudo completar la respuesta (demasiadas tool calls encadenadas)', 500);
+};
+
+/**
+ * runAgent() — C.3 Architecture & Agent Runtime V1, Etapa C3.1 (Runtime
+ * Contract, docs/architecture-runtime/CREA_SALES_AI_C3_..., §5.1).
+ * Envoltorio LITERAL de generateReply() — no reescribe ni cambia su
+ * comportamiento externo (mismo `reply`, mismo `conversation.save()`,
+ * misma propagación de errores: si generateReply() lanza, runAgent()
+ * también lanza, SIN capturar acá — ver la nota de abajo sobre por qué eso
+ * es a propósito). Lo único que agrega es el vocabulario que pide la spec
+ * (`outcome`/`toolsUsed`/`knowledgeSources`/`correlationId`) sobre datos
+ * que generateReply() ya calculaba internamente pero nunca exponía.
+ *
+ * Se conecta al camino que HOY corre en producción
+ * (webhook.service.js#processGupshupMessage()) — no a DefaultAgentRuntime/
+ * inbound.worker.js, que envuelven el camino todavía apagado
+ * (WHATSAPP_QUEUE_PROCESSING_ENABLED=false). Unificar ambos caminos sobre
+ * runAgent() es la Etapa C3.1b, deliberadamente separada (auditoría,
+ * docs/implementation/c3-runtime-current-state.md §3.3 — ese camino tiene
+ * su propio gap real de businessContext incompleto, que se corrige recién
+ * en C3.1b, con sus propios tests, antes de tocar el flag).
+ *
+ * Por qué NO se envuelve la excepción de "demasiadas tool calls
+ * encadenadas" en un `outcome:'error'` todavía: eso SÍ sería un cambio de
+ * comportamiento observable (hoy esa excepción propaga hasta
+ * inbound.gateway.js#handleOne(), que marca el InboundEvent como 'failed'
+ * — un try/catch acá que la convirtiera en un `return` normal rompería
+ * esa señal en silencio). Mapear esa excepción a un outcome explícito es
+ * la Etapa C3.3 (Action Outcomes), con sus propios tests de regresión en
+ * los 2 callers reales — a propósito no se adelanta acá.
+ *
+ * `outcome` V1 es una inferencia simple, no una decisión nueva del
+ * runtime: si `escalate_to_human` está entre las tools usadas este turno,
+ * el turno terminó en handoff (la propia tool ya mutó
+ * conversation.status/aiEnabled — ver ai/tools/index.js#escalateToHuman())
+ * — cualquier otro turno con texto final es 'answer'. C.3 V1 no distingue
+ * 'answer' de 'clarify' todavía (ambos son texto libre del modelo); eso
+ * necesitaría una heurística nueva que la spec no pide en Runtime Contract
+ * y que cambiaría comportamiento, no solo vocabulario — fuera de alcance
+ * de C3.1.
+ *
+ * @param {{ conversationId: string, business: object, lead: object, correlationId?: string }} input
+ * @returns {Promise<{ outcome: 'answer'|'handoff', responseText: string, toolsUsed: string[], knowledgeSources: string[], correlationId: string }>}
+ */
+const runAgent = async ({ conversationId, business, lead, correlationId } = {}) => {
+  const runId = correlationId || uuidv4();
+
+  // module.exports.generateReply(...) en vez de la const local — mismo
+  // principio de "referencia viva" que ya documenta chat() más abajo: una
+  // llamada directa a la const ignora cualquier mock hecho sobre
+  // aiService.generateReply desde un test (hallazgo real, ver el
+  // comentario completo en chat()) — sin esto, un test que mockea
+  // aiService.generateReply para no pegarle a OpenAI de verdad NO lo
+  // interceptaría al pasar por runAgent(), justo el caso de
+  // webhook.service.pipeline.test.js.
+  // Defaults a array vacío — no todo test que mockea generateReply()
+  // conoce estos 2 campos nuevos (ej. webhook.service.pipeline.test.js
+  // mockea solo `{reply}`); sin esto, `.includes()` de abajo rompería con
+  // "Cannot read properties of undefined" ante un mock desactualizado.
+  const {
+    reply,
+    toolsUsed = [],
+    knowledgeSources = [],
+  } = await module.exports.generateReply(conversationId, business, lead);
+
+  return {
+    outcome: toolsUsed.includes('escalate_to_human') ? 'handoff' : 'answer',
+    responseText: reply,
+    toolsUsed,
+    knowledgeSources,
+    correlationId: runId,
+  };
 };
 
 /**
@@ -1030,7 +1164,7 @@ const sendMediaMessage = async (conversationId, media, actor) => {
 };
 
 module.exports = {
-  buildSystemPrompt, chat, saveInboundMessage, generateReply, qualifyLead, generateSummary,
+  buildSystemPrompt, chat, saveInboundMessage, generateReply, runAgent, qualifyLead, generateSummary,
   suggestResponse, sendAgentMessage, sendTemplateMessage, sendMediaMessage,
   // Exportado únicamente para tests: este repo no tiene un framework de
   // mocks (ver convención de "referencia viva" en los comentarios de

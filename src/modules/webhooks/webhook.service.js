@@ -533,8 +533,13 @@ async function processGupshupMessage({ phone, text, name, mediaType, mediaSource
     return { lead, conversation };
   }
 
-  logger.info('[gupshup] llamando a aiService.generateReply', { conversationId: conversation._id.toString() });
-  const { reply } = await aiService.generateReply(conversation._id, business, lead);
+  // C.3 — Etapa C3.1 (Runtime Contract): runAgent() es un envoltorio
+  // LITERAL de generateReply() (mismo reply, mismo guardado, misma
+  // propagación de errores — ver ai.service.js#runAgent() para el porqué
+  // de no capturar acá tampoco) — este es el camino que hoy corre en
+  // producción; ver docs/implementation/c3-runtime-current-state.md §0/§6.
+  logger.info('[gupshup] llamando a aiService.runAgent', { conversationId: conversation._id.toString() });
+  const { responseText: reply } = await aiService.runAgent({ conversationId: conversation._id, business, lead });
   logger.info('[gupshup] respuesta de IA recibida', { replyPreview: reply?.slice(0, 50) });
 
   // Fase 1.1 (Provider Abstraction): antes llamaba a gupshup.client.js
