@@ -545,3 +545,32 @@ Verificación: suite completa de `creaos-backend` en 467/467 (48 suites) al cier
 ### Alcance propuesto para el PR de seguimiento
 
 No es un PR — es sacar esa entrada de `ALLOWED_ORIGINS` directo en el dashboard de Railway (`creaos-backend`, variables de entorno), sin tocar código. Cambio de 1 minuto, a criterio del dueño del producto sobre cuándo hacerlo.
+
+---
+
+## 2026-09-11 — Invitar usuarios (multi-usuario) no funciona de punta a punta, aunque el límite de plan sí es real
+
+**Estado:** Abierto — identificado durante la sincronización del copy de `/plan`, no resuelto (decisión explícita del usuario: dejarlo anotado, no arreglarlo ahora).
+**Prioridad:** Media — bloquea una feature que Dominator vendía como "3 Usuarios"; el copy ya se corrigió a "1 Usuario" para no seguir prometiéndola mientras esto no se resuelva.
+**Detectado en:** sesión de sincronización de `/plan` del 11/sep/2026 (misma auditoría que "Seguimiento automático"/"Cierre asistido por IA" y los límites de plan de más arriba en esta bitácora).
+**Archivos involucrados:** [`admin.controller.js#inviteUser()`](../../src/modules/admin/admin.controller.js), [`admin.routes.js`](../../src/modules/admin/admin.routes.js) (`POST /admin/config/users/invite`), [`subscription.service.js#checkUserLimit()`](../../src/modules/subscriptions/subscription.service.js) (esto sí funciona), [`utils/email.js#enviarEmailVerificacion()`](../../src/utils/email.js), [`auth.service.js#verifyEmail()`](../../src/modules/auth/auth.service.js) — y la ausencia total de nada equivalente en `crea-os-ignite/src/`.
+
+### Problema
+
+El enforcement del límite de usuarios por plan **sí es real**: `inviteUser()` llama `checkUserLimit()` primero que nada y devuelve 403 si no hay cupo (`admin.controller.js:426-432`), con tests dedicados (`admin.controller.inviteUser.test.js`, `subscription.service.checkUserLimit.test.js`). Pero la funcionalidad que ese límite protege — que un dueño de negocio agregue un segundo/tercer usuario real y ese usuario pueda entrar a operar — no existe de punta a punta. Tres eslabones rotos, independientes entre sí:
+
+**1. No hay ninguna UI para invitar.** Grep de `inviteUser`/`invitar`/`config/users/invite` en todo `crea-os-ignite/src/` → cero resultados, ni siquiera un cliente API sin usar. El único modo de alcanzar el endpoint es a mano (Postman/curl) — ningún dueño de negocio real puede invitar a nadie desde el producto.
+
+**2. La contraseña temporal nunca se comunica a nadie.** `admin.controller.js:457-473` genera `tempPassword` (aleatoria), la hashea, y la respuesta al admin que invita solo devuelve `{userId, email, name, role}` (línea 478) — el valor real de `tempPassword` no sale de esa función. El usuario invitado tampoco la recibe por ningún otro lado.
+
+**3. El email que sí se manda es el de auto-registro, reusado tal cual — no es una invitación real.** `inviteUser()` llama a la misma `enviarEmailVerificacion()` que usa `auth.service.js` para el registro público (texto: *"¡Bienvenido a CREA OS! Gracias por registrarte..."*, `utils/email.js:45-67`). El link solo dispara `verifyEmail()` (`auth.service.js:390`), que marca `isEmailVerified:true` — nunca pide ni permite setear una contraseña. No existe ninguna pantalla de "aceptar invitación / crear tu contraseña" en todo el flujo.
+
+El único camino teórico para que un usuario invitado llegue a entrar sería que, por su cuenta y sin que nada se lo indique, use "olvidé mi contraseña" con su email — un workaround no guiado, no mencionado en el email que realmente reciben.
+
+### Decisión implementada (11/sep/2026)
+
+`plan.tsx`: Dominator pasó de anunciar "3 Usuarios" a "1 Usuario" (igual que Starter/Closer) — el límite real de plan sigue siendo `maxUsers:3` en el backend (sin cambios, sigue enforced), pero el copy deja de prometer una funcionalidad que hoy no se puede usar de punta a punta.
+
+### Decisión pendiente
+
+Arreglar los 3 eslabones (UI de invitación en el producto, email de invitación real con contraseña/token de "primera vez" en vez de reusar el de auto-registro, pantalla de aceptar invitación) es lo que habilitaría subir el copy de Dominator de vuelta a "3 Usuarios" — no antes. Queda documentado para retomar como su propio PR (o blueprint chico) cuando se priorice.
