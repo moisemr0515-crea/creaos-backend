@@ -1,6 +1,7 @@
 const IAgentRuntime = require('./agentRuntime.interface');
 const Lead = require('../leads/lead.model');
 const aiService = require('../ai/ai.service');
+const { assertTenantScope } = require('./tenant.resolver');
 const { OPENAI_MODEL } = require('../../config/env');
 
 /**
@@ -46,6 +47,17 @@ class DefaultAgentRuntime extends IAgentRuntime {
       // no se responde (no hay a quién).
       return { reply: null, actions: [], aiEnabled: false, metadata: { tokensUsed: 0, model: OPENAI_MODEL } };
     }
+
+    // C.3, Etapa C3.6 (Pilot Hardening): assertTenantScope() ya existía en
+    // tenant.resolver.js (usado en el pipeline de canal, sub-fases 1.c/1.d)
+    // pero nunca se llamaba desde acá — hallazgo de la auditoría de C.3, §5
+    // (riesgo de aislamiento). Hoy el único caller real (inbound.worker.js)
+    // siempre arma leadId/businessContext desde el mismo businessId, así que
+    // esto no es explotable en producción todavía (además el camino está
+    // apagado por WHATSAPP_QUEUE_PROCESSING_ENABLED=false) — pero es
+    // exactamente el tipo de "rompe en silencio entre pasos" que
+    // assertTenantScope() existe para atajar antes de activar el flag.
+    assertTenantScope(input.businessContext?._id, lead.business);
 
     // input.businessContext debe ser el documento Business COMPLETO desde
     // la Etapa C3.1b — ver agentRuntime.interface.js para el porqué
