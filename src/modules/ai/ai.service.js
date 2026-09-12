@@ -36,12 +36,13 @@ const MAX_TOOL_ITERATIONS = 5;
  *    últimos 10 que ya arma generateReply()) no pasa de ~500 caracteres —
  *    cubre un primer mensaje inusualmente largo.
  * 3. Ningún mensaje de recentMessages tiene role:'tool' — sin actividad
- *    de tools todavía en esta conversación. Nota: recentMessages es un
- *    map() que solo conserva {role, content} (ver generateReply()), así
- *    que no tiene sentido chequear toolCalls acá — el mensaje role:'tool'
- *    (el resultado de la tool) es señal suficiente por sí sola, siempre
+ *    de tools todavía en esta conversación. El mensaje role:'tool' (el
+ *    resultado de la tool) es señal suficiente por sí sola, siempre
  *    aparece junto a cualquier tool call que haya ocurrido dentro de la
- *    ventana visible.
+ *    ventana visible — salvo que construirVentanaDeMensajes() (ver más
+ *    abajo) lo haya descartado por quedar huérfano justo en el borde del
+ *    corte; en ese caso puntual esta condición puede dar un falso positivo
+ *    ("sin actividad de tools"), inofensivo por lo ya explicado ahí.
  * 4. Si leadQualification.psychologicalState existe, tiene que mapear al
  *    modo 'discovery' de PSYCHOLOGICAL_STATE_MODE (PR37, reutilizada tal
  *    cual, sin import nuevo — ya vive en este archivo). Sin
@@ -73,6 +74,60 @@ const esTurnoSimple = (conversation, leadQualification, recentMessages) => {
 const selectModel = (conversation, leadQualification, recentMessages) => {
   if (!AI_MODEL_ROUTING_ENABLED) return OPENAI_MODEL;
   return esTurnoSimple(conversation, leadQualification, recentMessages) ? OPENAI_MODEL_CHEAP : OPENAI_MODEL;
+};
+
+/**
+ * Arma la ventana de mensajes recientes para un turno NUEVO de
+ * generateReply() (distinto de apiMessages dentro del loop de tool-calling
+ * de ESE turno, que ya construye cada mensaje con fidelidad completa —
+ * ver más abajo). Bug encontrado auditando el código real para CREA
+ * Product Intelligence™ V1.0 (Etapa 6) y corregido acá: hasta este fix,
+ * este mapeo devolvía solo {role, content} para TODOS los mensajes,
+ * perdiendo `toolCalls`/`toolCallId`. Un mensaje role:'tool' sin
+ * `tool_call_id`, o un mensaje role:'assistant' con `tool_calls` vacío, son
+ * inválidos para la API de OpenAI ("messages with role 'tool' must be a
+ * response to a preceding message with 'tool_calls'") — si alguno caía
+ * dentro de los últimos `cantidad` mensajes al empezar un turno nuevo, la
+ * llamada a OpenAI podía romper con un 400 y dejar al lead sin respuesta.
+ * Preexistente (afecta también a escalate_to_human/update_lead_stage), pero
+ * las 3 tools nuevas de productos (search_products/check_stock/get_price)
+ * generan muchos más mensajes 'tool' en producción, así que sube mucho la
+ * probabilidad real de dispararlo.
+ *
+ * Fix: se restaura `tool_calls`/`tool_call_id` en los mensajes que los
+ * tenían guardados. Si el corte de los últimos `cantidad` mensajes deja un
+ * mensaje role:'tool' SIN el mensaje assistant que originó su tool_call
+ * dentro de la misma ventana (el corte cayó justo en el medio de un
+ * intercambio de tool-calling), ese mensaje 'tool' huérfano se descarta
+ * por completo — alternativa más simple y seguro que reconstruir un
+ * `tool_calls` inventado para el mensaje assistant que quedó afuera de la
+ * ventana. Un mensaje assistant CON tool_calls, en cambio, nunca puede
+ * quedar con sus respuestas huérfanas del otro lado: `slice(-cantidad)` es
+ * un sufijo, así que si ese mensaje entra en la ventana, todo lo que le
+ * sigue cronológicamente (sus propios mensajes 'tool' de respuesta,
+ * empujados justo después en el mismo loop) entra también.
+ */
+const construirVentanaDeMensajes = (messages, cantidad = 10) => {
+  const ventana = messages.slice(-cantidad).map((m) => {
+    const mensaje = { role: m.role, content: m.content };
+    if (m.role === 'assistant' && m.toolCalls) mensaje.tool_calls = m.toolCalls;
+    if (m.role === 'tool') mensaje.tool_call_id = m.toolCallId;
+    return mensaje;
+  });
+
+  const idsConToolCallEnVentana = new Set(
+    ventana.filter((m) => m.tool_calls).flatMap((m) => m.tool_calls.map((tc) => tc.id))
+  );
+
+  // Nota sobre esTurnoSimple() (arriba): si el mensaje 'tool' descartado acá
+  // era la única señal de actividad de tools dentro de la ventana,
+  // esTurnoSimple() puede clasificar el turno como "simple" aunque hubo una
+  // tool call reciente. Inofensivo: esa actividad quedó justo en el borde
+  // de los últimos `cantidad` mensajes (efectivamente "vieja" para este
+  // turno), y el peor caso de una mala clasificación ahí es responder con
+  // el modelo barato para ESE turno puntual (ver el comentario de
+  // esTurnoSimple() más arriba), no una falla real.
+  return ventana.filter((m) => m.role !== 'tool' || idsConToolCallEnVentana.has(m.tool_call_id));
 };
 
 // Doctrina comercial fija (PR34 del blueprint de Fase 2) — condensada de
@@ -380,10 +435,7 @@ const generateReply = async (conversationId, business, lead) => {
   // buildSystemPrompt()/buildObjectionMicroClosingGuidance() lo manejan
   // como fallback al bloque estático, no como error.
   const systemPrompt = buildSystemPrompt(business, lead, conversation.leadQualification);
-  const recentMessages = conversation.messages.slice(-10).map((m) => ({
-    role: m.role,
-    content: m.content,
-  }));
+  const recentMessages = construirVentanaDeMensajes(conversation.messages, 10);
 
   // apiMessages es lo que efectivamente se manda a OpenAI en cada vuelta —
   // arranca igual que siempre (system + últimos 10) y solo crece si el
