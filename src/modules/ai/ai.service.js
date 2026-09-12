@@ -705,6 +705,7 @@ const runAgent = async ({ conversationId, business, lead, correlationId } = {}) 
   // "Cannot read properties of undefined" ante un mock desactualizado.
   const {
     reply,
+    tokensUsed = 0,
     toolsUsed = [],
     knowledgeSources = [],
   } = await module.exports.generateReply(conversationId, business, lead);
@@ -715,6 +716,14 @@ const runAgent = async ({ conversationId, business, lead, correlationId } = {}) 
     toolsUsed,
     knowledgeSources,
     correlationId: runId,
+    // No es parte del contrato AgentRunResult de la spec (§5.1) — se agrega
+    // acá en la Etapa C3.1b porque DefaultAgentRuntime (channels/
+    // defaultAgentRuntime.js) ya lo necesitaba en su propio
+    // AgentRuntimeOutput.metadata.tokensUsed desde antes de C.3, y unificar
+    // ese camino sobre runAgent() sin perder ese dato hubiera significado
+    // llamar a generateReply() dos veces o duplicar lógica. Aditivo, no
+    // rompe ningún test de la Etapa C3.1 que no lo esperaba explícitamente.
+    tokensUsed,
   };
 };
 

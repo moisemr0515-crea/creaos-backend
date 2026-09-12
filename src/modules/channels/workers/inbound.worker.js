@@ -239,22 +239,27 @@ async function processInboundJob(job) {
     return;
   }
 
-  const businessContext = {
-    name: business.name,
-    productDescription: business.productDescription,
-    targetCustomer: business.targetCustomer,
-    pdfSummary: business.pdfSummary,
-    pdfExtractedText: business.pdfExtractedText, // agregado más allá del contrato literal del Blueprint — ver resumen de plan de 1.d
-    aiInstructions: business.aiInstructions,
-  };
-
+  // CREA SALES AI™ C.3, Etapa C3.1b: se pasa el documento Business
+  // COMPLETO, no un subconjunto elegido a mano — el subconjunto anterior
+  // (name/productDescription/targetCustomer/pdfSummary/pdfExtractedText/
+  // aiInstructions) le faltaba `_id` (que TODAS las tools de Product
+  // Intelligence/Business Knowledge necesitan para escopar por tenant —
+  // sin él, cada query de esas tools filtraba por business:undefined,
+  // devolviendo 0 resultados siempre, en silencio) y `aiPersonality` (que
+  // buildSystemPrompt() usa) — gap real encontrado en la auditoría de C.3
+  // (docs/implementation/c3-runtime-current-state.md §3.3), corregido acá
+  // antes de considerar activar WHATSAPP_QUEUE_PROCESSING_ENABLED. Mismo
+  // objeto `business` que ya usa webhook.service.js#processGupshupMessage()
+  // (el camino que SÍ corre en producción hoy) — antes este archivo era el
+  // único de los 2 caminos que armaba un objeto recortado en vez de pasar
+  // el documento tal cual.
   const output = await agentRuntime.process({
     tenantId: String(event.tenantId),
     channelId: String(event.channel),
     conversationId: String(conversation._id),
     leadId: String(lead._id),
     message: { text: event.text, providerMessageId: event.providerMessageId, timestamp: event.receivedAt },
-    businessContext,
+    businessContext: business,
     conversationHistory: conversation.messages.slice(-10).map((m) => ({ role: m.role, content: m.content })),
   });
 
