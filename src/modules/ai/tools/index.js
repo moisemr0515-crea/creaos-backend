@@ -11,15 +11,22 @@ const pushService = require('../../push/push.service');
 // ya mergeadas), sin duplicar ninguna de sus reglas (aislamiento por
 // tenant, resolución de moneda, invariantes de stock).
 const productService = require('../../products/product.service');
+// CREA SALES AI™ C.2 — Business Brain: Policies + FAQ V1, Etapa 6/11 —
+// mismo criterio que productService de arriba: se reusa
+// knowledgeRetrieval.service.js (Etapas 3/4, ya mergeadas) tal cual, sin
+// duplicar sus hard filters de tenant/status/vigencia ni su lógica de
+// precedencia/conflicto.
+const knowledgeRetrievalService = require('../../business-knowledge/knowledgeRetrieval.service');
 
 /**
  * Registro de tools reales que el modelo puede invocar durante
  * generateReply() (ver ai.service.js): escalate_to_human (PR33),
- * update_lead_stage (PR38), y search_products/check_stock/get_price (CREA
- * Product Intelligence™ V1.0, Etapa 6/10). El catálogo completo (Módulo
- * 24/44 de docs/modules) queda para PRs posteriores; este archivo está
- * pensado para crecer agregando entradas a TOOL_SCHEMAS + TOOL_EXECUTORS, no
- * para reestructurarse.
+ * update_lead_stage (PR38), search_products/check_stock/get_price (CREA
+ * Product Intelligence™ V1.0, Etapa 6/10), y search_business_knowledge
+ * (CREA SALES AI™ C.2 — Business Brain: Policies + FAQ V1, Etapa 6/11).
+ * El catálogo completo (Módulo 24/44 de docs/modules) queda para PRs
+ * posteriores; este archivo está pensado para crecer agregando entradas a
+ * TOOL_SCHEMAS + TOOL_EXECUTORS, no para reestructurarse.
  *
  * Nota de alcance sobre escalate_to_human: NO reutiliza
  * ai.controller.js#escalate() tal cual — ese es un handler de Express
@@ -166,6 +173,35 @@ const TOOL_SCHEMAS = [
               'si ya hay un producto identificado antes en la conversación.',
           },
         },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'search_business_knowledge',
+      description:
+        'Busca políticas (garantías, cambios, devoluciones, pagos, reservas, cancelaciones, etc.) y preguntas ' +
+        'frecuentes AUTORIZADAS de este negocio. Úsala SIEMPRE que el lead pregunte por una regla, condición, ' +
+        'plazo, requisito, o algo que podría estar cubierto por una política o FAQ del negocio — nunca respondas ' +
+        'ese tipo de pregunta de memoria ni inventando una regla que esta herramienta no confirmó.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: 'Términos de búsqueda, en las palabras reales que usó el lead (ej. "cuántos días tengo para devolver").',
+          },
+          productIds: {
+            type: 'array',
+            items: { type: 'string' },
+            description:
+              'IDs de producto (de un resultado previo de search_products) si la pregunta es específica de un producto puntual. ' +
+              'Opcional — si ya hay un producto identificado antes en esta conversación, podés omitirlo.',
+          },
+        },
+        required: ['query'],
         additionalProperties: false,
       },
     },
@@ -442,12 +478,68 @@ const getPrice = async (args, { conversation, business }) => {
   return { success: true, ...precio };
 };
 
+/**
+ * search_business_knowledge() — CREA SALES AI™ C.2, Etapa 6/11. Mismo
+ * criterio de resolución de producto que resolverProductId() de arriba
+ * (documento §21 — se reusa `conversation.activeProduct` TAL CUAL, sin
+ * agregar un campo de memoria nuevo): si el modelo no manda `productIds`,
+ * se usa el último producto identificado en esta conversación, si hay uno.
+ *
+ * `channelId` sale de `conversation.whatsappChannel` — nunca del modelo:
+ * es un dato de contexto real de POR QUÉ CANAL entró este mensaje (PR-10a,
+ * ver conversation.model.js), no algo que el lead pueda expresar en un
+ * mensaje, mismo principio que `business._id` (documento §13: "el
+ * tenantId no debe ser elegido libremente por el LLM").
+ *
+ * El resultado de resolverConocimiento() (Etapas 3/4) se recorta antes de
+ * devolverlo al modelo — mismo criterio que buscarProductos() en
+ * product.service.js: nunca exponer campos internos (business, _id,
+ * timestamps, source, version) que no aportan nada a la respuesta y solo
+ * suman tokens. `code`/`category` sí viajan — le sirven al modelo como
+ * referencia interna si necesita citar la política por su identificador
+ * ante una repregunta del lead.
+ */
+const searchBusinessKnowledge = async (args, { conversation, business }) => {
+  const query = typeof args?.query === 'string' ? args.query.trim() : '';
+  if (!query) {
+    return { success: false, error: 'Falta el parámetro "query" (obligatorio).' };
+  }
+
+  const productIds = Array.isArray(args?.productIds) && args.productIds.length
+    ? args.productIds.filter((id) => typeof id === 'string' && id.trim()).map((id) => id.trim())
+    : (conversation.activeProduct?.productId ? [conversation.activeProduct.productId.toString()] : []);
+
+  const channelId = conversation.whatsappChannel ? conversation.whatsappChannel.toString() : undefined;
+
+  const resultado = await knowledgeRetrievalService.resolverConocimiento(business._id, query, { productIds, channelId });
+
+  return {
+    success: true,
+    policies: resultado.policies.map((p) => ({
+      code: p.code,
+      category: p.category,
+      statement: p.statement,
+      customerFacingText: p.customerFacingText,
+      responseMode: p.action?.responseMode,
+      handoffReason: p.action?.handoffReason,
+    })),
+    faqs: resultado.faqs.map((f) => ({
+      question: f.question,
+      answer: f.answer,
+      category: f.category,
+    })),
+    conflictDetected: resultado.conflictDetected,
+    needsClarification: resultado.needsClarification,
+  };
+};
+
 const TOOL_EXECUTORS = {
   escalate_to_human: escalateToHuman,
   update_lead_stage: updateLeadStage,
   search_products: searchProducts,
   check_stock: checkStock,
   get_price: getPrice,
+  search_business_knowledge: searchBusinessKnowledge,
 };
 
 /**
