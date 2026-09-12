@@ -533,13 +533,29 @@ async function processGupshupMessage({ phone, text, name, mediaType, mediaSource
     return { lead, conversation };
   }
 
-  // C.3 — Etapa C3.1 (Runtime Contract): runAgent() es un envoltorio
-  // LITERAL de generateReply() (mismo reply, mismo guardado, misma
-  // propagación de errores — ver ai.service.js#runAgent() para el porqué
-  // de no capturar acá tampoco) — este es el camino que hoy corre en
-  // producción; ver docs/implementation/c3-runtime-current-state.md §0/§6.
+  // C.3 — Etapa C3.1 (Runtime Contract): runAgent() es un envoltorio de
+  // generateReply() — este es el camino que hoy corre en producción; ver
+  // docs/implementation/c3-runtime-current-state.md §0/§6.
   logger.info('[gupshup] llamando a aiService.runAgent', { conversationId: conversation._id.toString() });
-  const { responseText: reply } = await aiService.runAgent({ conversationId: conversation._id, business, lead });
+  const result = await aiService.runAgent({ conversationId: conversation._id, business, lead });
+
+  // C.3 — Etapa C3.3 (Action Outcomes). Desde esta etapa, runAgent() ya NO
+  // deja propagar una excepción cruda de generateReply() — la normaliza a
+  // outcome:'error' (ver ai.service.js#runAgent() para el porqué completo
+  // del cambio). Este `if` es la mitad de ese cambio que le toca a este
+  // archivo: sin él, un fallo real (ej. loop de tool calls agotado)
+  // seguiría de largo como si el agente hubiera decidido legítimamente "no
+  // responder", marcando el InboundEvent como 'processed' en vez de
+  // 'failed' más abajo en inbound.gateway.js#handleOne() — perdiendo la
+  // señal de que algo salió mal. Se relanza acá para preservar EXACTAMENTE
+  // el mismo efecto downstream que daba la excepción cruda de antes de
+  // C3.3 (ese catch de handleOne() no le importa la clase del error, solo
+  // usa err.message — ver su propio código).
+  if (result.outcome === 'error') {
+    throw new Error(`El agente no pudo generar una respuesta: ${result.errorCode}`);
+  }
+
+  const reply = result.responseText;
   logger.info('[gupshup] respuesta de IA recibida', { replyPreview: reply?.slice(0, 50) });
 
   // Fase 1.1 (Provider Abstraction): antes llamaba a gupshup.client.js
