@@ -26,7 +26,38 @@ const knowledgeRetrievalService = require('../../business-knowledge/knowledgeRet
  * (CREA SALES AI™ C.2 — Business Brain: Policies + FAQ V1, Etapa 6/11).
  * El catálogo completo (Módulo 24/44 de docs/modules) queda para PRs
  * posteriores; este archivo está pensado para crecer agregando entradas a
- * TOOL_SCHEMAS + TOOL_EXECUTORS, no para reestructurarse.
+ * TOOL_REGISTRY, no para reestructurarse.
+ *
+ * CREA SALES AI™ C.3 — Architecture & Agent Runtime V1, Etapa C3.2 (Tool
+ * Registry formal, docs/architecture-runtime/CREA_SALES_AI_C3_..., §5.2):
+ * hasta esta etapa, el schema que ve OpenAI (TOOL_SCHEMAS) y la función
+ * que realmente corre (TOOL_EXECUTORS) vivían en 2 arrays/mapas paralelos,
+ * mantenidos a mano en sincronía por convención, no por estructura.
+ * TOOL_REGISTRY es ahora la ÚNICA fuente de verdad — un array de
+ * ToolDefinition (name/description/inputSchema/authorization/execute) del
+ * que TOOL_SCHEMAS y TOOL_EXECUTORS se DERIVAN más abajo. Es un refactor
+ * de FORMA, no de comportamiento: mismos 6 nombres, mismas descripciones,
+ * mismos parámetros, mismos executors, byte a byte — ver
+ * index.formCompat.test.js para la verificación explícita de que
+ * TOOL_SCHEMAS/TOOL_EXECUTORS derivados son idénticos a los que existían
+ * antes de esta etapa.
+ *
+ * `authorization` es una función `(context) => boolean`, no un booleano
+ * estático, para que en el futuro pueda depender de datos reales (plan del
+ * negocio, rol del actor, etc.) sin cambiar la forma del registro otra
+ * vez. V1 la deja en `() => true` para las 6 tools reales — es
+ * exactamente el comportamiento de hoy (todas las tools ya están
+ * disponibles siempre para cualquier conversación autenticada), declarado
+ * ahora explícitamente en vez de estar implícito en que nunca hubo ningún
+ * chequeo. Gating real por plan/negocio queda fuera de alcance de C3.2 —
+ * no fue pedido y cambiaría comportamiento, no solo vocabulario.
+ *
+ * `timeout` (opcional en el ToolDefinition de la spec) se documenta como
+ * "no aplicado en V1" a propósito — ningún executor actual tarda lo
+ * suficiente como para justificar cortar su ejecución, y agregar un
+ * mecanismo de timeout real (Promise.race, AbortController, etc.) sin una
+ * necesidad demostrada sería exactamente el tipo de infraestructura que
+ * la spec pide NO construir sin evidencia (§7).
  *
  * Nota de alcance sobre escalate_to_human: NO reutiliza
  * ai.controller.js#escalate() tal cual — ese es un handler de Express
@@ -49,164 +80,6 @@ const knowledgeRetrievalService = require('../../business-knowledge/knowledgeRet
  * debe elegir o inventar el tenant_id"). Las 3 comparten resolverProductId()
  * para el fallback a `conversation.activeProduct` (documento §21).
  */
-
-const TOOL_SCHEMAS = [
-  {
-    type: 'function',
-    function: {
-      name: 'escalate_to_human',
-      description:
-        'Escala esta conversación a un agente humano y desactiva las respuestas automáticas de la IA. ' +
-        'Úsala cuando el lead pide explícitamente hablar con una persona, muestra frustración fuerte con ' +
-        'la IA, o la situación excede lo que puedes resolver como agente de ventas conversacional ' +
-        '(reclamos, disputas de pago, algo fuera de tu alcance). No la uses solo porque el lead hizo ' +
-        'una pregunta difícil que sí puedes intentar responder.',
-      parameters: {
-        type: 'object',
-        properties: {
-          reason: {
-            type: 'string',
-            description: 'Motivo breve y concreto del escalamiento, en español, para que el agente humano tenga contexto inmediato.',
-          },
-        },
-        required: ['reason'],
-        additionalProperties: false,
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'update_lead_stage',
-      description:
-        'Actualiza la etapa del lead en el pipeline de ventas del negocio. Úsala cuando la conversación deja ' +
-        'claro que el lead avanzó a una etapa distinta del proceso comercial (ej. pasó de "interesado" a pedir ' +
-        'una propuesta formal, a negociar condiciones, o decidió no continuar). Etapas típicas: new, contacted, ' +
-        'interested, proposal, negotiation, won, lost — pero cada negocio puede tener las suyas propias; si usas ' +
-        'una etapa que no existe para este negocio, el sistema te devuelve la lista de etapas válidas para que ' +
-        'reintentes con la correcta. No la uses solo porque el lead hizo una pregunta — solo ante una señal real ' +
-        'de cambio de etapa.',
-      parameters: {
-        type: 'object',
-        properties: {
-          stage: {
-            type: 'string',
-            description: 'Clave (key) de la etapa destino. Usa la que corresponda al pipeline real de este negocio si la conoces por el contexto; si no, usa una etapa típica (new, contacted, interested, proposal, negotiation, won, lost).',
-          },
-          reason: {
-            type: 'string',
-            description: 'Motivo breve del cambio de etapa, para el registro de actividad del lead. Opcional — no lo inventes si el lead simplemente avanzó de forma natural en la conversación.',
-          },
-        },
-        required: ['stage'],
-        additionalProperties: false,
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'search_products',
-      description:
-        'Busca productos del catálogo REAL de este negocio por nombre, marca, categoría o palabras clave. Úsala ' +
-        'SIEMPRE que el lead pregunte si tienen un producto, pida presentaciones/variantes, o mencione algo que ' +
-        'podría ser un producto del catálogo (ej. "¿tienen moringa?", "¿tienen aceite de coco?") — nunca afirmes ' +
-        'ni descartes la existencia de un producto sin llamar a esta tool primero. Devuelve como máximo 5 ' +
-        'coincidencias con su productId — usalo después en check_stock/get_price para confirmar disponibilidad o ' +
-        'precio real antes de responder.',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: {
-            type: 'string',
-            description:
-              'Términos de búsqueda, en las palabras reales que usó el lead (ej. "pastillas de moringa"). No ' +
-              'inventes ni completes el nombre de un producto que el lead no mencionó.',
-          },
-        },
-        required: ['query'],
-        additionalProperties: false,
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'check_stock',
-      description:
-        'Consulta el stock REAL y disponible de un producto de este negocio. Úsala SIEMPRE antes de decirle al ' +
-        'lead que un producto tiene o no tiene stock — nunca asumas ni inventes disponibilidad. Si la tool falla ' +
-        'o no encuentra el producto, decilo de forma natural (ej. "no puedo confirmar el stock ahora mismo") en ' +
-        'vez de afirmar un número. Si no tenés el productId a mano, podés omitirlo cuando el lead se refiere al ' +
-        'producto del que ya se venía hablando en esta conversación.',
-      parameters: {
-        type: 'object',
-        properties: {
-          productId: {
-            type: 'string',
-            description:
-              'ID del producto (de un resultado previo de search_products en esta misma conversación). Opcional ' +
-              'si ya hay un producto identificado antes en la conversación.',
-          },
-        },
-        additionalProperties: false,
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'get_price',
-      description:
-        'Consulta el precio REAL de un producto de este negocio. Úsala SIEMPRE antes de mencionar o confirmar un ' +
-        'precio — nunca inventes, estimes ni redondees un precio que no te devolvió esta tool. Si la tool falla, ' +
-        'no encuentra el producto, o el producto no tiene precio cargado, decilo de forma natural (ej. "dejame ' +
-        'confirmar el precio y te aviso") en vez de afirmar un número. Si no tenés el productId a mano, podés ' +
-        'omitirlo cuando el lead se refiere al producto del que ya se venía hablando en esta conversación.',
-      parameters: {
-        type: 'object',
-        properties: {
-          productId: {
-            type: 'string',
-            description:
-              'ID del producto (de un resultado previo de search_products en esta misma conversación). Opcional ' +
-              'si ya hay un producto identificado antes en la conversación.',
-          },
-        },
-        additionalProperties: false,
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'search_business_knowledge',
-      description:
-        'Busca políticas (garantías, cambios, devoluciones, pagos, reservas, cancelaciones, etc.) y preguntas ' +
-        'frecuentes AUTORIZADAS de este negocio. Úsala SIEMPRE que el lead pregunte por una regla, condición, ' +
-        'plazo, requisito, o algo que podría estar cubierto por una política o FAQ del negocio — nunca respondas ' +
-        'ese tipo de pregunta de memoria ni inventando una regla que esta herramienta no confirmó.',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: {
-            type: 'string',
-            description: 'Términos de búsqueda, en las palabras reales que usó el lead (ej. "cuántos días tengo para devolver").',
-          },
-          productIds: {
-            type: 'array',
-            items: { type: 'string' },
-            description:
-              'IDs de producto (de un resultado previo de search_products) si la pregunta es específica de un producto puntual. ' +
-              'Opcional — si ya hay un producto identificado antes en esta conversación, podés omitirlo.',
-          },
-        },
-        required: ['query'],
-        additionalProperties: false,
-      },
-    },
-  },
-];
 
 /**
  * Ejecuta el escalamiento real sobre el documento de Conversation que ya
@@ -533,23 +406,204 @@ const searchBusinessKnowledge = async (args, { conversation, business }) => {
   };
 };
 
-const TOOL_EXECUTORS = {
-  escalate_to_human: escalateToHuman,
-  update_lead_stage: updateLeadStage,
-  search_products: searchProducts,
-  check_stock: checkStock,
-  get_price: getPrice,
-  search_business_knowledge: searchBusinessKnowledge,
-};
+// Autorización V1 — ver el comentario largo de arriba: siempre `true`
+// para las 6 tools reales, declarado explícitamente en vez de implícito.
+// Una única función compartida (no una por tool) porque hoy el criterio
+// es IDÉNTICO para las 6 — el día que deje de serlo, cada entrada puede
+// pasar a tener la suya propia sin tocar el resto del registro.
+const siempreAutorizada = () => true;
+
+/**
+ * TOOL_REGISTRY — C.3, Etapa C3.2. Única fuente de verdad de las tools
+ * reales (ver el comentario largo al inicio del archivo). `inputSchema` es
+ * el mismo JSON Schema que antes vivía embebido en cada entrada de
+ * TOOL_SCHEMAS (`function.parameters`) — nombre distinto acá porque
+ * `parameters` es terminología de la API de OpenAI, mientras que
+ * `inputSchema` es el nombre que usa el ToolDefinition de la spec de C.3.
+ */
+const TOOL_REGISTRY = [
+  {
+    name: 'escalate_to_human',
+    description:
+      'Escala esta conversación a un agente humano y desactiva las respuestas automáticas de la IA. ' +
+      'Úsala cuando el lead pide explícitamente hablar con una persona, muestra frustración fuerte con ' +
+      'la IA, o la situación excede lo que puedes resolver como agente de ventas conversacional ' +
+      '(reclamos, disputas de pago, algo fuera de tu alcance). No la uses solo porque el lead hizo ' +
+      'una pregunta difícil que sí puedes intentar responder.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        reason: {
+          type: 'string',
+          description: 'Motivo breve y concreto del escalamiento, en español, para que el agente humano tenga contexto inmediato.',
+        },
+      },
+      required: ['reason'],
+      additionalProperties: false,
+    },
+    authorization: siempreAutorizada,
+    execute: escalateToHuman,
+  },
+  {
+    name: 'update_lead_stage',
+    description:
+      'Actualiza la etapa del lead en el pipeline de ventas del negocio. Úsala cuando la conversación deja ' +
+      'claro que el lead avanzó a una etapa distinta del proceso comercial (ej. pasó de "interesado" a pedir ' +
+      'una propuesta formal, a negociar condiciones, o decidió no continuar). Etapas típicas: new, contacted, ' +
+      'interested, proposal, negotiation, won, lost — pero cada negocio puede tener las suyas propias; si usas ' +
+      'una etapa que no existe para este negocio, el sistema te devuelve la lista de etapas válidas para que ' +
+      'reintentes con la correcta. No la uses solo porque el lead hizo una pregunta — solo ante una señal real ' +
+      'de cambio de etapa.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        stage: {
+          type: 'string',
+          description: 'Clave (key) de la etapa destino. Usa la que corresponda al pipeline real de este negocio si la conoces por el contexto; si no, usa una etapa típica (new, contacted, interested, proposal, negotiation, won, lost).',
+        },
+        reason: {
+          type: 'string',
+          description: 'Motivo breve del cambio de etapa, para el registro de actividad del lead. Opcional — no lo inventes si el lead simplemente avanzó de forma natural en la conversación.',
+        },
+      },
+      required: ['stage'],
+      additionalProperties: false,
+    },
+    authorization: siempreAutorizada,
+    execute: updateLeadStage,
+  },
+  {
+    name: 'search_products',
+    description:
+      'Busca productos del catálogo REAL de este negocio por nombre, marca, categoría o palabras clave. Úsala ' +
+      'SIEMPRE que el lead pregunte si tienen un producto, pida presentaciones/variantes, o mencione algo que ' +
+      'podría ser un producto del catálogo (ej. "¿tienen moringa?", "¿tienen aceite de coco?") — nunca afirmes ' +
+      'ni descartes la existencia de un producto sin llamar a esta tool primero. Devuelve como máximo 5 ' +
+      'coincidencias con su productId — usalo después en check_stock/get_price para confirmar disponibilidad o ' +
+      'precio real antes de responder.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description:
+            'Términos de búsqueda, en las palabras reales que usó el lead (ej. "pastillas de moringa"). No ' +
+            'inventes ni completes el nombre de un producto que el lead no mencionó.',
+        },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+    authorization: siempreAutorizada,
+    execute: searchProducts,
+  },
+  {
+    name: 'check_stock',
+    description:
+      'Consulta el stock REAL y disponible de un producto de este negocio. Úsala SIEMPRE antes de decirle al ' +
+      'lead que un producto tiene o no tiene stock — nunca asumas ni inventes disponibilidad. Si la tool falla ' +
+      'o no encuentra el producto, decilo de forma natural (ej. "no puedo confirmar el stock ahora mismo") en ' +
+      'vez de afirmar un número. Si no tenés el productId a mano, podés omitirlo cuando el lead se refiere al ' +
+      'producto del que ya se venía hablando en esta conversación.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        productId: {
+          type: 'string',
+          description:
+            'ID del producto (de un resultado previo de search_products en esta misma conversación). Opcional ' +
+            'si ya hay un producto identificado antes en la conversación.',
+        },
+      },
+      additionalProperties: false,
+    },
+    authorization: siempreAutorizada,
+    execute: checkStock,
+  },
+  {
+    name: 'get_price',
+    description:
+      'Consulta el precio REAL de un producto de este negocio. Úsala SIEMPRE antes de mencionar o confirmar un ' +
+      'precio — nunca inventes, estimes ni redondees un precio que no te devolvió esta tool. Si la tool falla, ' +
+      'no encuentra el producto, o el producto no tiene precio cargado, decilo de forma natural (ej. "dejame ' +
+      'confirmar el precio y te aviso") en vez de afirmar un número. Si no tenés el productId a mano, podés ' +
+      'omitirlo cuando el lead se refiere al producto del que ya se venía hablando en esta conversación.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        productId: {
+          type: 'string',
+          description:
+            'ID del producto (de un resultado previo de search_products en esta misma conversación). Opcional ' +
+            'si ya hay un producto identificado antes en la conversación.',
+        },
+      },
+      additionalProperties: false,
+    },
+    authorization: siempreAutorizada,
+    execute: getPrice,
+  },
+  {
+    name: 'search_business_knowledge',
+    description:
+      'Busca políticas (garantías, cambios, devoluciones, pagos, reservas, cancelaciones, etc.) y preguntas ' +
+      'frecuentes AUTORIZADAS de este negocio. Úsala SIEMPRE que el lead pregunte por una regla, condición, ' +
+      'plazo, requisito, o algo que podría estar cubierto por una política o FAQ del negocio — nunca respondas ' +
+      'ese tipo de pregunta de memoria ni inventando una regla que esta herramienta no confirmó.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Términos de búsqueda, en las palabras reales que usó el lead (ej. "cuántos días tengo para devolver").',
+        },
+        productIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'IDs de producto (de un resultado previo de search_products) si la pregunta es específica de un producto puntual. ' +
+            'Opcional — si ya hay un producto identificado antes en esta conversación, podés omitirlo.',
+        },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+    authorization: siempreAutorizada,
+    execute: searchBusinessKnowledge,
+  },
+];
+
+// Derivados de TOOL_REGISTRY — nunca mantenidos a mano en paralelo.
+// TOOL_SCHEMAS conserva el shape EXACTO que espera `tools:` en la API de
+// OpenAI (ai.service.js#generateReply()); TOOL_EXECUTORS se mantiene
+// exportado por compatibilidad con cualquier código que ya lo importara.
+const TOOL_SCHEMAS = TOOL_REGISTRY.map((tool) => ({
+  type: 'function',
+  function: {
+    name: tool.name,
+    description: tool.description,
+    parameters: tool.inputSchema,
+  },
+}));
+
+const TOOL_EXECUTORS = Object.fromEntries(TOOL_REGISTRY.map((tool) => [tool.name, tool.execute]));
 
 /**
  * Punto de entrada único que usa generateReply() para correr una tool call
  * que pidió el modelo. Nunca lanza — cualquier error (JSON de argumentos
- * inválido, tool desconocida, excepción del executor) se devuelve como
- * resultado con success:false en vez de propagarse, para que el loop de
- * generateReply() pueda seguir y el modelo tenga la chance de responderle
- * al lead igual (fail-soft, mismo criterio que saveInboundMessage() con la
- * media entrante).
+ * inválido, tool desconocida, no autorizada, excepción del executor) se
+ * devuelve como resultado con success:false en vez de propagarse, para que
+ * el loop de generateReply() pueda seguir y el modelo tenga la chance de
+ * responderle al lead igual (fail-soft, mismo criterio que
+ * saveInboundMessage() con la media entrante).
+ *
+ * CREA SALES AI™ C.3, Etapa C3.2: ahora resuelve contra TOOL_REGISTRY (no
+ * contra TOOL_EXECUTORS directo) para poder chequear `tool.authorization`
+ * ANTES de ejecutar — "el modelo puede solicitar una tool; el runtime
+ * decide si está autorizada" (spec §5.2), en código, nunca por obediencia
+ * del modelo (regla no-negociable #3). V1: authorization siempre `true`
+ * para las 6 tools reales, así que este chequeo nunca bloquea nada hoy —
+ * el comportamiento observable es idéntico al de antes de esta etapa.
  *
  * @param {object} toolCall - tal cual lo devuelve OpenAI (choices[0].message.tool_calls[i])
  * @param {{ conversation: import('../conversation.model'), business: object, lead: object }} context
@@ -557,11 +611,16 @@ const TOOL_EXECUTORS = {
  */
 const executeToolCall = async (toolCall, context) => {
   const name = toolCall?.function?.name;
-  const executor = TOOL_EXECUTORS[name];
+  const tool = TOOL_REGISTRY.find((t) => t.name === name);
 
-  if (!executor) {
+  if (!tool) {
     logger.error(`generateReply(): el modelo pidió una tool desconocida: ${name}`);
     return { success: false, error: `Tool desconocida: ${name}` };
+  }
+
+  if (!tool.authorization(context)) {
+    logger.warn(`generateReply(): tool "${name}" no autorizada para este contexto`);
+    return { success: false, error: `Tool no autorizada: ${name}` };
   }
 
   let args;
@@ -573,11 +632,11 @@ const executeToolCall = async (toolCall, context) => {
   }
 
   try {
-    return await executor(args, context);
+    return await tool.execute(args, context);
   } catch (error) {
     logger.error(`generateReply(): error ejecutando tool ${name}: ${error.message}`);
     return { success: false, error: `Error ejecutando ${name}: ${error.message}` };
   }
 };
 
-module.exports = { TOOL_SCHEMAS, TOOL_EXECUTORS, executeToolCall };
+module.exports = { TOOL_REGISTRY, TOOL_SCHEMAS, TOOL_EXECUTORS, executeToolCall };
