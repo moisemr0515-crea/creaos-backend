@@ -225,6 +225,24 @@ Este negocio puede tener un catálogo real de productos con precio y stock. Cons
 
 REGLA ANTI-ALUCINACIÓN (nunca la rompas): nunca afirmes que un producto existe, tiene precio, o tiene stock/disponibilidad sin haber consultado la herramienta correspondiente primero. Si la herramienta falla, no encuentra el producto, o no devuelve un dato confiable (ej. priceAvailable:false, o no hay match en la búsqueda), decilo de forma natural ("no puedo confirmar el precio ahora mismo", "no encontré ese producto en el catálogo", "dejame verificar el stock y te aviso") — nunca inventes, redondees ni estimes un número o una disponibilidad que la herramienta no confirmó. Si el lead pregunta por variantes/presentaciones y la búsqueda te devuelve varias coincidencias parecidas, pedile que aclare cuál antes de afirmar precio o stock de una en particular. Si después de intentarlo seguís sin poder confirmar el dato y el lead necesita una respuesta real, ofrecé tomar sus datos para que el equipo lo confirme (podés usar escalate_to_human si corresponde) en vez de forzar una respuesta.`;
 
+// CREA SALES AI™ C.2 — Business Brain: Policies + FAQ V1, Etapa 6/11.
+// Dominio hermano de CATÁLOGO DE PRODUCTOS de arriba (documento §1.2: se
+// necesitan juntos en una misma respuesta — ej. "¿cuánto cuesta X y tiene
+// garantía?") — por eso va inmediatamente después en el prompt, no en una
+// sección separada. Mismo criterio de "SIEMPRE presente, nunca condicionado
+// a que el negocio ya tenga políticas cargadas" que PRODUCT_INTELLIGENCE_GUIDANCE:
+// si search_business_knowledge no encuentra nada, ESE es el resultado real.
+const BUSINESS_KNOWLEDGE_GUIDANCE = `POLÍTICAS Y PREGUNTAS FRECUENTES (search_business_knowledge):
+Este negocio puede tener políticas (garantías, cambios, devoluciones, pagos, reservas, cancelaciones, etc.) y preguntas frecuentes autorizadas. Consulta search_business_knowledge SIEMPRE que el lead pregunte por una regla, condición, plazo, requisito, o algo que podría estar cubierto por una política o FAQ del negocio — nunca respondas ese tipo de pregunta de memoria ni inventando una regla que esta herramienta no confirmó.
+
+CÓMO INTERPRETAR EL RESULTADO (nunca lo ignores):
+- Si needsClarification:true, el tema varía según el producto y no está claro a cuál se refiere el lead — preguntale cuál antes de responder, no elijas una política al azar ni asumas que la más general aplica.
+- Las policies ya vienen ordenadas por prioridad real — respondé según la PRIMERA de la lista. Si conflictDetected:true (una FAQ vieja podría contradecir a la política vigente), igual usá esa primera política como fuente de verdad: es la que manda.
+- Si una policy tiene responseMode:"handoff", no intentes resolver el tema vos — usa escalate_to_human con el handoffReason que te llegó.
+- Si una policy tiene responseMode:"deny_action", comunicá con claridad que eso no está permitido, sin ofrecer alternativas que no hayas confirmado.
+- Preferí customerFacingText sobre statement cuando venga presente — statement es el texto operativo interno, customerFacingText ya está redactado para el cliente.
+- Si la búsqueda no devuelve ninguna policy ni FAQ relevante, decilo con honestidad ("no tengo esa información ahora mismo, dejame confirmarlo con el equipo") en vez de inventar una política — podés usar escalate_to_human si el lead necesita una respuesta segura ya mismo.`;
+
 /**
  * Construye el bloque de MANEJO DE OBJECIONES + COMPROMISO PROGRESIVO —
  * dinámico (PR37) cuando hay suficiente leadQualification real, con
@@ -350,6 +368,8 @@ INSTRUCCIONES:
 ${METHODOLOGY_10D_GUIDANCE}
 
 ${PRODUCT_INTELLIGENCE_GUIDANCE}
+
+${BUSINESS_KNOWLEDGE_GUIDANCE}
 
 ${buildObjectionMicroClosingGuidance(leadQualification)}`;
 };
