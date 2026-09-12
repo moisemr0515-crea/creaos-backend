@@ -33,8 +33,60 @@ errores).
 consultar `/health` (mismo método) y comparar. Señales de alarma reales:
 `failed > 0` en `whatsapp-inbound`/`whatsapp-outbound`, `waiting` creciendo sin
 bajar (el Worker no está consumiendo), o `active` que no vuelve a 0 (job
-colgado). Un `completed` de `whatsapp-inbound` que sube de 1 a N con `failed:0`
-es la señal esperada de que el mensaje real de WhatsApp se procesó bien.
+colgado).
+
+**Corrección importante sobre `completed` (no usarlo como señal — ver
+investigación abajo):** el número de `completed` de `/health` **no es un
+contador histórico acumulado**, así que no sirve para comparar "¿subió o
+bajó?" contra este baseline. Es la cantidad de jobs actualmente retenidos bajo
+la política de 7 días (`removeOnComplete`, ver más abajo) — puede bajar sin
+que eso signifique ningún problema. Las únicas señales confiables son
+`failed`, `waiting` y `active`.
+
+## Resultado real de la primera prueba (mensaje real de WhatsApp, 2026-09-12 15:39 UTC)
+
+El usuario mandó un mensaje real ("Hola") después de activar el flag.
+Verificado de forma independiente en 3 fuentes (no solo el log del propio
+proceso):
+
+- **Mongo, `InboundEvent`:** `status:"processed"`, `createdAt` → `processedAt`
+  en ~6s, sin `error`.
+- **Mongo, `OutboundEvent`:** `status:"sent"`, `sourceInboundEvent` apuntando
+  al InboundEvent de arriba, con el texto real de la respuesta generada.
+- **Logs de `creaos-backend-worker`** (no de la API — confirma que corrió por
+  el camino nuevo): trace `AGENT_RUN` de C3.4 seguido del envío real por
+  Gupshup Partner API, ~2.5s de duración de `runAgent()`.
+
+`/health` inmediatamente después: `failed:0`, `waiting:0`, `active:0` en las 4
+colas — sano.
+
+### Investigación: por qué bajó el `completed` (whatsapp-outbound 4→1, whatsapp-inbound 1→1 en vez de 1→2)
+
+Causa confirmada inspeccionando directamente el ZSET de BullMQ en Redis
+(`bull:whatsapp-outbound:completed` / `bull:whatsapp-inbound:completed`, vía
+`ZRANGE ... WITHSCORES`): después del mensaje de prueba, cada cola tenía
+**un solo job** en su set de completados (`jobId=5` en outbound, `jobId=2` en
+inbound), con timestamp exacto del mensaje de hoy. Los `jobId` confirman que
+antes existieron más (4 y 1 respectivamente) — no es que nunca hubo nada, es
+que ya no están.
+
+Explicación: [`src/config/queue.js:55`](../../src/config/queue.js)
+configura `removeOnComplete: { age: 60 * 60 * 24 * 7 }` (7 días) para ambas
+colas. BullMQ no limpia con un barrido en segundo plano — el trim por
+antigüedad se aplica de forma perezosa, recién cuando un job NUEVO completa.
+Los 4 jobs viejos de `whatsapp-outbound` databan del 15 de agosto (~28 días,
+muy por encima de los 7) y quedaron visibles en `getJobCounts()` sin
+limpiarse simplemente porque, con el flag apagado, no había entrado ningún
+job nuevo que disparara la limpieza. El mensaje de hoy fue el primer job real
+desde la activación, disparó el trim pendiente, y los viejos desaparecieron
+del contador — dejando solo el de hoy.
+
+**No es pérdida de datos:** `removeOnComplete` borra solo el bookkeeping
+interno de BullMQ en Redis — nunca tocó `InboundEvent`/`OutboundEvent` en
+Mongo, que son el registro real y fuente de verdad (el `OutboundEvent` del 15
+de agosto se pudo leer completo desde Mongo sin problema). Es la misma
+política de retención que ya regía antes de C.3; la activación del flag solo
+fue lo que disparó una limpieza que estaba pendiente hace tiempo.
 
 ## Plan de rollback (verificado antes de activar, no solo prometido)
 
