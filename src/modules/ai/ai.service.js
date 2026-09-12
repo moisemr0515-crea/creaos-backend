@@ -210,6 +210,21 @@ const OBJECTION_MICROCLOSING_BY_MODE = {
   },
 };
 
+// CREA Product Intelligence™ V1.0, Etapa 7/10 — documento maestro §19-22 y
+// §31. SIEMPRE presente en el prompt, no condicionada a que el negocio ya
+// tenga productos cargados: aunque el catálogo esté vacío hoy, la regla
+// "nunca inventes precio/stock" sigue siendo la correcta — si
+// search_products no encuentra nada, ESE es el resultado real ("no hay
+// match"), y esta guía hace que el modelo lo diga con honestidad en vez de
+// inventar. No mete el catálogo en el prompt (§19: "no meter todo el
+// catálogo... el agente debe consultar herramientas únicamente cuando
+// corresponda") — el catálogo en sí solo lo ve el modelo a través de los
+// resultados reales de search_products/check_stock/get_price, nunca acá.
+const PRODUCT_INTELLIGENCE_GUIDANCE = `CATÁLOGO DE PRODUCTOS (search_products / check_stock / get_price):
+Este negocio puede tener un catálogo real de productos con precio y stock. Consulta estas herramientas SIEMPRE que el lead pregunte o dé a entender algo sobre: si tienen un producto (existencia), su precio, si hay stock/disponibilidad, un producto específico, presentaciones o variantes, la cantidad que quiere comprar, o esté comparando opciones. Empieza por search_products con las palabras del lead; usa el productId que te devuelve para check_stock/get_price antes de confirmar disponibilidad o precio. Si ya identificaste un producto antes en esta conversación y el lead sigue preguntando sobre "eso" sin nombrarlo de nuevo, podés omitir el productId en check_stock/get_price.
+
+REGLA ANTI-ALUCINACIÓN (nunca la rompas): nunca afirmes que un producto existe, tiene precio, o tiene stock/disponibilidad sin haber consultado la herramienta correspondiente primero. Si la herramienta falla, no encuentra el producto, o no devuelve un dato confiable (ej. priceAvailable:false, o no hay match en la búsqueda), decilo de forma natural ("no puedo confirmar el precio ahora mismo", "no encontré ese producto en el catálogo", "dejame verificar el stock y te aviso") — nunca inventes, redondees ni estimes un número o una disponibilidad que la herramienta no confirmó. Si el lead pregunta por variantes/presentaciones y la búsqueda te devuelve varias coincidencias parecidas, pedile que aclare cuál antes de afirmar precio o stock de una en particular. Si después de intentarlo seguís sin poder confirmar el dato y el lead necesita una respuesta real, ofrecé tomar sus datos para que el equipo lo confirme (podés usar escalate_to_human si corresponde) en vez de forzar una respuesta.`;
+
 /**
  * Construye el bloque de MANEJO DE OBJECIONES + COMPROMISO PROGRESIVO —
  * dinámico (PR37) cuando hay suficiente leadQualification real, con
@@ -282,7 +297,7 @@ const PERSONALITY_GUIDANCE = {
     'Nunca mientas ni presiones de forma deshonesta — directo y seguro, no grosero ni manipulador.',
 };
 
-const buildSystemPrompt = (business, lead, leadQualification) => {
+const buildSystemPrompt = (business, lead, leadQualification, activeProduct) => {
   const infoNegocio = [
     business.productDescription && `- Qué vende: ${business.productDescription}`,
     business.targetCustomer && `- Cliente ideal: ${business.targetCustomer}`,
@@ -303,6 +318,15 @@ const buildSystemPrompt = (business, lead, leadQualification) => {
   const personalidad = PERSONALITY_GUIDANCE[business.aiPersonality] || PERSONALITY_GUIDANCE.cercano;
   const bloquePersonalidad = `\nPERSONALIDAD (prioridad sobre la instrucción general de tono más abajo):\n${personalidad}\n`;
 
+  // Documento maestro §21 ("contexto conversacional") — conversation.activeProduct
+  // lo escriben las tools de producto (ver ai/tools/index.js#searchProducts),
+  // se lee acá tal cual, sin reinterpretarlo. Ausente en la enorme mayoría
+  // de las conversaciones (ninguna búsqueda de producto todavía, o negocio
+  // sin catálogo) — bloque vacío en ese caso, no un error.
+  const bloqueProductoActivo = activeProduct?.productId
+    ? `\nCONTEXTO DE PRODUCTO EN ESTA CONVERSACIÓN:\n- Último producto identificado: "${activeProduct.name}" (búsqueda: "${activeProduct.lastSearchQuery}"). Si el lead sigue preguntando sobre "eso"/precio/stock sin nombrarlo de nuevo, asumí que se refiere a este.\n`
+    : '';
+
   return `Eres Alex, un agente de ventas profesional y empático de ${business.name}.
 ${infoNegocio ? `\nINFORMACIÓN DEL NEGOCIO:\n${infoNegocio}\n` : ''}
 Tu objetivo es calificar al lead y guiarlo hacia una venta de manera natural y conversacional.
@@ -313,7 +337,7 @@ INFORMACIÓN DEL LEAD:
 - Temperatura actual: ${lead.temperature || 'cold'}
 - Etapa del pipeline: ${lead.pipelineStage || 'new'}
 - Valor potencial: ${lead.potentialValue ? `$${lead.potentialValue} ${lead.currency || 'USD'}` : 'No definido'}
-
+${bloqueProductoActivo}
 INSTRUCCIONES:
 1. Responde siempre en el mismo idioma que el usuario
 2. Mantén un tono profesional pero cercano y empático
@@ -324,6 +348,8 @@ INSTRUCCIONES:
 7. Nunca menciones que eres una IA a menos que te lo pregunten directamente
 
 ${METHODOLOGY_10D_GUIDANCE}
+
+${PRODUCT_INTELLIGENCE_GUIDANCE}
 
 ${buildObjectionMicroClosingGuidance(leadQualification)}`;
 };
@@ -433,8 +459,11 @@ const generateReply = async (conversationId, business, lead) => {
   // Micro-Closing. conversation.leadQualification viene undefined en
   // conversaciones nuevas (antes del primer qualifyLead() automático) —
   // buildSystemPrompt()/buildObjectionMicroClosingGuidance() lo manejan
-  // como fallback al bloque estático, no como error.
-  const systemPrompt = buildSystemPrompt(business, lead, conversation.leadQualification);
+  // como fallback al bloque estático, no como error. Mismo criterio para
+  // conversation.activeProduct (CREA Product Intelligence™, Etapa 7): viene
+  // undefined hasta el primer search_products() exitoso de la conversación
+  // — buildSystemPrompt() ya lo trata como "sin producto activo todavía".
+  const systemPrompt = buildSystemPrompt(business, lead, conversation.leadQualification, conversation.activeProduct);
   const recentMessages = construirVentanaDeMensajes(conversation.messages, 10);
 
   // apiMessages es lo que efectivamente se manda a OpenAI en cada vuelta —
