@@ -218,19 +218,101 @@ describe('ai.service#runAgent() — Runtime Contract (C.3, Etapa C3.1)', () => {
     });
   });
 
-  describe('propagación de errores — sin cambiar el comportamiento existente', () => {
-    test('si generateReply() lanza (loop de tool calls agotado), runAgent() propaga la MISMA excepción, no la convierte en un outcome:"error"', async () => {
+  describe('outcome:"action" — Etapa C3.3 (Action Outcomes)', () => {
+    test('update_lead_stage ejecutada exitosamente → outcome:"action", incluida en toolsUsed', async () => {
+      conversation = await crearConversacion('Quiero avanzar con la propuesta');
+
+      createSpy
+        .mockResolvedValueOnce(completionConToolCalls([toolCallMock('call_1', 'update_lead_stage', { stage: 'contacted', reason: 'El lead respondió al primer contacto.' })]))
+        .mockResolvedValueOnce(completionFinal('Perfecto, avanzamos a la siguiente etapa.'));
+
+      const resultado = await aiService.runAgent({ conversationId: conversation._id, business, lead });
+
+      expect(resultado.outcome).toBe('action');
+      expect(resultado.toolsUsed).toEqual(['update_lead_stage']);
+
+      const leadActualizado = await Lead.findById(lead._id);
+      expect(leadActualizado.pipelineStage).toBe('contacted');
+    });
+
+    test('handoff tiene prioridad sobre action si ambas tools se usan en el mismo turno', async () => {
+      conversation = await crearConversacion('Quiero avanzar pero también hablar con alguien');
+
+      createSpy
+        .mockResolvedValueOnce(completionConToolCalls([
+          toolCallMock('call_1', 'update_lead_stage', { stage: 'contacted' }),
+          toolCallMock('call_2', 'escalate_to_human', { reason: 'El lead pidió hablar con un humano.' }),
+        ]))
+        .mockResolvedValueOnce(completionFinal('Te derivo con un agente humano.'));
+
+      const resultado = await aiService.runAgent({ conversationId: conversation._id, business, lead });
+
+      expect(resultado.outcome).toBe('handoff');
+      expect(resultado.toolsUsed.sort()).toEqual(['escalate_to_human', 'update_lead_stage'].sort());
+    });
+  });
+
+  describe('outcome:"clarify" — Etapa C3.3 (Action Outcomes), señal real de needsClarification (TC-08 de C.2)', () => {
+    test('Policy específica de un producto sin contexto de producto → needsClarification:true → outcome:"clarify"', async () => {
+      const producto = await Product.create({ business: business._id, sku: 'X', name: 'Producto X' });
+      await Policy.create({
+        business: business._id,
+        code: 'RETURNS-GENERAL',
+        title: 'Cambios generales',
+        category: 'returns',
+        policyType: 'rule',
+        statement: 'Cambios hasta 7 días.',
+        status: 'active',
+        scope: { appliesToAll: true },
+      });
+      await Policy.create({
+        business: business._id,
+        code: 'RETURNS-X',
+        title: 'Cambios Producto X',
+        category: 'returns',
+        policyType: 'exception',
+        statement: 'Producto X no admite cambios por ser personalizado.',
+        status: 'active',
+        scope: { appliesToAll: false, productIds: [producto._id] },
+      });
+
+      conversation = await crearConversacion('¿Puedo hacer un cambio?');
+
+      createSpy
+        .mockResolvedValueOnce(completionConToolCalls([toolCallMock('call_1', 'search_business_knowledge', { query: 'cambios' })]))
+        .mockResolvedValueOnce(completionFinal('¿Sobre qué producto querés hacer el cambio?'));
+
+      const resultado = await aiService.runAgent({ conversationId: conversation._id, business, lead });
+
+      expect(resultado.outcome).toBe('clarify');
+      expect(resultado.toolsUsed).toEqual(['search_business_knowledge']);
+    });
+  });
+
+  describe('outcome:"error" — Etapa C3.3 (Action Outcomes), único cambio de comportamiento real de C.3', () => {
+    test('si generateReply() lanza (loop de tool calls agotado), runAgent() NUNCA propaga la excepción — la normaliza a outcome:"error"', async () => {
       conversation = await crearConversacion('Pregunta cualquiera');
 
       // El modelo mockeado pide tools indefinidamente, sin converger nunca a
-      // una respuesta de texto final — agota MAX_TOOL_ITERATIONS (5).
+      // una respuesta de texto final — agota MAX_TOOL_ITERATIONS (5). Cada
+      // llamada pide una tool DISTINTA a escalate_to_human — si el loop
+      // llamara a escalate_to_human de verdad, la 2da vuelta en adelante
+      // devolvería alreadyEscalated:true (idempotente) en vez de agotar
+      // las 5 iteraciones intentando algo nuevo cada vez.
       for (let i = 0; i < 5; i += 1) {
-        createSpy.mockResolvedValueOnce(completionConToolCalls([toolCallMock(`call_${i}`, 'escalate_to_human', { reason: 'x' })]));
+        createSpy.mockResolvedValueOnce(completionConToolCalls([toolCallMock(`call_${i}`, 'search_products', { query: `producto ${i}` })]));
       }
 
-      await expect(aiService.runAgent({ conversationId: conversation._id, business, lead })).rejects.toMatchObject({
-        statusCode: 500,
-        message: expect.stringContaining('demasiadas tool calls encadenadas'),
+      const resultado = await aiService.runAgent({ conversationId: conversation._id, business, lead });
+
+      expect(resultado).toEqual({
+        outcome: 'error',
+        responseText: null,
+        toolsUsed: [],
+        knowledgeSources: [],
+        correlationId: expect.any(String),
+        tokensUsed: 0,
+        errorCode: expect.stringContaining('demasiadas tool calls encadenadas'),
       });
     });
   });

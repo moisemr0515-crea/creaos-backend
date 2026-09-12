@@ -56,6 +56,19 @@ class DefaultAgentRuntime extends IAgentRuntime {
       lead,
     });
 
+    // C.3, Etapa C3.3 (Action Outcomes). Desde esta etapa, runAgent() ya
+    // no deja propagar una excepción cruda de generateReply() — la
+    // normaliza a outcome:'error' (ver ai.service.js#runAgent()). Se
+    // relanza acá para preservar el mismo efecto downstream que daba la
+    // excepción cruda de antes de C3.3: BullMQ (startInboundWorker(),
+    // inbound.worker.js) reintenta el job según DEFAULT_JOB_OPTIONS y lo
+    // manda a dead-letter si agota los intentos — sin este `throw`, un
+    // fallo real quedaría indistinguible de "el agente decidió no
+    // responder" (reply:null), sin reintento ni visibilidad.
+    if (result.outcome === 'error') {
+      throw new Error(`El agente no pudo generar una respuesta: ${result.errorCode}`);
+    }
+
     return {
       reply: result.responseText,
       actions: [], // M01-44 no implementado — Bloque C, fuera de alcance

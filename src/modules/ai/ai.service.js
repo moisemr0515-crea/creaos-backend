@@ -548,6 +548,13 @@ const generateReply = async (conversationId, business, lead) => {
   // para no duplicar si la misma tool se llama más de una vez en el turno.
   const toolsUsed = new Set();
   const knowledgeSources = new Set();
+  // C.3 — Etapa C3.3 (Action Outcomes). Señal REAL ya calculada por
+  // search_business_knowledge (Etapa 4 de C.2, TC-08) — no una heurística
+  // nueva sobre el texto del modelo: si CUALQUIER tool de este turno
+  // devolvió needsClarification:true, runAgent() lo usa para el outcome
+  // 'clarify'. No se resetea si una tool posterior no la marca — una vez
+  // que hubo ambigüedad real en el turno, se mantiene hasta el final.
+  let necesitaAclaracion = false;
 
   for (let iteration = 1; iteration <= MAX_TOOL_ITERATIONS; iteration += 1) {
     const completion = await openai.chat.completions.create({
@@ -593,6 +600,7 @@ const generateReply = async (conversationId, business, lead) => {
         conversationId: conversation._id,
         toolsUsed: [...toolsUsed],
         knowledgeSources: [...knowledgeSources],
+        needsClarification: necesitaAclaracion,
       };
     }
 
@@ -625,6 +633,7 @@ const generateReply = async (conversationId, business, lead) => {
       // conocimiento real, su fuente.
       toolsUsed.add(toolCall.function?.name);
       registrarFuentesDeConocimiento(toolCall.function?.name, result, knowledgeSources);
+      if (result?.needsClarification === true) necesitaAclaracion = true;
 
       apiMessages.push({ role: 'tool', tool_call_id: toolCall.id, content: resultContent });
       conversation.messages.push({
@@ -646,85 +655,110 @@ const generateReply = async (conversationId, business, lead) => {
   throw new AppError('El agente no pudo completar la respuesta (demasiadas tool calls encadenadas)', 500);
 };
 
+// C.3, Etapa C3.3 (Action Outcomes). Tools con efectos REALES sobre datos
+// del negocio (a diferencia de las meramente informativas — buscar
+// producto/política/FAQ no cambia nada) — si el turno usó alguna, el
+// outcome es 'action'. Hoy solo update_lead_stage entra en esta
+// categoría; escalate_to_human también muta datos reales pero tiene su
+// propio outcome ('handoff', más específico y más urgente) y se chequea
+// primero.
+const ACTION_TOOL_NAMES = new Set(['update_lead_stage']);
+
 /**
- * runAgent() — C.3 Architecture & Agent Runtime V1, Etapa C3.1 (Runtime
- * Contract, docs/architecture-runtime/CREA_SALES_AI_C3_..., §5.1).
- * Envoltorio LITERAL de generateReply() — no reescribe ni cambia su
- * comportamiento externo (mismo `reply`, mismo `conversation.save()`,
- * misma propagación de errores: si generateReply() lanza, runAgent()
- * también lanza, SIN capturar acá — ver la nota de abajo sobre por qué eso
- * es a propósito). Lo único que agrega es el vocabulario que pide la spec
- * (`outcome`/`toolsUsed`/`knowledgeSources`/`correlationId`) sobre datos
- * que generateReply() ya calculaba internamente pero nunca exponía.
+ * Deriva el `outcome` del AgentRunResult (spec §5.1: answer/clarify/
+ * action/handoff) a partir de señales YA REALES calculadas por
+ * generateReply() — nunca inventa una heurística nueva sobre el texto del
+ * modelo. Prioridad, de más a menos urgente/definitivo:
+ * 1. 'handoff' — escalate_to_human se ejecutó (la conversación ya quedó
+ *    con aiEnabled:false; nada más importa después de esto).
+ * 2. 'action' — se ejecutó una tool con efecto real sobre el negocio
+ *    (ACTION_TOOL_NAMES) sin haber escalado.
+ * 3. 'clarify' — alguna tool marcó needsClarification:true (hoy, solo
+ *    search_business_knowledge, TC-08 de C.2) y no hubo handoff/action.
+ * 4. 'answer' — default, el resto de los turnos con texto final.
+ */
+const derivarOutcome = (toolsUsed, needsClarification) => {
+  if (toolsUsed.includes('escalate_to_human')) return 'handoff';
+  if (toolsUsed.some((nombre) => ACTION_TOOL_NAMES.has(nombre))) return 'action';
+  if (needsClarification) return 'clarify';
+  return 'answer';
+};
+
+/**
+ * runAgent() — C.3 Architecture & Agent Runtime V1 (docs/architecture-runtime/
+ * CREA_SALES_AI_C3_..., §5.1). Envoltorio de generateReply() que expone el
+ * vocabulario que pide la spec (`outcome`/`toolsUsed`/`knowledgeSources`/
+ * `correlationId`) sobre datos que generateReply() ya calculaba
+ * internamente pero nunca exponía.
  *
- * Se conecta al camino que HOY corre en producción
- * (webhook.service.js#processGupshupMessage()) — no a DefaultAgentRuntime/
- * inbound.worker.js, que envuelven el camino todavía apagado
- * (WHATSAPP_QUEUE_PROCESSING_ENABLED=false). Unificar ambos caminos sobre
- * runAgent() es la Etapa C3.1b, deliberadamente separada (auditoría,
- * docs/implementation/c3-runtime-current-state.md §3.3 — ese camino tiene
- * su propio gap real de businessContext incompleto, que se corrige recién
- * en C3.1b, con sus propios tests, antes de tocar el flag).
+ * Se conecta a los 2 caminos reales desde la Etapa C3.1b:
+ * webhook.service.js#processGupshupMessage() (activo en producción) y
+ * defaultAgentRuntime.js#process() (todavía apagado por
+ * WHATSAPP_QUEUE_PROCESSING_ENABLED).
  *
- * Por qué NO se envuelve la excepción de "demasiadas tool calls
- * encadenadas" en un `outcome:'error'` todavía: eso SÍ sería un cambio de
- * comportamiento observable (hoy esa excepción propaga hasta
- * inbound.gateway.js#handleOne(), que marca el InboundEvent como 'failed'
- * — un try/catch acá que la convirtiera en un `return` normal rompería
- * esa señal en silencio). Mapear esa excepción a un outcome explícito es
- * la Etapa C3.3 (Action Outcomes), con sus propios tests de regresión en
- * los 2 callers reales — a propósito no se adelanta acá.
- *
- * `outcome` V1 es una inferencia simple, no una decisión nueva del
- * runtime: si `escalate_to_human` está entre las tools usadas este turno,
- * el turno terminó en handoff (la propia tool ya mutó
- * conversation.status/aiEnabled — ver ai/tools/index.js#escalateToHuman())
- * — cualquier otro turno con texto final es 'answer'. C.3 V1 no distingue
- * 'answer' de 'clarify' todavía (ambos son texto libre del modelo); eso
- * necesitaría una heurística nueva que la spec no pide en Runtime Contract
- * y que cambiaría comportamiento, no solo vocabulario — fuera de alcance
- * de C3.1.
+ * CREA SALES AI™ C.3, Etapa C3.3 (Action Outcomes) — CAMBIO DE
+ * COMPORTAMIENTO DELIBERADO, el único de todo el plan de C.3 (ver
+ * docs/implementation/c3-runtime-current-state.md §6): hasta esta etapa,
+ * si generateReply() lanzaba (ej. loop de tool calls agotado), runAgent()
+ * dejaba propagar la excepción tal cual. Desde acá, la CAPTURA y la
+ * normaliza a `outcome:'error'` — nunca más se propaga una excepción
+ * cruda desde este punto. Eso significa que quien llama a runAgent() ya
+ * NO puede confiar en un try/catch para detectar un fallo real: tiene que
+ * chequear `result.outcome === 'error'` explícitamente. Los 2 callers
+ * reales (webhook.service.js/defaultAgentRuntime.js) se actualizan en
+ * este mismo PR para hacer exactamente eso y volver a lanzar ELLOS,
+ * preservando el mismo efecto downstream que daba la excepción cruda de
+ * antes (InboundEvent → 'failed', reintento/dead-letter de BullMQ en el
+ * camino de colas) — nunca un fallo real queda indistinguible de "el
+ * agente respondió normalmente".
  *
  * @param {{ conversationId: string, business: object, lead: object, correlationId?: string }} input
- * @returns {Promise<{ outcome: 'answer'|'handoff', responseText: string, toolsUsed: string[], knowledgeSources: string[], correlationId: string }>}
+ * @returns {Promise<{ outcome: 'answer'|'clarify'|'action'|'handoff'|'error', responseText: string|null, toolsUsed: string[], knowledgeSources: string[], correlationId: string, tokensUsed: number, errorCode?: string }>}
  */
 const runAgent = async ({ conversationId, business, lead, correlationId } = {}) => {
   const runId = correlationId || uuidv4();
 
-  // module.exports.generateReply(...) en vez de la const local — mismo
-  // principio de "referencia viva" que ya documenta chat() más abajo: una
-  // llamada directa a la const ignora cualquier mock hecho sobre
-  // aiService.generateReply desde un test (hallazgo real, ver el
-  // comentario completo en chat()) — sin esto, un test que mockea
-  // aiService.generateReply para no pegarle a OpenAI de verdad NO lo
-  // interceptaría al pasar por runAgent(), justo el caso de
-  // webhook.service.pipeline.test.js.
-  // Defaults a array vacío — no todo test que mockea generateReply()
-  // conoce estos 2 campos nuevos (ej. webhook.service.pipeline.test.js
-  // mockea solo `{reply}`); sin esto, `.includes()` de abajo rompería con
-  // "Cannot read properties of undefined" ante un mock desactualizado.
-  const {
-    reply,
-    tokensUsed = 0,
-    toolsUsed = [],
-    knowledgeSources = [],
-  } = await module.exports.generateReply(conversationId, business, lead);
+  try {
+    // module.exports.generateReply(...) en vez de la const local — mismo
+    // principio de "referencia viva" que ya documenta chat() más abajo: una
+    // llamada directa a la const ignora cualquier mock hecho sobre
+    // aiService.generateReply desde un test (hallazgo real, ver el
+    // comentario completo en chat()) — sin esto, un test que mockea
+    // aiService.generateReply para no pegarle a OpenAI de verdad NO lo
+    // interceptaría al pasar por runAgent(), justo el caso de
+    // webhook.service.pipeline.test.js.
+    // Defaults — no todo test que mockea generateReply() conoce estos
+    // campos (ej. webhook.service.pipeline.test.js mockea solo `{reply}`);
+    // sin esto, `.includes()` de abajo rompería con "Cannot read
+    // properties of undefined" ante un mock desactualizado.
+    const {
+      reply,
+      tokensUsed = 0,
+      toolsUsed = [],
+      knowledgeSources = [],
+      needsClarification = false,
+    } = await module.exports.generateReply(conversationId, business, lead);
 
-  return {
-    outcome: toolsUsed.includes('escalate_to_human') ? 'handoff' : 'answer',
-    responseText: reply,
-    toolsUsed,
-    knowledgeSources,
-    correlationId: runId,
-    // No es parte del contrato AgentRunResult de la spec (§5.1) — se agrega
-    // acá en la Etapa C3.1b porque DefaultAgentRuntime (channels/
-    // defaultAgentRuntime.js) ya lo necesitaba en su propio
-    // AgentRuntimeOutput.metadata.tokensUsed desde antes de C.3, y unificar
-    // ese camino sobre runAgent() sin perder ese dato hubiera significado
-    // llamar a generateReply() dos veces o duplicar lógica. Aditivo, no
-    // rompe ningún test de la Etapa C3.1 que no lo esperaba explícitamente.
-    tokensUsed,
-  };
+    return {
+      outcome: derivarOutcome(toolsUsed, needsClarification),
+      responseText: reply,
+      toolsUsed,
+      knowledgeSources,
+      correlationId: runId,
+      tokensUsed,
+    };
+  } catch (error) {
+    logger.error(`runAgent(): generateReply() falló, se normaliza a outcome:'error' (correlationId=${runId}): ${error.message}`);
+    return {
+      outcome: 'error',
+      responseText: null,
+      toolsUsed: [],
+      knowledgeSources: [],
+      correlationId: runId,
+      tokensUsed: 0,
+      errorCode: error.message,
+    };
+  }
 };
 
 /**
