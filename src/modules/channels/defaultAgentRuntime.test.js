@@ -85,6 +85,17 @@ describe('DefaultAgentRuntime#process()', () => {
     expect(output.reply).toBe('Te derivo con un agente humano.');
   });
 
+  test('leadId de un negocio y businessContext de otro (Etapa C3.6, hallazgo §5 de la auditoría de C.3) — assertTenantScope() corta ANTES de llamar a runAgent(), nunca ejecuta el agente con el catálogo/políticas de un negocio ajeno', async () => {
+    const otroNegocio = await Business.create({ name: 'Otro negocio (ajeno al lead)' });
+    const runAgentSpy = jest.spyOn(aiService, 'runAgent');
+
+    await expect(
+      runtime.process({ conversationId: 'x', leadId: lead._id.toString(), businessContext: otroNegocio })
+    ).rejects.toThrow(/Tenant scope mismatch/);
+
+    expect(runAgentSpy).not.toHaveBeenCalled();
+  });
+
   test('outcome:"error" (Etapa C3.3) — RELANZA en vez de devolver un AgentRuntimeOutput normal, para preservar el reintento/dead-letter de BullMQ', async () => {
     jest.spyOn(aiService, 'runAgent').mockResolvedValue({
       outcome: 'error',
