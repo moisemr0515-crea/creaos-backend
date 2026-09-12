@@ -189,34 +189,37 @@ Leyenda: **A**=ya existe y cumple · **B**=existe parcialmente · **C**=no exist
 
 ---
 
-## 6. Decisiones abiertas (necesito tu confirmación antes de proponer el plan final de PRs)
+## 6. Decisiones confirmadas (11/sep/2026)
 
-1. **RBAC:** ¿un solo permiso `business-knowledge:read/create/update/archive` cubriendo Policy+FAQ juntos, o separarlos en `policies:*` y `faqs:*` (mismo nivel de granularidad que `products:*`/`leads:*`)? Mi recomendación: separarlos — son 2 entidades con ciclos de vida independientes (podés querer que alguien edite FAQs pero no Policies), igual que el resto del RBAC de este repo es granular por entidad, no por dominio agrupado.
-2. **Scope V1:** ¿confirmás que `serviceIds`/`locationIds` quedan fuera de V1 (sin modelo real que referenciar), y que `scope` en V1 solo soporta `appliesToAll` + `productIds` + `channelIds`?
-3. **Auditoría de uso (`KnowledgeUsageEvent`):** ¿alcanza con logging estructurado (`logger.info`) para V1, o querés una colección Mongo dedicada desde el día uno? La Spec permite ambas lecturas; Product Intelligence usó solo logging para sus eventos de importación.
-4. **FAQ duplicadas por normalización:** si 2 preguntas distintas normalizan al mismo `normalizedQuestion`, ¿es error de validación (rechazar la 2da) o se permite y se desambigua por prioridad? La Spec no lo especifica.
-5. **Orden de PRs:** la Spec sugiere 6 PRs (§46). Mi propuesta ajustada, más abajo (sección 7), separa retrieval/ranking de agent-integration en más pasos chicos siguiendo la disciplina de esta sesión (PRs de 1 día, reversibles) — pero el número final de PRs queda a tu criterio, igual que hicimos con las 10 etapas de Product Intelligence.
+1. **RBAC separado:** `policies:read/create/update/archive` y `faqs:read/create/update/archive` (8 slugs), mismo nivel de granularidad que `products:*`. **No** se usa `business-knowledge:*` unificado. Asignación por rol: CRUD completo para Owner/Admin/Manager, solo `*:read` para Sales/Viewer, nada para Support — mismo criterio ya usado para `products:*` (gestión de catálogo/conocimiento es configuración del negocio, no tarea diaria de un lead puntual).
+2. **Scope V1 acotado:** solo `appliesToAll` + `productIds` (ref real a `Product`) + `channelIds` (ref real a `WhatsAppChannel`). `serviceIds`/`locationIds`/`customerSegments` **no se incluyen en el schema** — no quedan como campos reservados sin uso (evita un campo nullable que nadie puede poblar con sentido); se agregan el día que exista un modelo real de Servicio/Ubicación que referenciar.
+3. **Auditoría de uso:** `logger.info()` estructurado (mismo patrón que `PRODUCT_IMPORT_STARTED/COMPLETED`) — sin colección Mongo dedicada para V1. Eventos a loguear: `POLICY_SEARCH`, `FAQ_SEARCH`, `KNOWLEDGE_SEARCH_MISS`, `KNOWLEDGE_CONFLICT_DETECTED`, `KNOWLEDGE_HANDOFF_TRIGGERED`.
+4. **FAQs duplicadas por normalización:** **no** es error de validación — se permite, y el retrieval desambigua por `priority` (mayor gana). Consecuencia directa en el modelo: `{business, normalizedQuestion}` es un índice normal (para el lookup), **no** `unique`.
+5. **Orden de PRs:** plan final abajo (sección 7) — 10 PRs, organizados como Etapas 2-11 (Etapa 1 = esta auditoría, ya hecha), mismo criterio que Product Intelligence: cada Etapa es 1 PR chico y reversible, con su propia suite de tests, mergeado y aprobado antes de arrancar el siguiente.
 
 ---
 
-## 7. Propuesta de Implementation Plan por PRs (punto de partida — ajustable)
+## 7. Implementation Plan final por Etapas/PRs
 
-Mismo criterio que Product Intelligence: PRs chicos, reversibles, cada uno con su propia suite de tests, sin implementar nada hasta aprobación explícita.
+Mismo protocolo que Product Intelligence: implemento → corro suite completa → pusheo → paso el diff → espero aprobación → recién ahí la siguiente etapa. Ningún PR empieza sin que el anterior esté mergeado.
 
-| PR | Contenido | Se apoya en (reutiliza) |
+**Decisión de estructura de archivos:** un solo módulo `src/modules/business-knowledge/` (sigue la sugerencia de la Spec §45) con `policy.*`/`faq.*` como archivos separados dentro (CRUD independiente, alineado con el RBAC separado de la decisión #1) y un `knowledgeRetrieval.service.js` **unificado** (busca en las 2 colecciones a la vez — es el punto de la Spec §12: una sola tool/contrato que devuelve `{policies, faqs, conflictDetected, needsClarification}`).
+
+| Etapa | Contenido | Se apoya en (reutiliza) |
 |---|---|---|
-| **PR1 — Modelos + validación + índices** | `policy.model.js`, `faq.model.js` (campo `business`, no `tenantId`; `{business,code}`/`{business,normalizedQuestion}` únicos; índice de texto español; `status` enum 3 valores; vigencia). Solo modelos + tests de modelo, sin service todavía. | `product.model.js` como plantilla exacta de forma |
-| **PR2 — Service layer + retrieval con hard filters** | `businessKnowledge.service.js`: CRUD (crear/obtener/listar/actualizar/archivar) + `buscarConocimiento()` con filtro tenant+status+vigencia ANTES de cualquier ranking. Sin precedencia/conflicto todavía (retrieval simple, ordenado por prioridad). | `product.service.js` como plantilla de forma; `lead.search.js`/`$text` como plantilla de búsqueda |
-| **PR3 — Precedencia y resolución de conflictos** | Lógica de ranking (specificity + priority + vigencia) y detección de conflicto (Policy > FAQ, específica > general). Pieza genuinamente nueva — sin plantilla directa en el repo. | Ninguno directo — nuevo, acotado y testeado con los casos TC-03/TC-10 de la Spec |
-| **PR4 — CRUD API + RBAC** | `business-knowledge.controller.js`/`.routes.js`, permisos nuevos en `constants.js`/`roles.seed.js`, montaje en `app.js`. | `product.controller.js`/`product.routes.js` como plantilla exacta |
-| **PR5 — Tool del agente + integración en el prompt** | `search_business_knowledge` en `ai/tools/index.js` (TOOL_SCHEMAS+TOOL_EXECUTORS), `BUSINESS_KNOWLEDGE_GUIDANCE` en `buildSystemPrompt()`, subdocumento de memoria conversacional análogo a `activeProduct`. | Etapas 6/7 de Product Intelligence, patrón idéntico |
-| **PR6 — Fallback + handoff explícito** | Reglas de "no inventar" cuando no hay evidencia + wiring de `responseMode:"handoff"` hacia `escalate_to_human` (tool ya existente). | `escalate_to_human` (PR33, ya existente) |
-| **PR7 — Interoperabilidad con Product Intelligence (consultas mixtas)** | Test conversacional TC-11 real (producto + política en el mismo turno), sin cambios de código si PR5/PR6 están bien diseñados — probablemente solo tests nuevos. | Loop multi-ronda ya existente |
-| **PR8 — Importación manual con preview** | `businessKnowledgeImport.service.js` (CSV/XLSX, preview→confirm, upsert), botón en `/business` (frontend). | `productImport.service.js`/`ImportProductsForm.tsx` como plantilla exacta |
-| **PR9 — Tests de integración multi-tenant end-to-end** | Mismo patrón que la Etapa 9 de Product Intelligence — escenario completo con 2 negocios, mismo código de FAQ/Policy, valores distintos. | Etapa 9 de Product Intelligence como plantilla |
-| **PR10 — Panel `/business` (gestión manual)** | UI de alta/edición/archivo de Policy/FAQ, mismo patrón que `ProductCatalogSection.tsx`. | `ProductCatalogSection.tsx` como plantilla |
+| **1 — Auditoría** ✅ | Este documento. | — |
+| **2 — Modelos + validación + índices** | `business-knowledge/policy.model.js` + `faq.model.js`. `business` (no `tenantId`); Policy: `{business,code}` único; FAQ: `{business,normalizedQuestion}` índice normal (no único, decisión #4); índice de texto español en ambos; `status` enum `draft/active/archived`; vigencia (`effectiveFrom`/`effectiveUntil`); `scope` acotado (decisión #2); invariante `effectiveUntil > effectiveFrom` vía `pre('validate')`; invariante `responseMode:'handoff' ⇒ handoffReason` obligatorio. Solo modelos + tests de modelo. | `product.model.js` como plantilla exacta de forma |
+| **3 — Service layer + retrieval con hard filters** | `policy.service.js` + `faq.service.js` (CRUD: crear/obtener/listar/actualizar/archivar cada uno) + `knowledgeRetrieval.service.js` (`buscarConocimiento(businessId, query, {productIds, channelId})`, filtro tenant+status+vigencia ANTES de cualquier ranking; sin precedencia/conflicto todavía — orden simple por prioridad). Validación de que `productIds`/`channelIds` del scope pertenecen al mismo `business` (capa de service, no schema — mismo criterio que `crearLead()` valida `assignedTo`). | `product.service.js` como plantilla de forma; `lead.search.js`/`$text` español de `Product` como plantilla de búsqueda |
+| **4 — Precedencia y resolución de conflictos** | Ranking en `knowledgeRetrieval.service.js`: especificidad de scope (con `productIds` > `appliesToAll`) + prioridad + vigencia. Precedencia Policy específica > Policy general > FAQ vinculada > FAQ independiente. Desambiguación de FAQs duplicadas por prioridad (decisión #4). Detección de conflicto (Policy activa contradice FAQ → gana Policy, se marca `conflictDetected`). Pieza genuinamente nueva, sin plantilla directa. | Ninguno directo — nuevo, testeado con TC-03/TC-04/TC-05/TC-06/TC-07/TC-08/TC-10/TC-12/TC-15 |
+| **5 — CRUD API + RBAC** | `policy.validator/controller/routes.js` (`/api/v1/policies`), `faq.validator/controller/routes.js` (`/api/v1/faqs`), 8 permisos nuevos en `constants.js`/`roles.seed.js` (decisión #1), montaje en `app.js`. | `product.validator/controller/routes.js` como plantilla exacta |
+| **6 — Tool del agente + integración en el prompt** | `search_business_knowledge` en `ai/tools/index.js` (TOOL_SCHEMAS+TOOL_EXECUTORS), llama a `knowledgeRetrieval.service.js` con `context.business._id` (nunca desde `args`). `BUSINESS_KNOWLEDGE_GUIDANCE` en `buildSystemPrompt()` (regla anti-alucinación §32, siempre presente). **Sin memoria conversacional nueva** — `Conversation.activeProduct` (ya existente) ya cubre "de qué producto se venía hablando", que es exactamente el contexto que Policy/FAQ scoped a producto necesita (ej. Caso D de la Spec). | Etapas 6/7 de Product Intelligence, patrón idéntico; `activeProduct` reusado tal cual, sin extenderlo |
+| **7 — Fallback + handoff explícito** | El resultado de la tool ya incluye `action.responseMode`/`handoffReason` cuando la Policy matcheada lo pide — instrucción en el prompt: "si `responseMode:'handoff'`, invocá `escalate_to_human` con ese motivo" (tool YA existente, PR33 — el modelo la llama en la misma ronda vía el loop multi-tool ya soportado). Probablemente sin código nuevo más allá de la instrucción de prompt + pasar el campo tal cual en el resultado de la tool. | `escalate_to_human` (ya existente); loop multi-ronda ya existente |
+| **8 — Interoperabilidad con Product Intelligence (consultas mixtas)** | Tests del caso TC-11 real (`search_products` + `search_business_knowledge` en el mismo turno) — sin cambios de código si las Etapas 6/7 quedaron bien diseñadas; si aparece fricción real, se ajusta acá, acotado. | Loop multi-ronda ya existente |
+| **9 — Importación manual con preview** | `policyImport.service.js` (CSV/XLSX, preview→confirm, upsert por `{business,code}` — igual que `productImport.service.js`) + `faqImport.service.js` (mismo flujo, pero **siempre crea**, nunca upsert — no hay clave natural única para FAQ, decisión #4; si el usuario quiere actualizar una FAQ existente vía import, queda fuera de alcance V1, se edita a mano). | `productImport.service.js` como plantilla exacta (Policy); asimetría documentada para FAQ |
+| **10 — Tests de integración multi-tenant end-to-end** | Mismo patrón que la Etapa 9 de Product Intelligence: 2 negocios, mismo código/pregunta, contenido distinto, `generateReply()` real de punta a punta, cero cruce. | Etapa 9 de Product Intelligence como plantilla exacta |
+| **11 — Panel `/business` (gestión manual)** | Bloque "Políticas y preguntas frecuentes" en el acordeón de `/business` (mismo patrón que `ProductCatalogSection.tsx`): resumen, botón gestionar, import CSV/XLSX. | `ProductCatalogSection.tsx`/`ImportProductsForm.tsx` como plantilla exacta |
 
-Nota: reordené el PR8 (importación) para que vaya DESPUÉS del CRUD+tool+fallback (a diferencia del orden §46 original, que pone importación implícita en el mismo bloque que CRUD) — mismo criterio que usamos en Product Intelligence: validar el agente contra datos cargados a mano primero, antes de construir el importador.
+**Por qué la importación (Etapa 9) va después del CRUD+tool+fallback (Etapas 5-8):** mismo criterio que Product Intelligence — validar el agente contra datos cargados a mano primero (superficie de riesgo más chica), construir el importador después.
 
 ---
 
@@ -229,10 +232,6 @@ Nota: reordené el PR8 (importación) para que vaya DESPUÉS del CRUD+tool+fallb
 
 ---
 
-## 9. Siguiente paso
+## 9. Estado
 
-Este documento es el entregable de la Fase C2.0 (auditoría). **No se implementa nada hasta que confirmes:**
-1. Las 5 decisiones abiertas de la sección 6.
-2. El plan de PRs de la sección 7 (orden final, o ajustes).
-
-Una vez confirmado, arranco con el PR1, mismo protocolo de siempre: implemento → corro suite completa → pusheo → te paso el diff → esperás tu revisión antes del siguiente.
+Plan aprobado por el usuario el 11/sep/2026 (las 5 decisiones de la sección 6 + el plan de la sección 7). Arranca la implementación con la **Etapa 2 (modelos)**, mismo protocolo de siempre: implemento → corro suite completa → pusheo → paso el diff → espero revisión antes de la siguiente etapa.
