@@ -65,3 +65,41 @@ describe('ai.service#buildSystemPrompt() — averageTicket/currency/website (GAP
     expect(prompt).toMatch(/Sitio web: https:\/\/creaemprendedores\.com/);
   });
 });
+
+describe('ai.service#buildSystemPrompt() — redes sociales (facebookUrl/instagramUrl/tiktokUrl)', () => {
+  test('negocio con website + las 3 redes cargadas: los 4 aparecen en el prompt', () => {
+    const prompt = buildSystemPrompt(
+      {
+        ...NEGOCIO_BASE,
+        website: 'https://creaemprendedores.com',
+        facebookUrl: 'https://facebook.com/creaos',
+        instagramUrl: 'https://instagram.com/creaos',
+        tiktokUrl: 'https://tiktok.com/@creaos',
+      },
+      LEAD_BASE,
+      null,
+    );
+    expect(prompt).toMatch(/Sitio web: https:\/\/creaemprendedores\.com/);
+    expect(prompt).toMatch(/Facebook: https:\/\/facebook\.com\/creaos/);
+    expect(prompt).toMatch(/Instagram: https:\/\/instagram\.com\/creaos/);
+    expect(prompt).toMatch(/TikTok: https:\/\/tiktok\.com\/@creaos/);
+  });
+
+  test('negocio sin ninguna red cargada: ninguna línea aparece', () => {
+    const prompt = buildSystemPrompt({ ...NEGOCIO_BASE }, LEAD_BASE, null);
+    expect(prompt).not.toMatch(/Facebook:/);
+    expect(prompt).not.toMatch(/Instagram:/);
+    expect(prompt).not.toMatch(/TikTok:/);
+  });
+
+  test('negocio con solo Instagram cargado (parcial): solo esa línea aparece, sin romper el resto', () => {
+    const prompt = buildSystemPrompt(
+      { ...NEGOCIO_BASE, instagramUrl: 'https://instagram.com/creaos' },
+      LEAD_BASE,
+      null,
+    );
+    expect(prompt).toMatch(/Instagram: https:\/\/instagram\.com\/creaos/);
+    expect(prompt).not.toMatch(/Facebook:/);
+    expect(prompt).not.toMatch(/TikTok:/);
+  });
+});
