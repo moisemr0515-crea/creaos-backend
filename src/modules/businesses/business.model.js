@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 const slugify = require('slugify');
-const { PLANS, PLAN_STATUS, TRIAL_DAYS } = require('../../config/constants');
+const { TRIAL_DAYS } = require('../../config/constants');
 
 // Identidad del negocio — redes sociales (12/sep/2026): validación básica de
 // URL para facebookUrl/instagramUrl/tiktokUrl, sin exigir que sea
@@ -209,16 +209,19 @@ const businessSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
-    plan: {
-      type: String,
-      enum: Object.values(PLANS),
-      default: PLANS.TRIAL,
-    },
-    planStatus: {
-      type: String,
-      enum: Object.values(PLAN_STATUS),
-      default: PLAN_STATUS.TRIAL,
-    },
+    // Paso 3 de la deprecación de business.plan/planStatus (12/sep/2026):
+    // campos eliminados del schema. Subscription.planName es la única
+    // fuente de verdad del plan de un negocio (ver Paso 1, use-plan.ts).
+    // Los 4 consumidores muertos que quedaban (tenant.middleware.js,
+    // user.service.js, auth.ts, profile.ts) ya fueron eliminados en el
+    // Paso 2. Auditoría original: cero escrituras a estos campos en el
+    // código, sin índice ni validación que dependa de su existencia —
+    // confirmado de nuevo con grep exhaustivo antes de este cambio.
+    // Los documentos existentes en Mongo que aún tienen `plan`/
+    // `planStatus` guardados quedan como datos huérfanos (Mongoose los
+    // sigue devolviendo en toObject()/toJSON() aunque no estén en el
+    // schema, porque strict mode solo aplica a escritura); ver
+    // scripts/unset-business-plan-fields.js para la limpieza opcional.
     trialEndsAt: {
       type: Date,
       default: () => {
