@@ -31,6 +31,33 @@ const uploadPdf = multer({
   },
 });
 
+// send_media (auditoría de factibilidad, 12/sep/2026) — límites de tamaño
+// EXACTOS a los que impone Meta/WhatsApp Business API para media saliente
+// (developers.facebook.com/docs/whatsapp/cloud-api/reference/media,
+// confirmado también contra la doc de Gupshup) — no son un criterio
+// propio: un archivo que pase estos límites igual sería rechazado por
+// WhatsApp al intentar reenviarlo.
+const uploadVideoPresentacion = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 16 * 1024 * 1024 }, // 16 MB — límite real de Meta para video saliente
+  fileFilter: (_req, file, cb) => {
+    const mimeOk = ['video/mp4', 'video/3gpp'].includes(file.mimetype);
+    if (mimeOk) cb(null, true);
+    else cb(new AppError('Tipo de video no permitido. Use MP4 o 3GP', 400));
+  },
+});
+
+const uploadBrochure = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB — límite real de Meta para documento saliente
+  fileFilter: (_req, file, cb) => {
+    const extOk = /\.pdf$/i.test(file.originalname);
+    const mimeOk = file.mimetype === 'application/pdf';
+    if (extOk || mimeOk) cb(null, true);
+    else cb(new AppError('Solo se permiten archivos PDF', 400));
+  },
+});
+
 // Todas las rutas requieren autenticación y tenant
 router.use(authenticate, injectTenant);
 
@@ -85,6 +112,20 @@ router.post('/current/pdf',
   checkPermission('businesses:update'),
   uploadPdf.single('pdf'),
   controller.uploadPdf
+);
+
+// POST /api/v1/businesses/current/presentation-video  (para reenviar por WhatsApp, send_media)
+router.post('/current/presentation-video',
+  checkPermission('businesses:update'),
+  uploadVideoPresentacion.single('video'),
+  controller.uploadPresentationVideo
+);
+
+// POST /api/v1/businesses/current/brochure  (para reenviar por WhatsApp, send_media — distinto del PDF de conocimiento de arriba)
+router.post('/current/brochure',
+  checkPermission('businesses:update'),
+  uploadBrochure.single('brochure'),
+  controller.uploadBrochure
 );
 
 // PUT /api/v1/businesses/settings

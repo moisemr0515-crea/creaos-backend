@@ -69,6 +69,30 @@ const businessSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    // Archivos multimedia para ENVIAR al lead por WhatsApp (send_media,
+    // auditoría de factibilidad 12/sep/2026) — DISTINTOS de pdfUrl/
+    // pdfExtractedText/pdfSummary de arriba, que son el PDF de
+    // CONOCIMIENTO del agente (texto extraído + resumen inyectado en el
+    // prompt). Estos 2 no se procesan ni se leen: se guardan tal cual y se
+    // reenvían como adjunto real cuando el lead lo pide. Límites de tamaño
+    // (16MB video, 100MB documento) se validan en business.routes.js
+    // (multer), no acá — son los límites reales de Meta/WhatsApp Business
+    // API para media saliente, no un criterio propio.
+    presentationVideoUrl: {
+      type: String,
+      default: null,
+    },
+    brochureUrl: {
+      type: String,
+      default: null,
+    },
+    // Gupshup Partner API acepta filename como opcional para type:'document'
+    // (confirmado contra su documentación), pero sin él WhatsApp muestra el
+    // archivo sin nombre amigable — se guarda el nombre original subido.
+    brochureFilename: {
+      type: String,
+      default: null,
+    },
     industry: {
       type: String,
       trim: true,

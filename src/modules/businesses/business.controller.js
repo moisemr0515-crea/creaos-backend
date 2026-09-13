@@ -117,6 +117,47 @@ const uploadPdf = async (req, res, next) => {
   }
 };
 
+/**
+ * POST /api/v1/businesses/current/presentation-video
+ * Sube el video de presentación del negocio, para reenviarlo por WhatsApp
+ * (send_media) — no se procesa ni se lee, es un archivo para reenvío.
+ */
+const uploadPresentationVideo = async (req, res, next) => {
+  try {
+    if (!req.file) throw new AppError('Se requiere un archivo de video', 400);
+
+    const negocio = await businessService.subirVideoPresentacion(req.businessId, req.file);
+
+    return respuestaExito(res, {
+      message: 'Video de presentación actualizado exitosamente',
+      data: { negocio },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * POST /api/v1/businesses/current/brochure
+ * Sube el brochure/folleto del negocio, para reenviarlo por WhatsApp
+ * (send_media) — distinto del PDF informativo (/current/pdf), que
+ * alimenta el conocimiento del agente.
+ */
+const uploadBrochure = async (req, res, next) => {
+  try {
+    if (!req.file) throw new AppError('Se requiere un archivo PDF', 400);
+
+    const negocio = await businessService.subirBrochure(req.businessId, req.file);
+
+    return respuestaExito(res, {
+      message: 'Brochure actualizado exitosamente',
+      data: { negocio },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getNegocioActual,
   updateNegocioActual,
@@ -124,4 +165,6 @@ module.exports = {
   uploadLogo,
   uploadPhotos,
   uploadPdf,
+  uploadPresentationVideo,
+  uploadBrochure,
 };

@@ -258,6 +258,72 @@ const subirPdf = async (businessId, file) => {
   return negocio;
 };
 
+/**
+ * Sube el video de presentación del negocio a Cloudinary — para ENVIAR al
+ * lead por WhatsApp (send_media, auditoría de factibilidad 12/sep/2026),
+ * no para que la IA lo "lea" (a diferencia de subirPdf(), acá no hay
+ * extracción de contenido: es un archivo binario que se reenvía tal cual).
+ * Tamaño/formato ya los valida multer en business.routes.js (16MB,
+ * MP4/3GP — límite real de Meta/WhatsApp Business API para video
+ * saliente, no un criterio propio) antes de llegar acá.
+ */
+const subirVideoPresentacion = async (businessId, file) => {
+  const negocioAnterior = await Business.findById(businessId);
+  if (!negocioAnterior) throw new AppError('Negocio no encontrado', 404);
+
+  const resultado = await subirBuffer(file.buffer, {
+    folder: `creaos/businesses/${businessId}/presentation-video`,
+    resource_type: 'video',
+    overwrite: true,
+  });
+
+  const negocio = await Business.findByIdAndUpdate(
+    businessId,
+    { presentationVideoUrl: resultado.secure_url },
+    { new: true, runValidators: true }
+  ).populate('createdBy', 'name email');
+
+  // Borrado best-effort del video anterior — no debe bloquear la respuesta
+  await eliminarPorUrl(negocioAnterior.presentationVideoUrl, logger);
+
+  return negocio;
+};
+
+/**
+ * Sube el brochure/folleto del negocio a Cloudinary — mismo criterio que
+ * subirVideoPresentacion(): archivo para REENVIAR tal cual por WhatsApp,
+ * sin ninguna extracción de texto ni conexión al prompt de la IA (eso
+ * sigue siendo pdfUrl/pdfExtractedText/pdfSummary, arriba, un concepto
+ * distinto). Guarda también el nombre original del archivo
+ * (brochureFilename) — Gupshup Partner API lo acepta como opcional para
+ * type:'document', pero sin él WhatsApp muestra el archivo sin nombre
+ * amigable. Tamaño/formato ya los valida multer en business.routes.js
+ * (100MB, PDF — límite real de Meta/WhatsApp Business API para documento
+ * saliente).
+ */
+const subirBrochure = async (businessId, file) => {
+  const negocioAnterior = await Business.findById(businessId);
+  if (!negocioAnterior) throw new AppError('Negocio no encontrado', 404);
+
+  const resultado = await subirBuffer(file.buffer, {
+    folder: `creaos/businesses/${businessId}/brochure`,
+    resource_type: 'raw',
+    format: 'pdf',
+    overwrite: true,
+  });
+
+  const negocio = await Business.findByIdAndUpdate(
+    businessId,
+    { brochureUrl: resultado.secure_url, brochureFilename: file.originalname },
+    { new: true, runValidators: true }
+  ).populate('createdBy', 'name email');
+
+  // Borrado best-effort del brochure anterior — no debe bloquear la respuesta
+  await eliminarPorUrl(negocioAnterior.brochureUrl, logger);
+
+  return negocio;
+};
+
 module.exports = {
   obtenerNegocioActual,
   actualizarNegocio,
@@ -265,5 +331,7 @@ module.exports = {
   subirLogo,
   subirFotos,
   subirPdf,
+  subirVideoPresentacion,
+  subirBrochure,
   openai, // exportado para poder mockear/espiar en tests, mismo criterio que ai.service.js
 };
