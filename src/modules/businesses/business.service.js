@@ -11,6 +11,19 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 const MAX_PDF_TEXT_LENGTH = 5000;
 const MAX_PDF_SUMMARY_LENGTH = 800;
 
+// Auditoría de contexto del agente (12/sep/2026): un PDF escaneado/de
+// imágenes (pdf-parse no hace OCR) devuelve texto vacío o casi vacío.
+// Mandar eso igual a OpenAI para "resumir" produce una disculpa del modelo
+// ("no puedo resumir, no me diste texto") que antes se guardaba tal cual en
+// pdfSummary — confirmado en producción para el negocio CREA OS, cuyo
+// pdfSummary real era exactamente esa disculpa, inyectada en cada
+// conversación de venta como si fuera información legítima del negocio
+// (buildSystemPrompt() no tiene forma de distinguir un resumen real de uno
+// degenerado). Umbral arbitrario pero conservador: cualquier documento con
+// contenido real de negocio (qué vende, precios, políticas) supera esto de
+// sobra; un PDF vacío/casi vacío nunca lo alcanza.
+const MIN_PDF_TEXT_LENGTH = 50;
+
 /**
  * Resume el texto del PDF a lo esencial para un agente de ventas
  * (se genera una sola vez al subir el PDF, no en cada mensaje de la IA).
@@ -205,13 +218,29 @@ const subirPdf = async (businessId, file) => {
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 
-  const resumen = await generarResumenPdf(textoLimpio);
+  // Guard (auditoría de contexto del agente, 12/sep/2026): si la extracción
+  // no trajo contenido real (PDF escaneado/de imágenes, pdf-parse no hace
+  // OCR), no tiene sentido pagar una llamada a OpenAI para "resumir" texto
+  // vacío — y la respuesta que devolvería (una disculpa del modelo) NUNCA
+  // debe guardarse como si fuera información real del negocio. Se sube el
+  // PDF igual (pdfUrl/pdfUploadedAt) para que el dueño vea que se subió,
+  // pero pdfExtractedText/pdfSummary quedan en null — buildSystemPrompt()
+  // ya trata ambos como "sin información adicional" cuando son falsy
+  // (mismo filter(Boolean) de siempre), así que no se inyecta nada roto.
+  const extraccionExitosa = textoLimpio.length >= MIN_PDF_TEXT_LENGTH;
+  if (!extraccionExitosa) {
+    logger.warn(
+      `[subirPdf] PDF de business ${businessId} extrajo muy poco texto (${textoLimpio.length} caracteres, mínimo ${MIN_PDF_TEXT_LENGTH}) — probablemente escaneado/de imágenes. Se guarda el archivo pero NO se genera pdfSummary (evita inyectar una disculpa del modelo como si fuera información real).`
+    );
+  }
+
+  const resumen = extraccionExitosa ? await generarResumenPdf(textoLimpio) : null;
 
   const negocio = await Business.findByIdAndUpdate(
     businessId,
     {
       pdfUrl: resultado.secure_url,
-      pdfExtractedText: textoLimpio.slice(0, MAX_PDF_TEXT_LENGTH),
+      pdfExtractedText: extraccionExitosa ? textoLimpio.slice(0, MAX_PDF_TEXT_LENGTH) : null,
       pdfSummary: resumen,
       pdfUploadedAt: new Date(),
     },
@@ -231,4 +260,5 @@ module.exports = {
   subirLogo,
   subirFotos,
   subirPdf,
+  openai, // exportado para poder mockear/espiar en tests, mismo criterio que ai.service.js
 };

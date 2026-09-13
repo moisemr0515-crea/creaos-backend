@@ -323,6 +323,18 @@ const buildSystemPrompt = (business, lead, leadQualification, activeProduct) => 
   const infoNegocio = [
     business.productDescription && `- Qué vende: ${business.productDescription}`,
     business.targetCustomer && `- Cliente ideal: ${business.targetCustomer}`,
+    // Auditoría de contexto del agente (12/sep/2026): averageTicket/currency
+    // ya existían en el schema y llegaban intactos a `business` (documento
+    // completo, sin .select() que los excluya) — nunca se leían acá, a
+    // diferencia de productDescription/targetCustomer arriba, que sí tienen
+    // su línea. No es un bug de transporte, era una omisión: la línea de
+    // interpolación nunca se escribió.
+    business.averageTicket &&
+      `- Ticket promedio: ${business.averageTicket} ${business.currency || ''}`.trim(),
+    // Mismo hallazgo, mismo criterio: website existe en el schema
+    // (business.model.js) desde el onboarding pero ningún lugar del módulo
+    // ai lo consumía.
+    business.website && `- Sitio web: ${business.website}`,
     // Se usa el resumen (barato en tokens) en vez del texto completo del PDF;
     // pdfExtractedText queda como fallback para PDFs subidos antes de tener resumen
     (business.pdfSummary || business.pdfExtractedText) &&
