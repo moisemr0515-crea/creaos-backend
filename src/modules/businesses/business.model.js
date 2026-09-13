@@ -28,6 +28,19 @@ const businessSchema = new mongoose.Schema(
       minlength: [2, 'El nombre debe tener al menos 2 caracteres'],
       maxlength: [100, 'El nombre no puede exceder 100 caracteres'],
     },
+    // Nombre del AGENTE de IA (12/sep/2026) — deliberadamente separado de
+    // `name` (arriba, el nombre del NEGOCIO): "somos de CREA OS" usa
+    // `name`, "Soy Marina" usa este campo. Opcional y sin default forzado
+    // acá — el fallback a "Alex" vive en ai.service.js#buildSystemPrompt(),
+    // no en el schema, mismo criterio que aiPersonality (default seguro
+    // aplicado en el builder del prompt para documentos viejos sin este
+    // campo seteado, no en una escritura silenciosa del modelo).
+    agentName: {
+      type: String,
+      trim: true,
+      maxlength: [50, 'El nombre del agente no puede exceder 50 caracteres'],
+      default: null,
+    },
     // Identificador único URL-friendly generado desde el nombre
     slug: {
       type: String,

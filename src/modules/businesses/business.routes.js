@@ -70,6 +70,8 @@ router.put('/current',
   checkPermission('businesses:update'),
   [
     body('name').optional().trim().isLength({ min: 2, max: 100 }).withMessage('Nombre inválido'),
+    // Nombre del agente de IA — separado de `name` (nombre del negocio).
+    body('agentName').optional().trim().isLength({ max: 50 }).withMessage('Nombre del agente muy largo (máx 50 caracteres)'),
     body('email').optional().trim().isEmail().withMessage('Email inválido').normalizeEmail(),
     body('phone').optional().trim().isMobilePhone('any').withMessage('Teléfono inválido'),
     body('website').optional().trim().isURL().withMessage('URL inválida'),
