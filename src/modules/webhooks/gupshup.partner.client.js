@@ -77,4 +77,80 @@ async function sendTextMessage(to, message, { apiKey, appId } = {}) {
   return json;
 }
 
-module.exports = { sendTextMessage };
+const TIPOS_MEDIA_SOPORTADOS = ['image', 'video', 'document'];
+
+/**
+ * Envía un mensaje con media (imagen/video/documento) por WhatsApp vía la
+ * misma API de mensajería Partner (v3) que sendTextMessage() — mismo
+ * endpoint `/partner/app/{appId}/v3/message`, el campo `type` decide el
+ * shape del body. Confirmado contra la documentación OFICIAL de Gupshup
+ * Partner (12/sep/2026):
+ *   - image:    https://partner-docs.gupshup.io/reference/post_partner-app-appid-v3-image-message
+ *   - video:    https://partner-docs.gupshup.io/reference/post_partner-app-appid-v3-video-message
+ *   - document: https://partner-docs.gupshup.io/reference/senddocumentmessage
+ *
+ * IMPORTANTE — esto NO es el mismo shape que gupshup.client.js#sendMediaMessage()
+ * (Legacy): ese usa `originalUrl`/`previewUrl` para imagen y `url` plano
+ * para video, sobre form-urlencoded. Acá, como con sendTextMessage(), el
+ * shape es "estilo WhatsApp Cloud API" (`{type, <type>: {link, caption?}}`,
+ * JSON) — son 2 APIs de Gupshup distintas con contratos distintos, no una
+ * migración 1:1 del shape.
+ *
+ * `filename` es OPCIONAL según la documentación de Gupshup para
+ * `document` (no obligatorio como se asumió inicialmente al planear este
+ * cambio) — sin él, WhatsApp igual entrega el archivo, solo sin un nombre
+ * amigable. Se manda igual cuando está disponible, por UX.
+ *
+ * @param {string} to - número de destino, sin "+"
+ * @param {{ url: string, type: 'image'|'video'|'document', caption?: string, filename?: string }} media
+ * @param {{ apiKey: string, appId: string }} credentials - mismas credenciales que sendTextMessage()
+ * @returns {Promise<object>} JSON crudo de Gupshup
+ * @throws {Error} si `media.type` no es uno de los 3 soportados, o si Gupshup responde con un status distinto de 2xx
+ */
+async function sendMediaMessage(to, media, { apiKey, appId } = {}) {
+  if (!TIPOS_MEDIA_SOPORTADOS.includes(media?.type)) {
+    throw new Error(`GupshupPartnerClient.sendMediaMessage: tipo de media no soportado "${media?.type}" — debe ser uno de: ${TIPOS_MEDIA_SOPORTADOS.join(', ')}`);
+  }
+
+  logger.info('[GupshupPartnerClient] enviando media via Partner API', {
+    to,
+    appId,
+    mediaType: media.type,
+    hasApiKey: Boolean(apiKey),
+  });
+
+  // Mismo shape para los 3 tipos: { link, caption?, filename? (solo document) }
+  // — Gupshup ignora filename en image/video, así que no hace falta
+  // condicionar su inclusión salvo por prolijidad del payload.
+  const mediaPayload = { link: media.url };
+  if (media.caption) mediaPayload.caption = media.caption;
+  if (media.type === 'document' && media.filename) mediaPayload.filename = media.filename;
+
+  const response = await fetch(`${PARTNER_API_BASE_URL}/partner/app/${appId}/v3/message`, {
+    method: 'POST',
+    headers: {
+      Authorization: apiKey,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to,
+      type: media.type,
+      [media.type]: mediaPayload,
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text().catch(() => '');
+    logger.error('[GupshupPartnerClient] Partner API respondió error (media)', { status: response.status, body: errText, appId, mediaType: media.type });
+    throw new Error(`Gupshup Partner API error (media send): ${response.status} ${errText}`);
+  }
+
+  const json = await response.json();
+  logger.info('[GupshupPartnerClient] media enviada via Partner API exitosamente', { to, appId, mediaType: media.type, gupshupResponse: json });
+  return json;
+}
+
+module.exports = { sendTextMessage, sendMediaMessage };
