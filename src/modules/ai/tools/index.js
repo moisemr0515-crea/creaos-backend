@@ -17,6 +17,12 @@ const productService = require('../../products/product.service');
 // duplicar sus hard filters de tenant/status/vigencia ni su lógica de
 // precedencia/conflicto.
 const knowledgeRetrievalService = require('../../business-knowledge/knowledgeRetrieval.service');
+// Auditoría de factibilidad de send_media (12/sep/2026), Paso 3 — mismo
+// canal ya usado por el envío manual de un agente humano
+// (ai.service.js#sendMediaMessage()); esta tool reusa channelService.sendMedia()
+// tal cual, sin duplicar la resolución de canal/credenciales ni el
+// enrutamiento Legacy/Partner (Paso 1).
+const channelService = require('../../channels/channel.service');
 
 /**
  * Registro de tools reales que el modelo puede invocar durante
@@ -406,6 +412,103 @@ const searchBusinessKnowledge = async (args, { conversation, business }) => {
   };
 };
 
+/**
+ * Resuelve, para cada `resource` cerrado que puede pedir el modelo, la URL
+ * REAL guardada en `Business` — el modelo NUNCA recibe ni puede mandar una
+ * URL libre (documento maestro §13/§25: "la IA nunca debe elegir o
+ * inventar" un dato de tenant/recurso; mismo principio ya aplicado a
+ * `business._id` en el resto de este archivo). Devuelve `null` si el
+ * negocio todavía no cargó ese archivo — nunca un string vacío/roto.
+ */
+const RECURSOS_MEDIA_ENVIABLES = {
+  logo: (business) => (business.logo ? { url: business.logo, type: 'image' } : null),
+  presentation_video: (business) =>
+    business.presentationVideoUrl ? { url: business.presentationVideoUrl, type: 'video' } : null,
+  brochure: (business) =>
+    business.brochureUrl
+      ? { url: business.brochureUrl, type: 'document', filename: business.brochureFilename || undefined }
+      : null,
+};
+
+const NOMBRES_LEGIBLES_RECURSO = {
+  logo: 'logo',
+  presentation_video: 'video de presentación',
+  brochure: 'brochure',
+};
+
+/**
+ * send_media() — Paso 3/3 de la auditoría de factibilidad de send_media
+ * (12/sep/2026). Reusa channelService.sendMedia() tal cual (Paso 1: ya
+ * enruta Legacy/Partner por outboundApi; Paso 2: presentationVideoUrl/
+ * brochureUrl/brochureFilename ya existen en Business) — esta tool es
+ * solo el pegamento entre "qué pidió el modelo" y "qué URL real corresponde".
+ *
+ * Mismos chequeos que ai.service.js#sendMediaMessage() (envío manual de un
+ * agente humano, mismo canal de transporte): conversación por WhatsApp,
+ * lead con teléfono, ventana de 24h abierta (la media es mensaje de
+ * sesión, no de plantilla — Meta la trata igual que texto libre), canal
+ * activo resuelto. Sin try/catch propio para esos 4 chequeos — son
+ * validaciones esperables, se devuelven como `{success:false, error}`
+ * para que el modelo pueda explicarle al lead por qué no pudo enviar el
+ * archivo, en vez de que executeToolCall() las trate como una excepción
+ * inesperada.
+ *
+ * Registra el envío como un mensaje `assistant` propio (mismo shape que
+ * sendMediaMessage(), pero `sentBy:'ai'` en vez de `'agent'` — lo mandó el
+ * modelo, no un humano) además del registro genérico `role:'tool'` que ya
+ * hace el loop de generateReply() — así el envío queda visible como un
+ * adjunto real en el historial de chat de la CRM, no solo como JSON de
+ * bookkeeping interno de la tool.
+ */
+const sendMedia = async (args, { conversation, business, lead }) => {
+  const resource = typeof args?.resource === 'string' ? args.resource.trim() : '';
+  const resolver = RECURSOS_MEDIA_ENVIABLES[resource];
+  if (!resolver) {
+    return {
+      success: false,
+      error: `Recurso desconocido: "${resource}". Debe ser uno de: ${Object.keys(RECURSOS_MEDIA_ENVIABLES).join(', ')}.`,
+    };
+  }
+
+  const media = resolver(business);
+  if (!media) {
+    return {
+      success: false,
+      error: `Este negocio todavía no cargó su ${NOMBRES_LEGIBLES_RECURSO[resource]} — no hay nada que enviar.`,
+    };
+  }
+
+  if (conversation.channel !== 'whatsapp') {
+    return { success: false, error: 'El envío de archivos solo está disponible en conversaciones por WhatsApp.' };
+  }
+  if (!lead?.phone) {
+    return { success: false, error: 'El lead no tiene un número de teléfono registrado.' };
+  }
+  if (!conversation.getWindowState().windowOpen) {
+    return { success: false, error: 'La ventana de 24h de WhatsApp está cerrada — no se puede enviar el archivo en este momento.' };
+  }
+
+  const channel = await channelService.getChannelForConversation(conversation, business._id);
+  if (!channel) {
+    return { success: false, error: 'No hay un canal de WhatsApp activo para este negocio.' };
+  }
+
+  await channelService.sendMedia(channel._id, lead.phone, media);
+
+  const placeholder = media.type === 'image' ? '[Imagen]' : media.type === 'video' ? '[Video]' : '[Documento]';
+  conversation.messages.push({
+    role: 'assistant',
+    content: placeholder,
+    timestamp: new Date(),
+    sentBy: 'ai',
+    whatsappStatus: 'sent',
+    mediaUrl: media.url,
+    mediaType: media.type,
+  });
+
+  return { success: true, message: `Se envió ${NOMBRES_LEGIBLES_RECURSO[resource]} al lead por WhatsApp.` };
+};
+
 // Autorización V1 — ver el comentario largo de arriba: siempre `true`
 // para las 6 tools reales, declarado explícitamente en vez de implícito.
 // Una única función compartida (no una por tool) porque hoy el criterio
@@ -570,6 +673,32 @@ const TOOL_REGISTRY = [
     },
     authorization: siempreAutorizada,
     execute: searchBusinessKnowledge,
+  },
+  {
+    name: 'send_media',
+    description:
+      'Envía por WhatsApp un archivo real de este negocio: el logo, el video de presentación, o el brochure/folleto ' +
+      'en PDF. Úsala SOLO cuando el lead lo pide explícitamente (ej. "¿tienen un video?", "mándame el brochure", ' +
+      '"pásame el catálogo en PDF") — NUNCA de forma proactiva ni para "acompañar" una respuesta que el lead no ' +
+      'pidió, cada archivo pesa varios MB y consume la ventana de sesión igual que un mensaje de texto. Si el ' +
+      'negocio no cargó ese archivo todavía, la tool te lo va a decir — en ese caso indicáselo al lead de forma ' +
+      'natural en vez de insistir o inventar que sí se envió.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        resource: {
+          type: 'string',
+          enum: ['logo', 'presentation_video', 'brochure'],
+          description:
+            'Qué archivo enviar. "logo" = logo del negocio, "presentation_video" = video de presentación, ' +
+            '"brochure" = folleto/catálogo en PDF. Nunca inventes ni pidas una URL — solo elegís cuál de estos 3.',
+        },
+      },
+      required: ['resource'],
+      additionalProperties: false,
+    },
+    authorization: siempreAutorizada,
+    execute: sendMedia,
   },
 ];
 

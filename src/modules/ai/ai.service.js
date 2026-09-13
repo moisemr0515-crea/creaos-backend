@@ -673,14 +673,15 @@ const generateReply = async (conversationId, business, lead) => {
   throw new AppError('El agente no pudo completar la respuesta (demasiadas tool calls encadenadas)', 500);
 };
 
-// C.3, Etapa C3.3 (Action Outcomes). Tools con efectos REALES sobre datos
-// del negocio (a diferencia de las meramente informativas — buscar
-// producto/política/FAQ no cambia nada) — si el turno usó alguna, el
-// outcome es 'action'. Hoy solo update_lead_stage entra en esta
-// categoría; escalate_to_human también muta datos reales pero tiene su
-// propio outcome ('handoff', más específico y más urgente) y se chequea
-// primero.
-const ACTION_TOOL_NAMES = new Set(['update_lead_stage']);
+// C.3, Etapa C3.3 (Action Outcomes). Tools con efectos REALES — sobre
+// datos del negocio (update_lead_stage) o sobre el mundo real fuera de la
+// conversación (send_media, auditoría de factibilidad 12/sep/2026, Paso
+// 3: manda un archivo real por WhatsApp) — a diferencia de las meramente
+// informativas (buscar producto/política/FAQ no cambia ni envía nada). Si
+// el turno usó alguna, el outcome es 'action'. escalate_to_human también
+// tiene un efecto real pero tiene su propio outcome ('handoff', más
+// específico y más urgente) y se chequea primero.
+const ACTION_TOOL_NAMES = new Set(['update_lead_stage', 'send_media']);
 
 /**
  * Deriva el `outcome` del AgentRunResult (spec §5.1: answer/clarify/

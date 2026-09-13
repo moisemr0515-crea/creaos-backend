@@ -73,13 +73,18 @@ const messageSchema = new mongoose.Schema(
     // mensaje interno en una conversación de canal 'manual').
     whatsappStatus: { type: String, enum: ['sent', 'failed', 'not_applicable'], default: 'not_applicable' },
     whatsappError:  { type: String, default: null },
-    // Imagen/video adjunto — `content` sigue siendo required (queda con el
-    // caption si lo hay, o un placeholder tipo "[Imagen]"/"[Video]" si no,
-    // para no romper nada que ya lea `content`: resúmenes de IA, contexto
-    // de chat, etc.). mediaUrl/mediaType van null en cualquier mensaje sin
-    // adjunto — la gran mayoría.
+    // Imagen/video/documento adjunto — `content` sigue siendo required
+    // (queda con el caption si lo hay, o un placeholder tipo
+    // "[Imagen]"/"[Video]"/"[Documento]" si no, para no romper nada que ya
+    // lea `content`: resúmenes de IA, contexto de chat, etc.). mediaUrl/
+    // mediaType van null en cualquier mensaje sin adjunto — la gran
+    // mayoría. 'document' agregado en la auditoría de factibilidad de
+    // send_media (12/sep/2026, Paso 3) — hasta ahí solo existían adjuntos
+    // entrantes/manuales de imagen/video (media entrante de un lead,
+    // sendMediaMessage() del agente humano); la tool send_media es el
+    // primer camino real que envía brochures (PDF) por WhatsApp.
     mediaUrl:  { type: String, default: null },
-    mediaType: { type: String, enum: ['image', 'video', null], default: null },
+    mediaType: { type: String, enum: ['image', 'video', 'document', null], default: null },
   },
   { _id: false }
 );
