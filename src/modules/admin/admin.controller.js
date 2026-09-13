@@ -22,10 +22,34 @@ const getGlobalDashboard = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+const resolveAuthorizedBusinessId = async (req) => {
+  const requestedBusinessId = req.params.businessId || req.params.id;
+  if (!mongoose.Types.ObjectId.isValid(requestedBusinessId)) {
+    throw new AppError('ID inválido', 400);
+  }
+
+  const isSuperAdmin = req.user?.role?.slug === ROLES.SUPER_ADMIN;
+  let businessId = requestedBusinessId.toString();
+
+  if (!isSuperAdmin) {
+    // authenticate() carga el usuario fresco desde Mongo. Su relación con el
+    // negocio es más confiable que el businessId embebido en un JWT antiguo.
+    const authorizedBusinessId = req.user?.business?.toString() || req.businessId?.toString();
+    if (!authorizedBusinessId || businessId !== authorizedBusinessId) {
+      throw new AppError('Sin acceso a este negocio', 403);
+    }
+    businessId = authorizedBusinessId;
+  }
+
+  const exists = await Business.exists({ _id: businessId });
+  if (!exists) throw new AppError('Negocio no encontrado', 404);
+
+  return businessId;
+};
+
 const getBusinessDashboard = async (req, res, next) => {
   try {
-    const businessId = req.params.businessId || req.params.id || req.businessId;
-    if (!mongoose.Types.ObjectId.isValid(businessId)) throw new AppError('ID inválido', 400);
+    const businessId = await resolveAuthorizedBusinessId(req);
     const stats = await dashboardService.getBusinessStats(businessId);
     respuestaExito(res, { message: 'Estadísticas del negocio', data: stats });
   } catch (err) { next(err); }
@@ -41,8 +65,7 @@ const getRevenue = async (req, res, next) => {
 
 const getActivityFeed = async (req, res, next) => {
   try {
-    const businessId = req.params.businessId || req.businessId;
-    if (!mongoose.Types.ObjectId.isValid(businessId)) throw new AppError('ID inválido', 400);
+    const businessId = await resolveAuthorizedBusinessId(req);
     const limit    = parseInt(req.query.limit, 10) || 20;
     const feed     = await dashboardService.getActivityFeed(businessId, limit);
     respuestaExito(res, { message: 'Feed de actividad', data: feed });

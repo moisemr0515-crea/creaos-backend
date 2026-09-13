@@ -10,7 +10,9 @@ require('dns').setServers(['8.8.8.8', '1.1.1.1']);
 const http = require('http');
 const { validateEnv, PORT } = require('./src/config/env');
 
-validateEnv();
+// El worker no sirve webhooks. Valida solo su configuración base; la API es
+// quien valida al arrancar los secretos de integraciones HTTP configuradas.
+validateEnv({ validateWebhookIntegrations: false });
 
 const logger = require('./src/utils/logger');
 const { connectMongoDB, disconnectMongoDB } = require('./src/config/database');

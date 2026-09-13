@@ -2,6 +2,7 @@ require('dotenv').config();
 
 // Variables obligatorias para arrancar el servidor
 const REQUIRED_VARS = [
+  'NODE_ENV',
   'MONGODB_URI',
   'REDIS_URL',
   'JWT_SECRET',
@@ -12,7 +13,45 @@ const REQUIRED_VARS = [
  * Lanza un error si faltan variables de entorno críticas.
  * Se llama antes de iniciar el servidor.
  */
-const validateEnv = () => {
+const hasValue = (name) => typeof process.env[name] === 'string' && process.env[name].trim().length > 0;
+
+const validateProductionWebhookEnv = () => {
+  if (process.env.NODE_ENV !== 'production') return;
+
+  const missing = [];
+  const requireIfConfigured = (evidenceVars, requiredVars) => {
+    if (!evidenceVars.some(hasValue)) return;
+    for (const required of requiredVars) {
+      if (Array.isArray(required)) {
+        if (!required.some(hasValue)) missing.push(required.join(' o '));
+      } else if (!hasValue(required)) {
+        missing.push(required);
+      }
+    }
+  };
+
+  // Una integración sin ninguna credencial funcional se considera
+  // deshabilitada. Si hay señales de que está configurada, su secreto de
+  // verificación pasa a ser obligatorio antes de aceptar tráfico.
+  requireIfConfigured(['META_APP_ID'], ['META_APP_SECRET']);
+  requireIfConfigured(['WHATSAPP_TOKEN', 'WHATSAPP_PHONE_ID'], [['WHATSAPP_APP_SECRET', 'META_APP_SECRET']]);
+  requireIfConfigured(
+    ['GUPSHUP_API_KEY', 'GUPSHUP_APP_NAME', 'GUPSHUP_PHONE_NUMBER'],
+    ['GUPSHUP_WEBHOOK_TOKEN']
+  );
+  requireIfConfigured(
+    ['GUPSHUP_PARTNER_EMAIL', 'GUPSHUP_PARTNER_SECRET', 'BACKEND_PUBLIC_URL'],
+    ['GUPSHUP_ONBOARDING_WEBHOOK_TOKEN']
+  );
+  requireIfConfigured(['STRIPE_SECRET_KEY', 'STRIPE_PUBLIC_KEY'], ['STRIPE_WEBHOOK_SECRET']);
+  requireIfConfigured(['MP_ACCESS_TOKEN', 'MP_PUBLIC_KEY'], ['MP_WEBHOOK_SECRET']);
+
+  if (missing.length > 0) {
+    throw new Error(`❌ Secretos de webhook faltantes para integraciones configuradas: ${[...new Set(missing)].join(', ')}`);
+  }
+};
+
+const validateEnv = ({ validateWebhookIntegrations = true } = {}) => {
   const faltantes = REQUIRED_VARS.filter((v) => !process.env[v]);
   if (faltantes.length > 0) {
     throw new Error(
@@ -20,6 +59,7 @@ const validateEnv = () => {
         '   Copia .env.example a .env y completa los valores.'
     );
   }
+  if (validateWebhookIntegrations) validateProductionWebhookEnv();
 };
 
 module.exports = {
@@ -27,7 +67,10 @@ module.exports = {
 
   // Servidor
   PORT: parseInt(process.env.PORT, 10) || 3000,
-  NODE_ENV: process.env.NODE_ENV || 'development',
+  // Fail-safe: los entrypoints exigen NODE_ENV mediante validateEnv(). Si un
+  // módulo se carga fuera de ellos, la ausencia nunca habilita excepciones de
+  // desarrollo para firmas de webhooks.
+  NODE_ENV: process.env.NODE_ENV || 'production',
 
   // Base de datos
   MONGODB_URI: process.env.MONGODB_URI,

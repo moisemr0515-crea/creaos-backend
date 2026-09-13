@@ -190,6 +190,9 @@ const createMercadoPagoSubscription = async (businessId, planName, payerEmail) =
 // ─── 6. handleStripeWebhook ──────────────────────────────────────────────────
 
 const handleStripeWebhook = async (rawBody, signature) => {
+  if (NODE_ENV === 'production' && !STRIPE_WEBHOOK_SECRET) {
+    throw new AppError('Stripe webhook no configurado de forma segura', 503);
+  }
   const s = getStripe();
   let event;
 
