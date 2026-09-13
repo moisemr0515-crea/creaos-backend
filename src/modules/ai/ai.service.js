@@ -320,6 +320,14 @@ const PERSONALITY_GUIDANCE = {
 };
 
 const buildSystemPrompt = (business, lead, leadQualification, activeProduct) => {
+  // Personalización del nombre del agente (12/sep/2026) — antes "Alex"
+  // estaba hardcodeado acá abajo, único lugar del repo donde aparecía.
+  // Mismo patrón condicional que averageTicket/website/redes sociales:
+  // se usa business.agentName solo si existe y no es una cadena vacía
+  // (un negocio viejo sin este campo seteado, o guardado como "" desde
+  // el frontend, cae al fallback histórico).
+  const nombreAgente = business.agentName && business.agentName.trim() ? business.agentName.trim() : 'Alex';
+
   const infoNegocio = [
     business.productDescription && `- Qué vende: ${business.productDescription}`,
     business.targetCustomer && `- Cliente ideal: ${business.targetCustomer}`,
@@ -367,7 +375,7 @@ const buildSystemPrompt = (business, lead, leadQualification, activeProduct) => 
     ? `\nCONTEXTO DE PRODUCTO EN ESTA CONVERSACIÓN:\n- Último producto identificado: "${activeProduct.name}" (búsqueda: "${activeProduct.lastSearchQuery}"). Si el lead sigue preguntando sobre "eso"/precio/stock sin nombrarlo de nuevo, asumí que se refiere a este.\n`
     : '';
 
-  return `Eres Alex, un agente de ventas profesional y empático de ${business.name}.
+  return `Eres ${nombreAgente}, un agente de ventas profesional y empático de ${business.name}.
 ${infoNegocio ? `\nINFORMACIÓN DEL NEGOCIO:\n${infoNegocio}\n` : ''}
 Tu objetivo es calificar al lead y guiarlo hacia una venta de manera natural y conversacional.
 ${bloqueInstruccionesDueno}${bloquePersonalidad}

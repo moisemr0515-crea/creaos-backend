@@ -79,7 +79,9 @@ const actualizarNegocio = async (businessId, datos) => {
   // allowlist, un campo nuevo se descarta en silencio aunque exista en el
   // schema (mismo patrón de bug ya visto esta sesión con aiPersonality
   // antes de su propio fix — ver comentario de ese campo en el schema).
-  const camposPermitidos = ['name', 'logo', 'industry', 'country', 'currency', 'phone', 'email', 'website', 'facebookUrl', 'instagramUrl', 'tiktokUrl', 'whatsappNumber', 'productDescription', 'averageTicket', 'targetCustomer', 'aiInstructions', 'aiPersonality', 'aiSalesEnabled'];
+  // agentName (12/sep/2026): mismo criterio — el nombre del agente de IA,
+  // separado de `name` (nombre del negocio).
+  const camposPermitidos = ['name', 'agentName', 'logo', 'industry', 'country', 'currency', 'phone', 'email', 'website', 'facebookUrl', 'instagramUrl', 'tiktokUrl', 'whatsappNumber', 'productDescription', 'averageTicket', 'targetCustomer', 'aiInstructions', 'aiPersonality', 'aiSalesEnabled'];
   const actualizacion = {};
 
   camposPermitidos.forEach((campo) => {
