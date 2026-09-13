@@ -74,7 +74,12 @@ const CAMPOS_ONBOARDING = ['productDescription', 'averageTicket', 'targetCustome
  * Actualiza datos principales del negocio (nombre, logo, industria, etc.).
  */
 const actualizarNegocio = async (businessId, datos) => {
-  const camposPermitidos = ['name', 'logo', 'industry', 'country', 'currency', 'phone', 'email', 'website', 'whatsappNumber', 'productDescription', 'averageTicket', 'targetCustomer', 'aiInstructions', 'aiPersonality', 'aiSalesEnabled'];
+  // facebookUrl/instagramUrl/tiktokUrl (12/sep/2026): agregados al lado de
+  // `website` — mismo endpoint, sin cambios estructurales. Sin este
+  // allowlist, un campo nuevo se descarta en silencio aunque exista en el
+  // schema (mismo patrón de bug ya visto esta sesión con aiPersonality
+  // antes de su propio fix — ver comentario de ese campo en el schema).
+  const camposPermitidos = ['name', 'logo', 'industry', 'country', 'currency', 'phone', 'email', 'website', 'facebookUrl', 'instagramUrl', 'tiktokUrl', 'whatsappNumber', 'productDescription', 'averageTicket', 'targetCustomer', 'aiInstructions', 'aiPersonality', 'aiSalesEnabled'];
   const actualizacion = {};
 
   camposPermitidos.forEach((campo) => {

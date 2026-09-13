@@ -2,6 +2,23 @@ const mongoose = require('mongoose');
 const slugify = require('slugify');
 const { PLANS, PLAN_STATUS, TRIAL_DAYS } = require('../../config/constants');
 
+// Identidad del negocio — redes sociales (12/sep/2026): validación básica de
+// URL para facebookUrl/instagramUrl/tiktokUrl, sin exigir que sea
+// exactamente del dominio de esa red (un negocio puede tener una página de
+// Facebook con dominio propio via redirect, o simplemente no queremos ser
+// más estrictos de lo necesario) — solo que sea una URL bien formada
+// http(s). `website` (arriba, ya existente) no tiene esta validación; se
+// deja igual a propósito, fuera del alcance de este cambio.
+const esUrlValida = (valor) => {
+  if (!valor) return true; // opcional — string vacío/null nunca es error de formato
+  try {
+    const url = new URL(valor);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+};
+
 const businessSchema = new mongoose.Schema(
   {
     name: {
@@ -83,6 +100,28 @@ const businessSchema = new mongoose.Schema(
       type: String,
       trim: true,
       default: null,
+    },
+    // Identidad del negocio — redes sociales (12/sep/2026): para que la IA
+    // de ventas pueda compartirlas cuando el lead las pida. Todos
+    // opcionales — un negocio existente sin estos campos sigue funcionando
+    // igual (default null, sin required).
+    facebookUrl: {
+      type: String,
+      trim: true,
+      default: null,
+      validate: { validator: esUrlValida, message: 'facebookUrl debe ser una URL válida (ej. https://facebook.com/tu-negocio)' },
+    },
+    instagramUrl: {
+      type: String,
+      trim: true,
+      default: null,
+      validate: { validator: esUrlValida, message: 'instagramUrl debe ser una URL válida (ej. https://instagram.com/tu-negocio)' },
+    },
+    tiktokUrl: {
+      type: String,
+      trim: true,
+      default: null,
+      validate: { validator: esUrlValida, message: 'tiktokUrl debe ser una URL válida (ej. https://tiktok.com/@tu-negocio)' },
     },
     // Onboarding: número de WhatsApp del negocio (distinto de `phone`, uso comercial)
     whatsappNumber: {

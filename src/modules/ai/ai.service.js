@@ -335,6 +335,12 @@ const buildSystemPrompt = (business, lead, leadQualification, activeProduct) => 
     // (business.model.js) desde el onboarding pero ningún lugar del módulo
     // ai lo consumía.
     business.website && `- Sitio web: ${business.website}`,
+    // Identidad del negocio — redes sociales (12/sep/2026): para que el
+    // agente pueda compartirlas cuando el lead las pida, mismo patrón
+    // condicional (solo si el campo existe y no está vacío).
+    business.facebookUrl && `- Facebook: ${business.facebookUrl}`,
+    business.instagramUrl && `- Instagram: ${business.instagramUrl}`,
+    business.tiktokUrl && `- TikTok: ${business.tiktokUrl}`,
     // Se usa el resumen (barato en tokens) en vez del texto completo del PDF;
     // pdfExtractedText queda como fallback para PDFs subidos antes de tener resumen
     (business.pdfSummary || business.pdfExtractedText) &&
