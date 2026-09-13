@@ -24,7 +24,12 @@ const injectTenant = async (req, res, next) => {
     }
 
     // Validar que el negocio exista y esté activo
-    const negocio = await Business.findOne({ _id: businessId, isActive: true }).select('_id name plan planStatus');
+    // Auditoría de deprecación de business.plan (12/sep/2026, Paso 2):
+    // antes seleccionaba también `plan planStatus` — código muerto,
+    // confirmado con grep exhaustivo (ningún handler downstream leía
+    // req.business.plan/planStatus). Subscription.planName es la única
+    // fuente real del plan de un negocio (ver Paso 1, use-plan.ts).
+    const negocio = await Business.findOne({ _id: businessId, isActive: true }).select('_id name');
 
     if (!negocio) {
       throw new AppError('Negocio no encontrado o inactivo', 403);

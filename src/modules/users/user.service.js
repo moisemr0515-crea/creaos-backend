@@ -10,9 +10,14 @@ const { ROLES } = require('../../config/constants');
  * Devuelve el perfil completo del usuario autenticado.
  */
 const obtenerMiPerfil = async (userId) => {
+  // Auditoría de deprecación de business.plan (12/sep/2026, Paso 2):
+  // antes poblaba también `plan planStatus` — el frontend (crea-os-ignite)
+  // ya dejó de leerlos desde el Paso 1 (usePlan() lee Subscription.planName
+  // vía GET /subscriptions/current, la fuente real). Confirmado con grep
+  // exhaustivo: ningún otro consumidor backend ni frontend los leía.
   const usuario = await User.findById(userId)
     .populate('role', 'slug name permissions')
-    .populate('business', 'name slug logo plan planStatus onboardingCompleted');
+    .populate('business', 'name slug logo onboardingCompleted');
 
   if (!usuario) throw new AppError('Usuario no encontrado', 404);
 
