@@ -312,6 +312,96 @@ describe('GupshupProvider', () => {
       await expect(provider.sendMedia(channelDedicado, '51987654321', { url: 'x', type: 'image' })).rejects.toBe(error);
       expect(gupshupClient.sendMediaMessage).not.toHaveBeenCalled();
     });
+
+    // Auditoría de factibilidad de send_media (12/sep/2026), Paso 1 —
+    // hallazgo real: antes de este cambio, sendMedia() llamaba SIEMPRE a
+    // gupshupClient (Legacy) sin mirar resolveOutboundMode(), aunque los 3
+    // WhatsAppChannel activos en producción hoy están en
+    // outboundApi:'partner'. Mismo patrón de tests que
+    // sendMessage() > 'routing Partner/Legacy por outboundApi (PR2)'.
+    describe('routing Partner/Legacy por outboundApi (Paso 1 send_media)', () => {
+      test('canal PLATFORM: sigue por Legacy, NUNCA llama a gupshupPartnerClient', async () => {
+        channelCredentialsService.resolveCredentials.mockResolvedValue({ apiKey: 'apikey-del-env-de-platform' });
+        gupshupClient.sendMediaMessage.mockResolvedValue({ status: 'submitted' });
+
+        await provider.sendMedia(channelPlatform, '51987654321', { url: 'x', type: 'image' });
+
+        expect(gupshupClient.sendMediaMessage).toHaveBeenCalled();
+        expect(gupshupPartnerClient.sendMediaMessage).not.toHaveBeenCalled();
+      });
+
+      test('canal DEDICATED con outboundApi:"legacy" (no migrado todavía): sigue por Legacy', async () => {
+        channelCredentialsService.resolveCredentials.mockResolvedValue({ apiKey: 'apikey-real' });
+        gupshupClient.sendMediaMessage.mockResolvedValue({ status: 'submitted' });
+
+        await provider.sendMedia(channelDedicado, '51987654321', { url: 'x', type: 'video' });
+
+        expect(gupshupClient.sendMediaMessage).toHaveBeenCalled();
+        expect(gupshupPartnerClient.sendMediaMessage).not.toHaveBeenCalled();
+      });
+
+      test('canal DEDICATED con outboundApi:"partner" + providerAppId: usa Partner con appId+Authorization correctos, NUNCA llama a Legacy — caso real, los 3 canales activos hoy están así', async () => {
+        channelCredentialsService.resolveCredentials.mockResolvedValue({ apiKey: 'partner-app-access-token-real' });
+        gupshupPartnerClient.sendMediaMessage.mockResolvedValue({ messages: [{ id: 'msg-media-1' }] });
+        const media = { url: 'https://cloudinary.test/logo.png', type: 'image' };
+
+        const result = await provider.sendMedia(channelDedicadoPartner, '51923523382', media);
+
+        expect(gupshupPartnerClient.sendMediaMessage).toHaveBeenCalledWith('51923523382', media, {
+          apiKey: 'partner-app-access-token-real',
+          source: '51967424911',
+          appName: 'creaos6a9b96597ed1485fda9fade3',
+          appId: 'app-real-de-gupshup',
+        });
+        expect(gupshupClient.sendMediaMessage).not.toHaveBeenCalled();
+        expect(result).toEqual({ messages: [{ id: 'msg-media-1' }] });
+      });
+
+      test('canal outboundApi:"partner" + type:"document": SÍ funciona (a diferencia de Legacy, que no lo soporta)', async () => {
+        channelCredentialsService.resolveCredentials.mockResolvedValue({ apiKey: 'partner-app-access-token-real' });
+        gupshupPartnerClient.sendMediaMessage.mockResolvedValue({ messages: [{ id: 'msg-doc-1' }] });
+        const media = { url: 'https://cloudinary.test/brochure.pdf', type: 'document', filename: 'brochure.pdf' };
+
+        await provider.sendMedia(channelDedicadoPartner, '51923523382', media);
+
+        expect(gupshupPartnerClient.sendMediaMessage).toHaveBeenCalledWith('51923523382', media, expect.any(Object));
+      });
+
+      test('canal outboundApi:"partner" SIN providerAppId: tira error controlado ANTES de resolver credenciales, ningún cliente se llama', async () => {
+        const canalInconsistente = { ...channelDedicadoPartner, providerAppId: null };
+
+        await expect(
+          provider.sendMedia(canalInconsistente, '51923523382', { url: 'x', type: 'image' }),
+        ).rejects.toThrow(/declarado outboundApi:'partner' pero sin providerAppId/);
+        expect(channelCredentialsService.resolveCredentials).not.toHaveBeenCalled();
+        expect(gupshupClient.sendMediaMessage).not.toHaveBeenCalled();
+        expect(gupshupPartnerClient.sendMediaMessage).not.toHaveBeenCalled();
+      });
+
+      test('Partner API responde error real: se propaga, NUNCA reintenta por Legacy', async () => {
+        channelCredentialsService.resolveCredentials.mockResolvedValue({ apiKey: 'partner-app-access-token-real' });
+        const errorPartner = new Error('Gupshup Partner API error (media send): 400 {"message":"Media type not supported"}');
+        gupshupPartnerClient.sendMediaMessage.mockRejectedValue(errorPartner);
+
+        await expect(
+          provider.sendMedia(channelDedicadoPartner, '51923523382', { url: 'x', type: 'image' }),
+        ).rejects.toBe(errorPartner);
+        expect(gupshupClient.sendMediaMessage).not.toHaveBeenCalled();
+      });
+
+      // Guard nuevo (Paso 1): document por Legacy caería en la rama "video"
+      // de gupshup.client.js en silencio — se corta ANTES, con un error
+      // identificable, en vez de mandar un request roto a Gupshup.
+      test('canal Legacy + type:"document": falla explícito con 501, NUNCA llama a gupshup.client.js con un shape roto', async () => {
+        channelCredentialsService.resolveCredentials.mockResolvedValue({ apiKey: 'apikey-real' });
+
+        await expect(
+          provider.sendMedia(channelDedicado, '51987654321', { url: 'x', type: 'document', filename: 'brochure.pdf' }),
+        ).rejects.toThrow(/Envío de documentos por WhatsApp no soportado todavía en el camino Legacy/);
+        expect(gupshupClient.sendMediaMessage).not.toHaveBeenCalled();
+        expect(gupshupPartnerClient.sendMediaMessage).not.toHaveBeenCalled();
+      });
+    });
   });
 
   describe('downloadMedia()', () => {

@@ -171,13 +171,49 @@ class GupshupProvider extends IChannelProvider {
   }
 
   /**
+   * Auditoría de factibilidad de send_media (12/sep/2026), Paso 1: antes,
+   * esto llamaba SIEMPRE a gupshupClient (Legacy) sin importar
+   * resolveOutboundMode() — hallazgo real, no hipotético: los 3
+   * WhatsAppChannel activos en producción hoy (incluido el canal oficial
+   * de CREA OS) están en outboundApi:'partner', así que este método corría
+   * por un camino que ningún canal real usa. Mismo criterio de bifurcación
+   * que sendMessage() (arriba) — único punto de decisión Legacy/Partner,
+   * ahora también para media.
+   *
    * @param {import('../whatsappChannel.model')} channel
    * @param {string} to
-   * @param {{ url: string, type: 'image'|'video', caption?: string }} media
+   * @param {{ url: string, type: 'image'|'video'|'document', caption?: string, filename?: string }} media
    */
   async sendMedia(channel, to, media) {
-    // Mismo criterio que sendMessage()/sendTemplate() (PR-07a).
+    // Mismo orden que sendMessage(): resolveOutboundMode() ANTES de
+    // resolverCredencialesDeEnvio(), para no gastar una consulta a
+    // ChannelCredentials/Partner API si la configuración del canal ya es
+    // inconsistente (outboundApi:'partner' sin providerAppId).
+    const modo = resolveOutboundMode(channel);
     const credenciales = await resolverCredencialesDeEnvio(channel);
+
+    if (modo === 'partner') {
+      logger.info('[GupshupProvider] media outbound via Partner API', {
+        channelId: String(channel._id),
+        appId: credenciales.appId,
+        mediaType: media?.type,
+      });
+      return gupshupPartnerClient.sendMediaMessage(to, media, credenciales);
+    }
+
+    // gupshup.client.js (Legacy) solo soporta image/video — 'document'
+    // caería en su rama "else" (video), armando un shape roto en silencio.
+    // Documento por Legacy queda fuera de alcance del Paso 1 (ningún canal
+    // real está en Legacy hoy) — falla explícito en vez de mandar un
+    // request que Gupshup rechazaría sin ninguna pista de por qué.
+    if (media?.type === 'document') {
+      throw new AppError('Envío de documentos por WhatsApp no soportado todavía en el camino Legacy — solo Partner API', 501);
+    }
+
+    logger.info('[GupshupProvider] media outbound via Legacy API', {
+      channelId: String(channel._id),
+      mediaType: media?.type,
+    });
     return gupshupClient.sendMediaMessage(to, media, credenciales);
   }
 
