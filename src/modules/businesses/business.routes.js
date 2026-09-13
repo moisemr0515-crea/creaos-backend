@@ -7,6 +7,7 @@ const { injectTenant } = require('../../middleware/tenant.middleware');
 const { checkPermission } = require('../../middleware/rbac.middleware');
 const { validate } = require('../../middleware/validate.middleware');
 const { AppError } = require('../../middleware/error.middleware');
+const { traducirErroresDeMulter } = require('../../middleware/uploadErrors.middleware');
 
 const router = Router();
 
@@ -96,35 +97,35 @@ router.put('/current',
 // POST /api/v1/businesses/current/logo
 router.post('/current/logo',
   checkPermission('businesses:update'),
-  uploadImagen.single('logo'),
+  traducirErroresDeMulter(uploadImagen.single('logo'), { campoLegible: 'el logo', limiteLegible: '5MB' }),
   controller.uploadLogo
 );
 
 // POST /api/v1/businesses/current/photos  (hasta 2 fotos de producto)
 router.post('/current/photos',
   checkPermission('businesses:update'),
-  uploadImagen.array('photos', 2),
+  traducirErroresDeMulter(uploadImagen.array('photos', 2), { campoLegible: 'las fotos de producto', limiteLegible: '5MB' }),
   controller.uploadPhotos
 );
 
 // POST /api/v1/businesses/current/pdf  (extrae texto para la IA de ventas)
 router.post('/current/pdf',
   checkPermission('businesses:update'),
-  uploadPdf.single('pdf'),
+  traducirErroresDeMulter(uploadPdf.single('pdf'), { campoLegible: 'el PDF informativo', limiteLegible: '10MB' }),
   controller.uploadPdf
 );
 
 // POST /api/v1/businesses/current/presentation-video  (para reenviar por WhatsApp, send_media)
 router.post('/current/presentation-video',
   checkPermission('businesses:update'),
-  uploadVideoPresentacion.single('video'),
+  traducirErroresDeMulter(uploadVideoPresentacion.single('video'), { campoLegible: 'video de presentación', limiteLegible: '16MB' }),
   controller.uploadPresentationVideo
 );
 
 // POST /api/v1/businesses/current/brochure  (para reenviar por WhatsApp, send_media — distinto del PDF de conocimiento de arriba)
 router.post('/current/brochure',
   checkPermission('businesses:update'),
-  uploadBrochure.single('brochure'),
+  traducirErroresDeMulter(uploadBrochure.single('brochure'), { campoLegible: 'el brochure', limiteLegible: '100MB' }),
   controller.uploadBrochure
 );
 
