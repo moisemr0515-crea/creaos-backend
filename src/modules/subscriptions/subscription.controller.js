@@ -38,6 +38,17 @@ const mercadopagoSubscribe = async (req, res, next) => {
 
 const cancelSubscription = async (req, res, next) => {
   try {
+    // Incidente real (12/9/2026): un bug de UX en el frontend (crea-os-ignite,
+    // plan.tsx) hizo que un solo click en la tarjeta de un plan distinto al
+    // actual disparara este endpoint sin ningún paso intermedio, cancelando
+    // la suscripción real de un negocio. El frontend ya agregó un modal de
+    // confirmación, pero este endpoint no debe depender solo de eso: exigir
+    // `confirm: true` explícito en el body es la segunda barrera, para que
+    // ninguna llamada HTTP accidental o mal formada (de este frontend o de
+    // cualquier otro cliente futuro) pueda cancelar sin intención clara.
+    if (req.body.confirm !== true) {
+      throw new AppError('Se requiere confirmación explícita ({ confirm: true }) para cancelar la suscripción', 400);
+    }
     const atPeriodEnd = req.body.atPeriodEnd !== false;
     const result = await service.cancelSubscription(req.businessId, atPeriodEnd);
     return respuestaExito(res, { message: result.message, data: null });
