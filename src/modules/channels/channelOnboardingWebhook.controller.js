@@ -87,7 +87,7 @@ const verify = (req, res) => {
  * (el ping de verificación, un evento que no nos interesa) es un no-op
  * silencioso, mismo criterio que gupshupWebhook() con `messages`.
  */
-const webhook = (req, res) => {
+const webhook = async (req, res, next) => {
   if (!verifyOnboardingWebhookAuth(req.headers)) {
     logger.warn('[channelOnboardingWebhook] request sin credenciales válidas', {
       appId: req.params.appId,
@@ -96,24 +96,19 @@ const webhook = (req, res) => {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
 
-  // ACK inmediato — mismo criterio que gupshupWebhook(): procesar en
-  // background, nunca dejar a Gupshup esperando el resultado del guardado.
-  res.status(200).json({ received: true });
-
-  const { appId } = req.params;
-  const payload = req.body;
-
-  if (channelOnboardingCompletion.isAccountVerifiedEvent(payload)) {
-    channelOnboardingCompletion.handleGupshupAccountVerified(appId).catch((err) =>
-      logger.error('[channelOnboardingWebhook] handleGupshupAccountVerified error:', { message: err.message, stack: err.stack, appId })
-    );
-    return;
+  try {
+    const { appId } = req.params;
+    const payload = req.body;
+    if (channelOnboardingCompletion.isAccountVerifiedEvent(payload)) {
+      await channelOnboardingCompletion.handleGupshupAccountVerified(appId);
+    } else {
+      logger.info('[channelOnboardingWebhook] payload recibido, no es account-event/ACCOUNT_VERIFIED — no-op', { appId });
+    }
+    return res.status(200).json({ received: true });
+  } catch (err) {
+    if (next) return next(err);
+    throw err;
   }
-
-  // Cualquier otro payload (el ping de verificación de Gupshup al crear la
-  // suscripción, u otro evento que no nos interesa) — no-op, ya se
-  // respondió 2xx arriba.
-  logger.info('[channelOnboardingWebhook] payload recibido, no es account-event/ACCOUNT_VERIFIED — no-op', { appId });
 };
 
 module.exports = { verify, webhook, ONBOARDING_WEBHOOK_HEADER, verifyOnboardingWebhookAuth };

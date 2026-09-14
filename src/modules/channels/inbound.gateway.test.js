@@ -40,6 +40,7 @@ jest.mock('./queues/inbound.queue');
 
 const mongoose = require('mongoose');
 const webhookService = require('../webhooks/webhook.service');
+const { enqueueInbound } = require('./queues/inbound.queue');
 const Business = require('../businesses/business.model');
 const WhatsAppChannel = require('./whatsappChannel.model');
 const InboundEvent = require('./inboundEvent.model');
@@ -100,25 +101,17 @@ describe('inboundGateway#handle() — camino síncrono real (WHATSAPP_QUEUE_PROC
     });
 
     mockNormalizeInboundEvent.mockReturnValue([mensajeNormalizado()]);
-    webhookService.processGupshupMessage.mockResolvedValue(undefined);
+    enqueueInbound.mockResolvedValue(undefined);
 
     await handle({ object: 'whatsapp_business_account', entry: [{}] });
-
-    expect(webhookService.processGupshupMessage).toHaveBeenCalledWith(
-      { phone: '51987654321', text: 'Hola, quiero info', name: 'Lead de prueba', mediaType: undefined, mediaSourceUrl: undefined },
-      expect.anything(),
-      expect.anything() // PR-10a: 3er argumento, el channel._id resuelto
-    );
-    const [, tenantIdPasado, channelIdPasado] = webhookService.processGupshupMessage.mock.calls[0];
-    expect(String(tenantIdPasado)).toBe(String(business._id));
-    expect(String(channelIdPasado)).toBe(String(canalDedicado._id)); // PR-10a
 
     const event = await InboundEvent.findOne({ providerMessageId: 'msg-1' });
     expect(event).not.toBeNull();
     expect(String(event.channel)).toBe(String(canalDedicado._id));
     expect(String(event.tenantId)).toBe(String(business._id));
-    expect(event.status).toBe('processed');
-    expect(event.processedAt).toBeInstanceOf(Date);
+    expect(event.status).toBe('received');
+    expect(enqueueInbound).toHaveBeenCalledWith(event._id);
+    expect(webhookService.processGupshupMessage).not.toHaveBeenCalled();
   });
 
   test('mismo caso pero canal PLATFORM: resuelve y procesa exactamente igual (paridad, no hay rama especial por tipo de canal)', async () => {
@@ -133,20 +126,20 @@ describe('inboundGateway#handle() — camino síncrono real (WHATSAPP_QUEUE_PROC
     });
 
     mockNormalizeInboundEvent.mockReturnValue([mensajeNormalizado()]);
-    webhookService.processGupshupMessage.mockResolvedValue(undefined);
+    enqueueInbound.mockResolvedValue(undefined);
 
     await handle({ object: 'whatsapp_business_account', entry: [{}] });
 
     const event = await InboundEvent.findOne({ providerMessageId: 'msg-1' });
     expect(String(event.channel)).toBe(String(canalPlatform._id));
-    expect(event.status).toBe('processed');
+    expect(event.status).toBe('received');
   });
 
   test('ningún canal matchea el payload: se loguea warning, no se crea InboundEvent, no se llama a processGupshupMessage', async () => {
     const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => {});
     mockNormalizeInboundEvent.mockReturnValue([mensajeNormalizado({ channelIdentifiers: { phoneNumberId: 'pnid-que-no-existe' } })]);
 
-    await handle({ object: 'whatsapp_business_account', entry: [{}] });
+    await expect(handle({ object: 'whatsapp_business_account', entry: [{}] })).rejects.toThrow(/resolver un WhatsAppChannel/);
 
     expect(await InboundEvent.countDocuments({})).toBe(0);
     expect(webhookService.processGupshupMessage).not.toHaveBeenCalled();
@@ -173,12 +166,12 @@ describe('inboundGateway#handle() — camino síncrono real (WHATSAPP_QUEUE_PROC
 
     mockNormalizeInboundEvent.mockReturnValue([mensajeNormalizado({ channelIdentifiers: { phoneNumberId: 'pnid-gateway-tenant-invalido' } })]);
 
-    await handle({ object: 'whatsapp_business_account', entry: [{}] });
+    await expect(handle({ object: 'whatsapp_business_account', entry: [{}] })).rejects.toMatchObject({ statusCode: 403 });
 
     expect(await InboundEvent.countDocuments({})).toBe(0);
     expect(webhookService.processGupshupMessage).not.toHaveBeenCalled();
     expect(errorSpy).toHaveBeenCalledWith(
-      '[inboundGateway] tenant inválido, se descarta el mensaje',
+      '[inboundGateway] tenant inválido, el mensaje no se acepta',
       expect.objectContaining({ channelId: canal._id })
     );
 
@@ -198,25 +191,25 @@ describe('inboundGateway#handle() — camino síncrono real (WHATSAPP_QUEUE_PROC
     });
 
     mockNormalizeInboundEvent.mockReturnValue([mensajeNormalizado({ channelIdentifiers: { phoneNumberId: 'pnid-gateway-duplicado' } })]);
-    webhookService.processGupshupMessage.mockResolvedValue(undefined);
+    enqueueInbound.mockResolvedValue(undefined);
 
     await handle({ object: 'whatsapp_business_account', entry: [{}] }); // primera vez: se procesa
     expect(await InboundEvent.countDocuments({})).toBe(1);
-    expect(webhookService.processGupshupMessage).toHaveBeenCalledTimes(1);
+    expect(enqueueInbound).toHaveBeenCalledTimes(1);
 
     await handle({ object: 'whatsapp_business_account', entry: [{}] }); // reentrega del mismo providerMessageId
 
     expect(await InboundEvent.countDocuments({})).toBe(1); // no se creó un segundo
-    expect(webhookService.processGupshupMessage).toHaveBeenCalledTimes(1); // no se volvió a llamar
+    expect(enqueueInbound).toHaveBeenCalledTimes(2); // helper usa el mismo jobId y no duplica el job real
     expect(infoSpy).toHaveBeenCalledWith(
-      '[inboundGateway] mensaje duplicado (idempotencia), se ignora',
+      '[inboundGateway] mensaje duplicado (idempotencia), no se persiste otra vez',
       expect.objectContaining({ providerMessageId: 'msg-1' })
     );
 
     infoSpy.mockRestore();
   });
 
-  test('processGupshupMessage() falla: el InboundEvent queda failed con el error, y el error se propaga (handleOne lo relanza)', async () => {
+  test('enqueue falla: el InboundEvent queda failed y no se responde como aceptado', async () => {
     await WhatsAppChannel.create({
       tenantId: business._id,
       businessId: business._id,
@@ -228,17 +221,17 @@ describe('inboundGateway#handle() — camino síncrono real (WHATSAPP_QUEUE_PROC
     });
 
     mockNormalizeInboundEvent.mockReturnValue([mensajeNormalizado({ channelIdentifiers: { phoneNumberId: 'pnid-gateway-falla' } })]);
-    webhookService.processGupshupMessage.mockRejectedValue(new Error('OpenAI caído'));
+    enqueueInbound.mockRejectedValue(new Error('Redis caído'));
 
     // handle() (a diferencia de handleOne()) nunca relanza — un mensaje del
     // batch no debe tumbar el resto (comportamiento ya documentado en el
     // propio archivo). Se prueba a través de handle(), no llamando a
     // handleOne() directo (no exportada), para cubrir el contrato real.
-    await expect(handle({ object: 'whatsapp_business_account', entry: [{}] })).resolves.toBeUndefined();
+    await expect(handle({ object: 'whatsapp_business_account', entry: [{}] })).rejects.toThrow('Redis caído');
 
     const event = await InboundEvent.findOne({ providerMessageId: 'msg-1' });
     expect(event.status).toBe('failed');
-    expect(event.error).toBe('OpenAI caído');
+    expect(event.error).toBe('Redis caído');
   });
 
   test('payload sin mensajes reconocibles: se loguea warning, nunca se llama a channelResolver/processGupshupMessage', async () => {
@@ -263,13 +256,13 @@ describe('inboundGateway#handle() — camino síncrono real (WHATSAPP_QUEUE_PROC
       mensajeNormalizado({ providerMessageId: 'msg-batch-1', channelIdentifiers: { phoneNumberId: 'pnid-inexistente' } }), // no matchea -> no-op, no error
       mensajeNormalizado({ providerMessageId: 'msg-batch-2', channelIdentifiers: { phoneNumberId: 'pnid-gateway-batch' } }),
     ]);
-    webhookService.processGupshupMessage.mockResolvedValue(undefined);
+    enqueueInbound.mockResolvedValue(undefined);
 
-    await handle({ object: 'whatsapp_business_account', entry: [{}] });
+    await expect(handle({ object: 'whatsapp_business_account', entry: [{}] })).rejects.toThrow(/resolver un WhatsAppChannel/);
 
-    expect(webhookService.processGupshupMessage).toHaveBeenCalledTimes(1);
+    expect(enqueueInbound).toHaveBeenCalledTimes(1);
     const event2 = await InboundEvent.findOne({ providerMessageId: 'msg-batch-2' });
-    expect(event2.status).toBe('processed');
+    expect(event2.status).toBe('received');
   });
 
   test('legacy (sin phoneNumberId/wabaId, solo appName): resuelve por providerAccountId igual que v3', async () => {
@@ -281,13 +274,13 @@ describe('inboundGateway#handle() — camino síncrono real (WHATSAPP_QUEUE_PROC
     mockNormalizeInboundEvent.mockReturnValue([
       mensajeNormalizado({ channelIdentifiers: { format: 'legacy', appName: 'AppLegacyGateway' } }),
     ]);
-    webhookService.processGupshupMessage.mockResolvedValue(undefined);
+    enqueueInbound.mockResolvedValue(undefined);
 
     await handle({ object: 'legacy', app: 'AppLegacyGateway' });
 
     const event = await InboundEvent.findOne({ providerMessageId: 'msg-1' });
     expect(String(event.channel)).toBe(String(canal._id));
-    expect(event.status).toBe('processed');
+    expect(event.status).toBe('received');
   });
 
   test('media entrante (imagen sin caption): mediaType/mediaSourceUrl se persisten en el InboundEvent y se pasan a processGupshupMessage', async () => {
@@ -302,17 +295,13 @@ describe('inboundGateway#handle() — camino síncrono real (WHATSAPP_QUEUE_PROC
       mediaType: 'image',
       mediaSourceUrl: 'https://filemanager.gupshup.io/x/foto.jpg',
     })]);
-    webhookService.processGupshupMessage.mockResolvedValue(undefined);
+    enqueueInbound.mockResolvedValue(undefined);
 
     await handle({ object: 'whatsapp_business_account', entry: [{}] });
 
     const event = await InboundEvent.findOne({ providerMessageId: 'msg-1' });
     expect(event.mediaType).toBe('image');
     expect(event.mediaSourceUrl).toBe('https://filemanager.gupshup.io/x/foto.jpg');
-    expect(webhookService.processGupshupMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ mediaType: 'image', mediaSourceUrl: 'https://filemanager.gupshup.io/x/foto.jpg' }),
-      expect.anything(),
-      expect.anything() // PR-10a
-    );
+    expect(enqueueInbound).toHaveBeenCalledWith(event._id);
   });
 });

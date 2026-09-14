@@ -15,6 +15,7 @@ const pushService = require('../../push/push.service');
 const DefaultAgentRuntime = require('../defaultAgentRuntime');
 const { normalizeToE164 } = require('../../../utils/phone');
 const logger = require('../../../utils/logger');
+const channelRepository = require('../channel.repository');
 
 /**
  * inbound.worker.js — sub-fase 1.d. Consume whatsapp-inbound (solo cuando
@@ -59,6 +60,10 @@ async function ensureLeadAndConversation({ businessId, phone, text, name, mediaT
     logger.warn('[inboundWorker] business no encontrado', { businessId });
     return null;
   }
+  const channel = await channelRepository.findByIdForTenant(channelId, businessId);
+  if (!channel || channel.status !== 'active') {
+    throw new Error('Canal entrante fuera del tenant o no operativo');
+  }
 
   // Mismo bug y mismo fix que webhook.service.js#processGupshupMessage():
   // el phone que manda Gupshup viene crudo (sin "+"), pero todo Lead se
@@ -102,13 +107,13 @@ async function ensureLeadAndConversation({ businessId, phone, text, name, mediaT
     await lead.save();
   }
 
-  let conversation = await Conversation.findOne({ business: businessId, lead: lead._id, status: 'active', isDeleted: false });
+  let conversation = await Conversation.findOne({ business: businessId, lead: lead._id, whatsappChannel: channelId, status: 'active', isDeleted: false });
   if (!conversation) {
     // PR-10a: whatsappChannel = channelId (el WhatsAppChannel real que
     // recibió este mensaje, ya resuelto por channelResolver.resolve() en
     // inbound.gateway.js antes de encolar) — mismo criterio que
     // webhook.service.js#processGupshupMessage().
-    conversation = await Conversation.create({ business: businessId, lead: lead._id, channel: 'whatsapp', whatsappChannel: channelId, status: 'active', aiEnabled: true });
+    conversation = await Conversation.create({ business: businessId, tenantId: businessId, lead: lead._id, channel: 'whatsapp', whatsappChannel: channelId, whatsappChannelStatus: 'ready', status: 'active', aiEnabled: true });
   }
 
   // Ventana de 24h de WhatsApp Business (Meta) — mismo criterio que
@@ -124,7 +129,6 @@ async function processInboundJob(job) {
   const { inboundEventId } = job.data;
   const event = await InboundEvent.findById(inboundEventId);
   if (!event) throw new Error(`InboundEvent ${inboundEventId} no encontrado`);
-
   // Idempotencia ante reintentos de BullMQ (hallazgo de code review): si ya
   // existe un OutboundEvent generado a partir de este InboundEvent, un
   // intento anterior de este mismo job ya llamó a la IA y encoló la
@@ -133,10 +137,18 @@ async function processInboundJob(job) {
   // segunda respuesta para el mismo mensaje entrante.
   const existingOutbound = await OutboundEvent.findOne({ sourceInboundEvent: event._id });
   if (existingOutbound) {
+    if (['pending', 'enqueue_failed', 'queued', 'retryable_failed'].includes(existingOutbound.status)) {
+      await enqueueOutbound(existingOutbound._id);
+    }
     logger.info('[inboundWorker] ya existe una respuesta generada para este InboundEvent (reintento), no se reprocesa', { inboundEventId, outboundEventId: existingOutbound._id.toString() });
     event.status = 'processed';
     event.processedAt = event.processedAt || new Date();
     await event.save();
+    return;
+  }
+
+  if (event.status === 'processed') {
+    logger.info('[inboundWorker] InboundEvent ya procesado, no-op idempotente', { inboundEventId });
     return;
   }
 
@@ -179,7 +191,8 @@ async function processInboundJob(job) {
   await aiService.saveInboundMessage(
     conversation._id,
     event.text,
-    event.mediaSourceUrl ? { mediaType: event.mediaType, sourceUrl: event.mediaSourceUrl } : undefined
+    event.mediaSourceUrl ? { mediaType: event.mediaType, sourceUrl: event.mediaSourceUrl } : undefined,
+    { providerMessageId: event.providerMessageId, inboundEventId: event._id }
   );
 
   if (!conversation.aiEnabled) {

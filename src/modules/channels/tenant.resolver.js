@@ -18,6 +18,7 @@ const Business = require('../businesses/business.model');
  * @throws {AppError} si el negocio no existe o está inactivo
  */
 async function resolve(channel) {
+  assertTenantScope(channel.tenantId, channel.businessId);
   const business = await Business.findOne({ _id: channel.tenantId, isActive: true }).select('_id');
 
   if (!business) {

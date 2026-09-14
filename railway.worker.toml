@@ -6,3 +6,7 @@ buildCommand = "npm install --production=false"
 startCommand = "node worker.js"
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
+
+[healthcheck]
+path = "/health"
+timeout = 10

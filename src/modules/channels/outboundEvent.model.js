@@ -9,12 +9,28 @@ const mongoose = require('mongoose');
 // 'skipped': la IA generó la respuesta pero un agente humano tomó control
 // (aiEnabled=false) antes de que el outbound worker llegara a mandarla —
 // ver outbound.worker.js (hallazgo de code review, sub-fase 1.d).
-const STATUSES = ['pending', 'processing', 'sent', 'failed', 'skipped'];
+const STATUSES = [
+  'pending',
+  'enqueue_failed',
+  'queued',
+  'processing',
+  'sending',
+  'retryable_failed',
+  'sent',
+  'permanently_failed',
+  // El proceso cayó durante la llamada externa y no existe confirmación
+  // suficiente para reenviar sin riesgo de duplicar en el proveedor.
+  'delivery_uncertain',
+  // Compatibilidad con eventos creados antes del ciclo durable nuevo.
+  'failed',
+  'skipped',
+];
 
 const outboundEventSchema = new mongoose.Schema(
   {
     channel: { type: mongoose.Schema.Types.ObjectId, ref: 'WhatsAppChannel', required: true },
     tenantId: { type: mongoose.Schema.Types.ObjectId, ref: 'Business', required: true },
+    provider: { type: String, default: 'gupshup' },
     conversation: { type: mongoose.Schema.Types.ObjectId, ref: 'Conversation', required: true },
     // Referencia al InboundEvent que originó esta respuesta automática (solo
     // aplica a respuestas de la IA, no a envíos manuales de un agente —
@@ -27,7 +43,13 @@ const outboundEventSchema = new mongoose.Schema(
     text: { type: String, required: true },
     status: { type: String, enum: STATUSES, default: 'pending' },
     providerMessageId: { type: String, default: null }, // id que devuelve Gupshup al aceptar el envío
+    providerStatus: { type: String, default: null },
+    providerStatusAt: { type: Date, default: null },
     error: { type: String, default: null },
+    errorType: { type: String, default: null },
+    attemptCount: { type: Number, default: 0, min: 0 },
+    lastAttemptAt: { type: Date, default: null },
+    terminalAt: { type: Date, default: null },
     sentAt: { type: Date, default: null },
   },
   { timestamps: true }

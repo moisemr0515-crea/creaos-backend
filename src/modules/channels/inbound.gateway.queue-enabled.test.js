@@ -74,7 +74,7 @@ describe('inboundGateway#handle() — rama de cola (WHATSAPP_QUEUE_PROCESSING_EN
 
     expect(webhookService.processGupshupMessage).not.toHaveBeenCalled();
     const event = await InboundEvent.findOne({ providerMessageId: 'msg-cola-1' });
-    expect(event.status).toBe('processing'); // el Worker (inbound.worker.js) es quien lo marca 'processed'
+    expect(event.status).toBe('received'); // durable y encolado; el Worker lo reclama después
     expect(enqueueInbound).toHaveBeenCalledWith(event._id);
   });
 
@@ -87,8 +87,7 @@ describe('inboundGateway#handle() — rama de cola (WHATSAPP_QUEUE_PROCESSING_EN
     mockNormalizeInboundEvent.mockReturnValue([mensajeNormalizado({ providerMessageId: 'msg-cola-2', channelIdentifiers: { phoneNumberId: 'pnid-gateway-cola-2' } })]);
     enqueueInbound.mockRejectedValue(new Error('Redis caído'));
 
-    // handle() nunca relanza (aísla el batch) — se confirma que no explota.
-    await expect(handle({ object: 'whatsapp_business_account', entry: [{}] })).resolves.toBeUndefined();
+    await expect(handle({ object: 'whatsapp_business_account', entry: [{}] })).rejects.toThrow('Redis caído');
 
     const event = await InboundEvent.findOne({ providerMessageId: 'msg-cola-2' });
     expect(event.status).toBe('failed');

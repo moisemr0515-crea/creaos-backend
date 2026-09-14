@@ -68,7 +68,7 @@ describe('automation.engine#execSendTemplate()', () => {
     expect(channelService.sendTemplate).toHaveBeenCalledWith(FAKE_CHANNEL._id, lead.phone, {
       id: 'tpl_seguimiento',
       params: ['Juan'],
-    });
+    }, lead.business);
     expect(channelService.sendMessage).not.toHaveBeenCalled();
     expect(resultado).toEqual({ conversationId: expect.anything(), sentVia: 'template', templateId: 'tpl_seguimiento' });
 
@@ -101,7 +101,7 @@ describe('automation.engine#execSendTemplate()', () => {
       lead
     );
 
-    expect(channelService.sendMessage).toHaveBeenCalledWith(FAKE_CHANNEL._id, lead.phone, '¿Seguimos en contacto?');
+    expect(channelService.sendMessage).toHaveBeenCalledWith(FAKE_CHANNEL._id, lead.phone, '¿Seguimos en contacto?', lead.business);
     expect(channelService.sendTemplate).not.toHaveBeenCalled();
     expect(resultado.sentVia).toBe('text');
   });

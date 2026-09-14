@@ -17,7 +17,15 @@ function getInboundQueue() {
  * @param {string} inboundEventId — _id del InboundEvent ya persistido
  */
 async function enqueueInbound(inboundEventId) {
-  return getInboundQueue().add('process-inbound', { inboundEventId: String(inboundEventId) });
+  const jobId = String(inboundEventId);
+  const queue = getInboundQueue();
+  const existing = await queue.getJob(jobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (state === 'failed') await existing.retry();
+    return existing;
+  }
+  return queue.add('process-inbound', { inboundEventId: jobId }, { jobId });
 }
 
 module.exports = { getInboundQueue, enqueueInbound };

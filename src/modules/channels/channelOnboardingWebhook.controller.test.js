@@ -85,15 +85,14 @@ describe('channelOnboardingWebhook.controller', () => {
       };
       const res = mockRes();
 
-      webhook(req, res);
-      await Promise.resolve(); // deja correr el .catch() en background
+      await webhook(req, res, jest.fn());
 
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.json).toHaveBeenCalledWith({ received: true });
       expect(channelOnboardingCompletion.handleGupshupAccountVerified).toHaveBeenCalledWith('app-123');
     });
 
-    test('credenciales válidas + payload que NO es ACCOUNT_VERIFIED (ej. el ping de verificación de Gupshup): ACK 200, no-op — nunca llama a handleGupshupAccountVerified', () => {
+    test('credenciales válidas + payload que NO es ACCOUNT_VERIFIED (ej. el ping de verificación de Gupshup): ACK 200, no-op — nunca llama a handleGupshupAccountVerified', async () => {
       channelOnboardingCompletion.isAccountVerifiedEvent.mockReturnValue(false);
 
       const req = {
@@ -103,14 +102,14 @@ describe('channelOnboardingWebhook.controller', () => {
       };
       const res = mockRes();
 
-      webhook(req, res);
+      await webhook(req, res, jest.fn());
 
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.json).toHaveBeenCalledWith({ received: true });
       expect(channelOnboardingCompletion.handleGupshupAccountVerified).not.toHaveBeenCalled();
     });
 
-    test('handleGupshupAccountVerified() falla en background: no revienta el proceso, ya se había respondido 200', async () => {
+    test('handleGupshupAccountVerified() falla: no responde 2xx y delega al middleware', async () => {
       channelOnboardingCompletion.isAccountVerifiedEvent.mockReturnValue(true);
       channelOnboardingCompletion.handleGupshupAccountVerified.mockRejectedValue(new Error('boom'));
 
@@ -121,10 +120,10 @@ describe('channelOnboardingWebhook.controller', () => {
       };
       const res = mockRes();
 
-      expect(() => webhook(req, res)).not.toThrow();
-      await Promise.resolve().then(() => Promise.resolve()); // deja asentar el .catch()
-
-      expect(res.status).toHaveBeenCalledWith(200);
+      const next = jest.fn();
+      await webhook(req, res, next);
+      expect(res.status).not.toHaveBeenCalledWith(200);
+      expect(next).toHaveBeenCalledWith(expect.objectContaining({ message: 'boom' }));
     });
   });
 });

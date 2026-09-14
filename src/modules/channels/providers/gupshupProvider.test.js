@@ -39,6 +39,7 @@ describe('GupshupProvider', () => {
     outboundApi: 'legacy',
     phoneNumber: '51900000001',
     providerAccountId: 'creaos507f1f77bcf86cd799439011',
+    status: 'active',
   };
 
   const channelPlatform = {
@@ -47,6 +48,7 @@ describe('GupshupProvider', () => {
     outboundApi: 'legacy',
     phoneNumber: '51900000000',
     providerAccountId: 'CREAOS',
+    status: 'active',
   };
 
   // PR2 — canal DEDICATED correctamente provisionado y migrado a Partner:
@@ -58,10 +60,13 @@ describe('GupshupProvider', () => {
     phoneNumber: '51967424911',
     providerAccountId: 'creaos6a9b96597ed1485fda9fade3',
     providerAppId: 'app-real-de-gupshup',
+    status: 'active',
   };
 
   beforeEach(() => {
     jest.clearAllMocks();
+    channelCredentialsService.resolveCredentials.mockReset();
+    channelCredentialsService.resolveCredentials.mockResolvedValue({ appToken: null, apiKey: 'apikey-default' });
     provider = new GupshupProvider();
   });
 
@@ -431,8 +436,6 @@ describe('GupshupProvider', () => {
   // real ya conectado). listTemplates() no tiene cambios, se deja aparte.
   describe('getChannelStatus()', () => {
     test('devuelve el phoneNumber/connectionType del canal DEDICATED real, no el compartido de plataforma', async () => {
-      gupshupClient.estaConfigurado.mockReturnValue(true);
-
       const status = await provider.getChannelStatus(channelDedicado);
 
       expect(status).toEqual({
@@ -440,41 +443,35 @@ describe('GupshupProvider', () => {
         provider: 'gupshup',
         phoneNumber: channelDedicado.phoneNumber,
         connectionType: 'DEDICATED',
+        channelId: channelDedicado._id,
+        status: 'active',
       });
-      expect(channelCredentialsService.resolveCredentials).not.toHaveBeenCalled();
+      expect(channelCredentialsService.resolveCredentials).toHaveBeenCalledWith(channelDedicado);
     });
 
     test('devuelve el phoneNumber/connectionType del canal PLATFORM cuando el canal resuelto es ese', async () => {
-      gupshupClient.estaConfigurado.mockReturnValue(true);
-
       const status = await provider.getChannelStatus(channelPlatform);
 
       expect(status.phoneNumber).toBe(channelPlatform.phoneNumber);
       expect(status.connectionType).toBe('PLATFORM');
     });
 
-    test('sin Gupshup configurado (estaConfigurado():false), phoneNumber/connectionType quedan null aunque el canal exista', async () => {
-      gupshupClient.estaConfigurado.mockReturnValue(false);
-
-      const status = await provider.getChannelStatus(channelDedicado);
-
-      expect(status).toEqual({
-        connected: false,
-        provider: 'gupshup',
-        phoneNumber: null,
-        connectionType: null,
-      });
+    test('credenciales del canal no resolubles: falla cerrado en vez de usar configuración global', async () => {
+      channelCredentialsService.resolveCredentials.mockRejectedValue(new Error('sin credenciales del canal'));
+      await expect(provider.getChannelStatus(channelDedicado)).rejects.toThrow('sin credenciales del canal');
     });
   });
 
-  describe('listTemplates() — sin cambios en este fix', () => {
-    test('sigue sin usar el channel ni resolveCredentials()', async () => {
+  describe('listTemplates() — credenciales por canal', () => {
+    test('usa las credenciales y app del channel, no globals', async () => {
+      channelCredentialsService.resolveCredentials.mockResolvedValue({ apiKey: 'apikey-tenant' });
       gupshupClient.listTemplates.mockResolvedValue([{ id: 'tpl-1' }]);
 
       const templates = await provider.listTemplates(channelDedicado);
 
       expect(templates).toEqual([{ id: 'tpl-1' }]);
-      expect(channelCredentialsService.resolveCredentials).not.toHaveBeenCalled();
+      expect(channelCredentialsService.resolveCredentials).toHaveBeenCalledWith(channelDedicado);
+      expect(gupshupClient.listTemplates).toHaveBeenCalledWith(expect.objectContaining({ apiKey: 'apikey-tenant', appName: channelDedicado.providerAccountId }));
     });
   });
 });

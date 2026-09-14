@@ -65,6 +65,7 @@ const validarFila = (rowData, rowNum) => {
 };
 
 const procesarImportacion = async (businessId, actorId, { file, columnMapping = {}, defaults = {} }) => {
+  await require('../users/userScope.service').assertActiveUserInBusiness(defaults.assignedTo, businessId);
   const startedAt = new Date();
   const ext = file.originalname.split('.').pop().toLowerCase();
 

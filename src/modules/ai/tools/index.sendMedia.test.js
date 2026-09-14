@@ -72,7 +72,7 @@ describe('ai/tools/index — send_media', () => {
     expect(channelService.sendMedia).toHaveBeenCalledWith('channel-real-id', '+51987654321', {
       url: 'https://cloudinary.test/logo.png',
       type: 'image',
-    });
+    }, business._id);
     expect(result).toEqual({ success: true, message: 'Se envió logo al lead por WhatsApp.' });
   });
 
@@ -82,7 +82,7 @@ describe('ai/tools/index — send_media', () => {
     expect(channelService.sendMedia).toHaveBeenCalledWith('channel-real-id', '+51987654321', {
       url: 'https://cloudinary.test/presentacion.mp4',
       type: 'video',
-    });
+    }, business._id);
   });
 
   test('resource:"brochure" — resuelve business.brochureUrl + brochureFilename, arma type:"document" con filename (confirmado en el Paso 1 que Gupshup lo acepta ahí)', async () => {
@@ -92,7 +92,7 @@ describe('ai/tools/index — send_media', () => {
       url: 'https://cloudinary.test/brochure.pdf',
       type: 'document',
       filename: 'brochure-creaos.pdf',
-    });
+    }, business._id);
   });
 
   test('el modelo NUNCA puede mandar una URL libre — un "resource" fuera del enum se rechaza sin llamar a channelService', async () => {

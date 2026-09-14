@@ -441,9 +441,12 @@ ${buildObjectionMicroClosingGuidance(leadQualification)}`;
  *   TEMPORAL de Gupshup — nunca se guarda tal cual, se re-aloja primero.
  * @returns {Promise<import('./conversation.model')>} la conversación actualizada
  */
-const saveInboundMessage = async (conversationId, text, media) => {
+const saveInboundMessage = async (conversationId, text, media, metadata = {}) => {
   const conversation = await Conversation.findById(conversationId);
   if (!conversation) throw new AppError('Conversación no encontrada', 404);
+  if (metadata.providerMessageId && conversation.messages.some((message) => message.metadata?.providerMessageId === metadata.providerMessageId)) {
+    return conversation;
+  }
 
   const mensaje = {
     role: 'user',
@@ -453,6 +456,7 @@ const saveInboundMessage = async (conversationId, text, media) => {
     // del LEAD indistinguible de una respuesta real de la IA para
     // cualquiera que mire sentBy sin filtrar por role primero.
     sentBy: 'lead',
+    metadata,
   };
 
   if (media?.sourceUrl) {
@@ -461,7 +465,7 @@ const saveInboundMessage = async (conversationId, text, media) => {
       if (!channel) {
         throw new Error(`Ningún WhatsAppChannel activo para el tenant ${conversation.business}`);
       }
-      const { buffer } = await channelService.downloadMedia(channel._id, media.sourceUrl);
+      const { buffer } = await channelService.downloadMedia(channel._id, media.sourceUrl, conversation.business);
       const resultado = await cloudinaryUtil.subirBuffer(buffer, {
         folder: `creaos/conversations/${conversationId}/media`,
         resource_type: media.mediaType,
@@ -1099,7 +1103,7 @@ const sendAgentMessage = async (conversationId, text, actor) => {
         logger.warn(`sendAgentMessage: sin WhatsAppChannel activo para el tenant ${conversation.business} (conversación ${conversationId})`);
         throw new Error(`Ningún WhatsAppChannel activo para el tenant ${conversation.business}`);
       }
-      await channelService.sendMessage(channel._id, lead.phone, text);
+      await channelService.sendMessage(channel._id, lead.phone, text, conversation.business);
       mensaje.whatsappStatus = 'sent';
     } catch (error) {
       // No relanzar: el mensaje se guarda igual, solo queda marcado como fallido.
@@ -1179,7 +1183,7 @@ const sendTemplateMessage = async (conversationId, template, actor) => {
       logger.warn(`sendTemplateMessage: sin WhatsAppChannel activo para el tenant ${conversation.business} (conversación ${conversationId})`);
       throw new Error(`Ningún WhatsAppChannel activo para el tenant ${conversation.business}`);
     }
-    await channelService.sendTemplate(channel._id, lead.phone, template);
+    await channelService.sendTemplate(channel._id, lead.phone, template, conversation.business);
     mensaje.whatsappStatus = 'sent';
   } catch (error) {
     logger.error(`No se pudo enviar plantilla de WhatsApp (conversación ${conversationId}): ${error.message}`);
@@ -1284,7 +1288,7 @@ const sendMediaMessage = async (conversationId, media, actor) => {
       logger.warn(`sendMediaMessage: sin WhatsAppChannel activo para el tenant ${conversation.business} (conversación ${conversationId})`);
       throw new Error(`Ningún WhatsAppChannel activo para el tenant ${conversation.business}`);
     }
-    await channelService.sendMedia(channel._id, lead.phone, { url, type: mediaType, caption: media.caption });
+    await channelService.sendMedia(channel._id, lead.phone, { url, type: mediaType, caption: media.caption }, conversation.business);
     mensaje.whatsappStatus = 'sent';
   } catch (error) {
     // No relanzar: el mensaje (y el archivo, ya subido a Cloudinary) se

@@ -104,16 +104,16 @@ const estaConfigurado = () =>
  *
  * @returns {Promise<Array>} lista cruda de plantillas tal como las devuelve Gupshup
  */
-async function listTemplates() {
-  if (!GUPSHUP_APP_ID) {
+async function listTemplates({ apiKey = GUPSHUP_API_KEY, appName = GUPSHUP_APP_ID } = {}) {
+  if (!appName) {
     throw new Error('GUPSHUP_APP_ID no configurado — requerido para listar plantillas');
   }
 
-  logger.info('[gupshup] listando plantillas', { appId: GUPSHUP_APP_ID });
+  logger.info('[gupshup] listando plantillas', { appId: appName });
 
-  const response = await fetch(`https://api.gupshup.io/wa/app/${GUPSHUP_APP_ID}/template`, {
+  const response = await fetch(`https://api.gupshup.io/wa/app/${appName}/template`, {
     method: 'GET',
-    headers: { apikey: GUPSHUP_API_KEY },
+    headers: { apikey: apiKey },
   });
 
   if (!response.ok) {

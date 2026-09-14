@@ -4,7 +4,9 @@
 // operación de envío (eso es Fase 2.3, todavía sin implementar; este PR
 // solo deja resolveCredentials() lista y probada).
 const ChannelCredentials = require('./channelCredentials.model');
-const { decrypt } = require('./channelCrypto');
+const { decrypt, encrypt } = require('./channelCrypto');
+const WhatsAppChannel = require('./whatsappChannel.model');
+const Conversation = require('../ai/conversation.model');
 const { AppError } = require('../../middleware/error.middleware');
 const { GUPSHUP_API_KEY } = require('../../config/env');
 
@@ -41,12 +43,16 @@ const resolveCredentials = async (channel) => {
     // es lo único que gupshup.client.js usa hoy para mandar mensajes; el
     // rol exacto de appToken (¿solo para las Onboarding APIs, no para
     // envío?) todavía no está confirmado con Gupshup — ver blueprint §5.
+    if (!GUPSHUP_API_KEY) throw new AppError('GUPSHUP_API_KEY no configurada para el canal PLATFORM', 500);
     return { appToken: null, apiKey: GUPSHUP_API_KEY };
   }
 
-  const creds = await ChannelCredentials.findOne({ channel: channel._id });
+  const creds = await ChannelCredentials.findOne({ channel: channel._id, tenantId: channel.tenantId, provider: channel.provider });
   if (!creds) {
     throw new AppError(`Canal ${channel._id} sin ChannelCredentials — ¿onboarding incompleto?`, 500);
+  }
+  if (channel.credentialsReference && String(channel.credentialsReference) !== String(creds._id)) {
+    throw new AppError(`Canal ${channel._id}: referencia de credenciales inconsistente`, 500);
   }
 
   // La más reciente activa (no revocada) por createdAt explícito — NO por
@@ -90,4 +96,68 @@ const resolveCredentials = async (channel) => {
   }
 };
 
-module.exports = { resolveCredentials };
+async function loadScopedCredentials(channelId, tenantId) {
+  const channel = await WhatsAppChannel.findOne({ _id: channelId, tenantId, businessId: tenantId });
+  if (!channel) throw new AppError('Canal no encontrado', 404);
+  if (channel.connectionType === 'PLATFORM') throw new AppError('Las credenciales PLATFORM se administran mediante variables de entorno', 409);
+  const creds = await ChannelCredentials.findOne({ channel: channel._id, tenantId, provider: channel.provider });
+  if (!creds) throw new AppError('Credenciales del canal no encontradas', 404);
+  return { channel, creds };
+}
+
+async function rotateApiKey({ channelId, tenantId, apiKey, label }) {
+  if (!apiKey || typeof apiKey !== 'string') throw new AppError('apiKey es requerida', 400);
+  const { channel, creds } = await loadScopedCredentials(channelId, tenantId);
+  creds.apiKeys.push({ value: encrypt(apiKey, String(channel._id)), label: label || null });
+  await creds.save();
+  if (channel.status !== 'active' && channel.status !== 'disconnected') {
+    channel.status = 'active';
+    await channel.save();
+  }
+  return { credentialId: creds.apiKeys[creds.apiKeys.length - 1]._id, activeKeys: creds.apiKeys.filter((key) => !key.revokedAt).length };
+}
+
+async function revokeApiKey({ channelId, tenantId, credentialId, actorId, reason }) {
+  const { channel, creds } = await loadScopedCredentials(channelId, tenantId);
+  const entry = creds.apiKeys.id(credentialId);
+  if (!entry) throw new AppError('Credencial no encontrada', 404);
+  if (!entry.revokedAt) {
+    entry.revokedAt = new Date();
+    entry.revokedBy = actorId;
+    entry.revokedReason = reason || 'manual_revocation';
+    await creds.save();
+  }
+  const activeKeys = creds.apiKeys.filter((key) => !key.revokedAt).length;
+  if (activeKeys === 0) {
+    channel.status = 'suspended';
+    await channel.save();
+  }
+  return { credentialId: entry._id, activeKeys, channelStatus: channel.status };
+}
+
+async function revokeAllForChannel({ channelId, tenantId, actorId, reason = 'channel_disconnected' }) {
+  const channel = await WhatsAppChannel.findOne({ _id: channelId, tenantId, businessId: tenantId });
+  if (!channel) throw new AppError('Canal no encontrado', 404);
+  if (channel.connectionType === 'PLATFORM') {
+    channel.status = 'disconnected';
+    await channel.save();
+    await Conversation.updateMany({ business: tenantId, whatsappChannel: channel._id }, { $set: { whatsappChannelStatus: 'reassignment_required' } });
+    return { channelId: channel._id, status: channel.status, activeKeys: null };
+  }
+  const { creds } = await loadScopedCredentials(channelId, tenantId);
+  const now = new Date();
+  for (const entry of creds.apiKeys) {
+    if (!entry.revokedAt) {
+      entry.revokedAt = now;
+      entry.revokedBy = actorId;
+      entry.revokedReason = reason;
+    }
+  }
+  await creds.save();
+  channel.status = 'disconnected';
+  await channel.save();
+  await Conversation.updateMany({ business: tenantId, whatsappChannel: channel._id }, { $set: { whatsappChannelStatus: 'reassignment_required' } });
+  return { channelId: channel._id, status: channel.status, activeKeys: 0 };
+}
+
+module.exports = { resolveCredentials, rotateApiKey, revokeApiKey, revokeAllForChannel };

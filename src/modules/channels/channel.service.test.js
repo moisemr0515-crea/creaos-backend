@@ -82,79 +82,97 @@ describe('channelService#getChannelForConversation()', () => {
     expect(String(resuelto._id)).not.toBe(String(canalVentas._id));
   });
 
-  test('(b) conversación vieja SIN whatsappChannel poblado: cae al fallback ("primer canal activo del tenant"), no rompe', async () => {
+  test('(b) conversación vieja SIN whatsappChannel: falla explícitamente y exige reasignación', async () => {
     await crearCanal({ phoneNumberId: 'pnid-unico', phoneNumber: '+51900000005' });
     const conversacion = await crearConversacion(); // whatsappChannel queda default:null
 
-    const resuelto = await channelService.getChannelForConversation(conversacion, business._id);
-
-    expect(resuelto).not.toBeNull();
-    expect(resuelto.phoneNumberId).toBe('pnid-unico');
+    await expect(channelService.getChannelForConversation(conversacion, business._id)).rejects.toMatchObject({ statusCode: 409 });
+    const refreshed = await Conversation.findById(conversacion._id);
+    expect(refreshed.whatsappChannelStatus).toBe('reassignment_required');
   });
 
-  test('(b bis) conversation es null/undefined (caller sin conversación real disponible): cae al fallback igual, nunca explota', async () => {
+  test('(b bis) conversation null/undefined: falla cerrado, nunca selecciona el primer canal', async () => {
     await crearCanal({ phoneNumberId: 'pnid-sin-conv', phoneNumber: '+51900000006' });
 
-    const resueltoNull = await channelService.getChannelForConversation(null, business._id);
-    const resueltoUndefined = await channelService.getChannelForConversation(undefined, business._id);
-
-    expect(resueltoNull.phoneNumberId).toBe('pnid-sin-conv');
-    expect(resueltoUndefined.phoneNumberId).toBe('pnid-sin-conv');
+    await expect(channelService.getChannelForConversation(null, business._id)).rejects.toMatchObject({ statusCode: 403 });
+    await expect(channelService.getChannelForConversation(undefined, business._id)).rejects.toMatchObject({ statusCode: 403 });
   });
 
-  test('(c) tenant con 1 solo canal activo (el caso de hoy, 100% de la base): mismo resultado con o sin whatsappChannel poblado — CERO cambio de comportamiento', async () => {
+  test('(c) aun con un solo canal activo, solo una referencia explícita permite resolverlo', async () => {
     const unicoCanal = await crearCanal({ phoneNumberId: 'pnid-solo-uno', phoneNumber: '+51900000007' });
 
     const conversacionSinPoblar = await crearConversacion();
     const conversacionPoblada = await crearConversacion({ whatsappChannel: unicoCanal._id });
 
-    const resuelto1 = await channelService.getChannelForConversation(conversacionSinPoblar, business._id);
+    await expect(channelService.getChannelForConversation(conversacionSinPoblar, business._id)).rejects.toMatchObject({ statusCode: 409 });
     const resuelto2 = await channelService.getChannelForConversation(conversacionPoblada, business._id);
     const resuelto3 = await channelService.getChannelForTenant(business._id); // comportamiento de siempre, función sin tocar
 
-    expect(String(resuelto1._id)).toBe(String(unicoCanal._id));
     expect(String(resuelto2._id)).toBe(String(unicoCanal._id));
     expect(String(resuelto3._id)).toBe(String(unicoCanal._id));
   });
 
-  test('whatsappChannel apunta a un id que no existe (referencia rota, caso hoy imposible): cae al fallback y loguea warning', async () => {
+  test('whatsappChannel apunta a un id inexistente: falla cerrado, aunque haya otro canal activo', async () => {
     const canalReal = await crearCanal({ phoneNumberId: 'pnid-fallback-roto', phoneNumber: '+51900000008' });
     const idInexistente = new mongoose.Types.ObjectId();
     const conversacion = await crearConversacion({ whatsappChannel: idInexistente });
     const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => {});
 
-    const resuelto = await channelService.getChannelForConversation(conversacion, business._id);
-
-    expect(String(resuelto._id)).toBe(String(canalReal._id));
+    await expect(channelService.getChannelForConversation(conversacion, business._id)).rejects.toMatchObject({ statusCode: 409 });
     expect(warnSpy).toHaveBeenCalledWith(
-      '[channelService] conversation.whatsappChannel no resolvió a un WhatsAppChannel activo, cae al fallback de "primer canal activo del tenant"',
-      expect.objectContaining({ whatsappChannel: String(idInexistente), encontrado: false, statusEncontrado: null })
+      '[channelService] canal original no operativo; envío bloqueado hasta reasignación',
+      expect.objectContaining({ channelId: String(idInexistente) })
     );
 
     warnSpy.mockRestore();
   });
 
-  test('whatsappChannel apunta a un canal real pero YA NO activo (suspendido/desconectado): cae al fallback, no intenta mandar por un canal muerto', async () => {
+  test('whatsappChannel inactivo: no usa el otro número activo del tenant', async () => {
     const canalSuspendido = await crearCanal({ phoneNumberId: 'pnid-suspendido', phoneNumber: '+51900000009', status: 'suspended' });
     const canalSanoDeOtroTenant = await crearCanal({ phoneNumberId: 'pnid-sano', phoneNumber: '+51900000010' });
     const conversacion = await crearConversacion({ whatsappChannel: canalSuspendido._id });
     const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => {});
 
-    const resuelto = await channelService.getChannelForConversation(conversacion, business._id);
-
-    expect(String(resuelto._id)).toBe(String(canalSanoDeOtroTenant._id));
-    expect(String(resuelto._id)).not.toBe(String(canalSuspendido._id));
+    await expect(channelService.getChannelForConversation(conversacion, business._id)).rejects.toMatchObject({ statusCode: 409 });
     expect(warnSpy).toHaveBeenCalledWith(
       expect.any(String),
-      expect.objectContaining({ encontrado: true, statusEncontrado: 'suspended' })
+      expect.objectContaining({ channelId: String(canalSuspendido._id) })
     );
 
     warnSpy.mockRestore();
   });
 
-  test('sin ningún canal activo (ni por whatsappChannel ni por fallback): devuelve null, no explota', async () => {
+  test('sin ningún canal asignado: falla explícitamente', async () => {
     const conversacion = await crearConversacion();
-    const resuelto = await channelService.getChannelForConversation(conversacion, business._id);
-    expect(resuelto).toBeNull();
+    await expect(channelService.getChannelForConversation(conversacion, business._id)).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  test('reasignación explícita a canal activo del mismo tenant conserva auditoría', async () => {
+    const original = await crearCanal({ phoneNumberId: 'pnid-original', phoneNumber: '+51900000011', status: 'disconnected' });
+    const target = await crearCanal({ phoneNumberId: 'pnid-target', phoneNumber: '+51900000012' });
+    const conversation = await crearConversacion({ whatsappChannel: original._id });
+    const actorId = new mongoose.Types.ObjectId();
+    const updated = await channelService.reassignConversationChannel({ conversationId: conversation._id, channelId: target._id, tenantId: business._id, actorId });
+    expect(String(updated.whatsappChannel)).toBe(String(target._id));
+    expect(updated.whatsappChannelHistory).toHaveLength(1);
+    expect(String(updated.whatsappChannelHistory[0].from)).toBe(String(original._id));
+  });
+
+  test('reasignación a canal de otro tenant es rechazada', async () => {
+    const other = await Business.create({ name: 'Otro negocio' });
+    const foreign = await WhatsAppChannel.create({ tenantId: other._id, businessId: other._id, provider: 'gupshup', connectionType: 'DEDICATED', status: 'active', phoneNumberId: 'pnid-foreign', phoneNumber: '+51900000013' });
+    const conversation = await crearConversacion();
+    await expect(channelService.reassignConversationChannel({ conversationId: conversation._id, channelId: foreign._id, tenantId: business._id, actorId: new mongoose.Types.ObjectId() })).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  test('canal desconectado bloquea nuevos envíos antes de invocar al provider', async () => {
+    const channel = await crearCanal({ phoneNumberId: 'pnid-disconnected-send', phoneNumber: '+51900000014', status: 'disconnected' });
+    await expect(channelService.sendMessage(channel._id, '+51911111111', 'hola', business._id)).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  test('channelId de otro tenant no puede operarse aunque el id sea conocido', async () => {
+    const other = await Business.create({ name: 'Tenant externo' });
+    const foreign = await WhatsAppChannel.create({ tenantId: other._id, businessId: other._id, provider: 'gupshup', connectionType: 'DEDICATED', status: 'active', phoneNumberId: 'pnid-known-foreign', phoneNumber: '+51900000015' });
+    await expect(channelService.sendMessage(foreign._id, '+51911111111', 'hola', business._id)).rejects.toMatchObject({ statusCode: 404 });
   });
 });

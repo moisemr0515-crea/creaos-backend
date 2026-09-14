@@ -325,9 +325,9 @@ async function execSendTemplate(config, lead) {
 
   try {
     if (template) {
-      await channelService.sendTemplate(channel._id, lead.phone, template);
+      await channelService.sendTemplate(channel._id, lead.phone, template, lead.business);
     } else {
-      await channelService.sendMessage(channel._id, lead.phone, config.text);
+      await channelService.sendMessage(channel._id, lead.phone, config.text, lead.business);
     }
   } catch (error) {
     // Mismo criterio que sendTemplateMessage(): el intento de envío queda

@@ -7,6 +7,7 @@ const { respuestaExito } = require('../../utils/response');
 const { WHATSAPP_VERIFY_TOKEN, WHATSAPP_APP_SECRET, META_APP_SECRET, FRONTEND_URL } = require('../../config/env');
 const inboundGateway = require('../channels/inbound.gateway');
 const channelOnboardingCompletion = require('../channels/channelOnboardingCompletion.service');
+const outboundDeliveryService = require('../channels/outboundDelivery.service');
 const logger = require('../../utils/logger');
 
 // ─── Public: Meta webhook verification (GET) ─────────────────────────────────
@@ -172,32 +173,8 @@ const whatsappWebhook = async (req, res, next) => {
       return res.status(401).json({ error: 'Invalid signature' });
     }
 
-    // ACK inmediato — Meta requiere respuesta < 5s
-    res.status(200).json({ received: true });
-
-    const { object, entry = [] } = req.body;
-    if (object !== 'whatsapp_business_account') return;
-
-    for (const ent of entry) {
-      for (const change of ent.changes || []) {
-        if (change.field !== 'messages') continue;
-
-        const { metadata, messages = [], contacts = [] } = change.value || {};
-        const phoneNumberId = metadata?.phone_number_id;
-
-        for (const msg of messages) {
-          if (msg.type !== 'text') continue;
-
-          const from    = msg.from;
-          const text    = msg.text?.body || '';
-          const contact = contacts.find((c) => c.wa_id === from);
-          const name    = contact?.profile?.name || from;
-
-          webhookService.processWhatsAppMessage({ phoneNumberId, from, name, text, msgId: msg.id })
-            .catch((err) => console.error('[webhook] WhatsApp processMessage error:', err.message));
-        }
-      }
-    }
+    await inboundGateway.handle(req.body);
+    return res.status(200).json({ received: true });
   } catch (err) {
     next(err);
   }
@@ -217,10 +194,12 @@ const gupshupWebhook = async (req, res, next) => {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    // ACK inmediato — procesamos en background
-    res.status(200).json({ received: true });
-
     const payload = req.body;
+
+    if (outboundDeliveryService.isDeliveryReceipt(payload)) {
+      await outboundDeliveryService.reconcileDeliveryReceipt(payload);
+      return res.status(200).json({ received: true });
+    }
 
     // PR-06 del blueprint maestro: el evento de Go-Live (`account-event` /
     // ACCOUNT_VERIFIED) que confirma que un customer terminó el Embed Signup
@@ -230,10 +209,8 @@ const gupshupWebhook = async (req, res, next) => {
     // (`change.field !== 'messages'`). Ver channelOnboardingCompletion.service.js
     // y docs/integrations/gupshup-registration-contract.md §11.
     if (channelOnboardingCompletion.isAccountVerifiedEvent(payload)) {
-      channelOnboardingCompletion.handleGupshupAccountVerified(payload.gs_app_id).catch((err) =>
-        logger.error('[webhook] channelOnboardingCompletion.handleGupshupAccountVerified error:', { message: err.message, stack: err.stack })
-      );
-      return;
+      await channelOnboardingCompletion.handleGupshupAccountVerified(payload.gs_app_id);
+      return res.status(200).json({ received: true });
     }
 
     // Fase 1.f (docs/implementation/known-issues.md): único camino desde
@@ -241,9 +218,8 @@ const gupshupWebhook = async (req, res, next) => {
     // camino legacy que resolvía el tenant vía WebhookConfig
     // (parseGupshupPayload()/findGupshupConfig(), webhook.service.js), tras
     // 17 días de ventana de validación (1.e) sin incidentes.
-    await inboundGateway.handle(payload).catch((err) =>
-      logger.error('[webhook] inboundGateway.handle error:', { message: err.message, stack: err.stack })
-    );
+    await inboundGateway.handle(payload);
+    return res.status(200).json({ received: true });
   } catch (err) {
     next(err);
   }
@@ -255,6 +231,8 @@ const createConfig = async (req, res, next) => {
   try {
     const { platform, accessToken, pageId, adAccountId, formIds, defaults } = req.body;
     if (!platform) throw new AppError('platform es requerido (meta | tiktok)', 400);
+
+    await require('../users/userScope.service').assertActiveUserInBusiness(defaults?.assignedTo, req.businessId);
 
     const config = await WebhookConfig.create({
       business: req.businessId,
@@ -307,6 +285,9 @@ const getConfig = async (req, res, next) => {
 const updateConfig = async (req, res, next) => {
   try {
     const allowed = ['accessToken', 'pageId', 'adAccountId', 'formIds', 'defaults', 'isActive'];
+    if (req.body.defaults) {
+      await require('../users/userScope.service').assertActiveUserInBusiness(req.body.defaults.assignedTo, req.businessId);
+    }
     const updates = {};
     for (const key of allowed) {
       if (req.body[key] !== undefined) updates[key] = req.body[key];

@@ -153,7 +153,7 @@ describe('channelOnboardingCompletion#handleGupshupAccountVerified()', () => {
   test('estado inconsistente (gupshup_registering pero sin phoneNumber/phoneNumberId): falla ruidoso, sesión queda failed', async () => {
     const session = await crearSesionListaParaWebhook({ meta: { wabaId: 'w' } });
 
-    await handleGupshupAccountVerified('gs-app-real');
+    await expect(handleGupshupAccountVerified('gs-app-real')).rejects.toThrow(/sin phoneNumber\/phoneNumberId/);
 
     const refrescada = await ChannelOnboardingSession.findById(session._id);
     expect(refrescada.status).toBe('failed');
@@ -319,7 +319,7 @@ describe('channelOnboardingCompletion#handleGupshupAccountVerified()', () => {
     partnerAuth.getValidToken.mockResolvedValue('token');
     partnerApps.getAppAccessToken.mockRejectedValue(Object.assign(new Error('Authentication Failed'), { statusCode: 401 }));
 
-    await handleGupshupAccountVerified('gs-app-real');
+    await expect(handleGupshupAccountVerified('gs-app-real')).rejects.toThrow('Authentication Failed');
 
     const refrescada = await ChannelOnboardingSession.findOne({ 'gupshup.appId': 'gs-app-real' });
     expect(refrescada.status).toBe('failed');
@@ -328,7 +328,7 @@ describe('channelOnboardingCompletion#handleGupshupAccountVerified()', () => {
     expect(await WhatsAppChannel.countDocuments({})).toBe(0);
   });
 
-  test('LIMITACIÓN CONOCIDA (documentada): si ChannelCredentials falla DESPUÉS de crear el WhatsAppChannel, el canal queda huérfano sin credenciales y la sesión failed', async () => {
+  test('si ChannelCredentials falla DESPUÉS de crear el WhatsAppChannel, nunca queda ACTIVE y la sesión queda recoverable', async () => {
     await crearSesionListaParaWebhook();
     partnerAuth.getValidToken.mockResolvedValue('token');
     partnerApps.getAppAccessToken.mockResolvedValue({ apikey: 'apikey-real' });
@@ -339,11 +339,13 @@ describe('channelOnboardingCompletion#handleGupshupAccountVerified()', () => {
     // tener que mockear internals de Mongoose.
     const spy = jest.spyOn(ChannelCredentials, 'create').mockRejectedValueOnce(new Error('fallo simulado de Mongo'));
 
-    await handleGupshupAccountVerified('gs-app-real');
+    await expect(handleGupshupAccountVerified('gs-app-real')).rejects.toThrow('fallo simulado de Mongo');
 
     const canalHuerfano = await WhatsAppChannel.findOne({ providerAppId: 'gs-app-real' });
     expect(canalHuerfano).not.toBeNull(); // el canal SÍ quedó creado
     expect(canalHuerfano.credentialsReference).toBeNull(); // pero sin credenciales
+    expect(canalHuerfano.status).toBe('error');
+    expect(canalHuerfano.onboardingStatus).toBe('failed');
     // PR2: jamás debe quedar un canal 'partner' incompleto — el
     // upgrade a 'partner' solo ocurre en el save() final junto con
     // credentialsReference, que acá nunca se alcanza.
@@ -354,5 +356,19 @@ describe('channelOnboardingCompletion#handleGupshupAccountVerified()', () => {
     expect(refrescada.error.step).toBe('channel_creation');
 
     spy.mockRestore();
+  });
+
+  test('redelivery después de fallo parcial reutiliza el canal y completa sin duplicados', async () => {
+    await crearSesionListaParaWebhook();
+    partnerAuth.getValidToken.mockResolvedValue('token');
+    partnerApps.getAppAccessToken.mockResolvedValue({ apikey: 'apikey-real' });
+    const spy = jest.spyOn(ChannelCredentials, 'create').mockRejectedValueOnce(new Error('fallo transitorio'));
+    await expect(handleGupshupAccountVerified('gs-app-real')).rejects.toThrow('fallo transitorio');
+    spy.mockRestore();
+    await handleGupshupAccountVerified('gs-app-real');
+    expect(await WhatsAppChannel.countDocuments({ providerAppId: 'gs-app-real' })).toBe(1);
+    expect(await ChannelCredentials.countDocuments({})).toBe(1);
+    expect((await WhatsAppChannel.findOne({ providerAppId: 'gs-app-real' })).status).toBe('active');
+    expect((await ChannelOnboardingSession.findOne({ 'gupshup.appId': 'gs-app-real' })).status).toBe('completed');
   });
 });

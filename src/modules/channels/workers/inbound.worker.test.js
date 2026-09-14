@@ -31,6 +31,7 @@ const Pipeline = require('../../pipeline/pipeline.model');
 const Lead = require('../../leads/lead.model');
 const Conversation = require('../../ai/conversation.model');
 const InboundEvent = require('../inboundEvent.model');
+const WhatsAppChannel = require('../whatsappChannel.model');
 const OutboundEvent = require('../outboundEvent.model');
 const Notification = require('../../admin/notification.model');
 const User = require('../../users/user.model');
@@ -47,6 +48,7 @@ const PHONE = '+51900000001';
 describe('inbound.worker#processInboundJob() — paridad con processGupshupMessage()', () => {
   let business;
   let roleOwner;
+  let channel;
 
   beforeAll(async () => {
     await mongoose.connect(MONGO_URI);
@@ -61,6 +63,7 @@ describe('inbound.worker#processInboundJob() — paridad con processGupshupMessa
     await Notification.deleteMany({});
     await OutboundEvent.deleteMany({});
     await InboundEvent.deleteMany({});
+    await WhatsAppChannel.deleteMany({});
     await Conversation.deleteMany({});
     await Lead.deleteMany({});
     await Pipeline.deleteMany({});
@@ -79,19 +82,25 @@ describe('inbound.worker#processInboundJob() — paridad con processGupshupMessa
     await Notification.deleteMany({});
     await OutboundEvent.deleteMany({});
     await InboundEvent.deleteMany({});
+    await WhatsAppChannel.deleteMany({});
     await Conversation.deleteMany({});
     await Lead.deleteMany({});
     await Pipeline.deleteMany({});
     await User.deleteMany({});
     await Business.deleteMany({});
     business = await Business.create({ name: 'Negocio de prueba' });
+    channel = await WhatsAppChannel.create({
+      tenantId: business._id, businessId: business._id, provider: 'gupshup',
+      connectionType: 'DEDICATED', phoneNumber: '+51999999999',
+      phoneNumberId: `worker-${new mongoose.Types.ObjectId()}`, status: 'active',
+    });
   });
 
   const crearInboundEvent = (overrides = {}) =>
     InboundEvent.create({
       providerMessageId: `msg-${new mongoose.Types.ObjectId()}`,
       provider: 'gupshup',
-      channel: new mongoose.Types.ObjectId(),
+      channel: channel._id,
       tenantId: business._id,
       from: PHONE,
       text: 'Sigo esperando respuesta',
@@ -103,6 +112,7 @@ describe('inbound.worker#processInboundJob() — paridad con processGupshupMessa
   const crearLeadYConversacionSinIA = async () => {
     const lead = await Lead.create({
       business: business._id,
+      tenantId: business._id,
       name: 'Lead existente',
       phone: PHONE,
       source: 'whatsapp',
@@ -112,6 +122,7 @@ describe('inbound.worker#processInboundJob() — paridad con processGupshupMessa
       business: business._id,
       lead: lead._id,
       channel: 'whatsapp',
+      whatsappChannel: channel._id,
       status: 'active',
       aiEnabled: false,
     });
@@ -139,6 +150,42 @@ describe('inbound.worker#processInboundJob() — paridad con processGupshupMessa
 
     const updatedEvent = await InboundEvent.findById(event._id);
     expect(updatedEvent.status).toBe('processed');
+  });
+
+  test('reentrega de un InboundEvent ya processed no duplica lead, conversación ni mensaje', async () => {
+    const event = await crearInboundEvent();
+    const saveSpy = jest.spyOn(aiService, 'saveInboundMessage');
+    jest.spyOn(aiService, 'qualifyLead').mockResolvedValue({});
+    jest.spyOn(aiService, 'generateReply').mockResolvedValue({ reply: null, tokensUsed: 0 });
+    await processInboundJob({ data: { inboundEventId: event._id } });
+    const before = {
+      leads: await Lead.countDocuments({ business: business._id }),
+      conversations: await Conversation.countDocuments({ business: business._id }),
+    };
+    await processInboundJob({ data: { inboundEventId: event._id } });
+    expect(await Lead.countDocuments({ business: business._id })).toBe(before.leads);
+    expect(await Conversation.countDocuments({ business: business._id })).toBe(before.conversations);
+    expect(saveSpy).toHaveBeenCalledTimes(1);
+    expect((await Conversation.findOne({ business: business._id })).messages).toHaveLength(1);
+  });
+
+  test('InboundEvent processed con OutboundEvent recuperable vuelve a encolar el mismo outbound sin recrearlo', async () => {
+    const event = await crearInboundEvent({ status: 'processed', processedAt: new Date() });
+    const outbound = await OutboundEvent.create({
+      channel: channel._id,
+      tenantId: business._id,
+      conversation: new mongoose.Types.ObjectId(),
+      sourceInboundEvent: event._id,
+      to: PHONE,
+      text: 'Respuesta durable',
+      status: 'enqueue_failed',
+    });
+
+    enqueueOutbound.mockResolvedValueOnce({ id: String(outbound._id) });
+    await processInboundJob({ data: { inboundEventId: event._id } });
+
+    expect(enqueueOutbound).toHaveBeenCalledWith(outbound._id);
+    expect(await OutboundEvent.countDocuments({ sourceInboundEvent: event._id })).toBe(1);
   });
 
   test('sin ningún owner/admin activo: no revienta, no notifica (mismo fail-soft que el legacy)', async () => {

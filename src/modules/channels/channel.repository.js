@@ -74,6 +74,10 @@ function findById(channelId) {
   return WhatsAppChannel.findById(channelId);
 }
 
+function findByIdForTenant(channelId, tenantId) {
+  return WhatsAppChannel.findOne({ _id: channelId, tenantId, businessId: tenantId });
+}
+
 function create(data) {
   return WhatsAppChannel.create(data);
 }
@@ -82,4 +86,4 @@ function updateStatus(channelId, status) {
   return WhatsAppChannel.findByIdAndUpdate(channelId, { status }, { new: true });
 }
 
-module.exports = { findByPhoneNumberId, findByWabaId, findByProviderAccountId, findByTenant, findById, create, updateStatus };
+module.exports = { findByPhoneNumberId, findByWabaId, findByProviderAccountId, findByTenant, findById, findByIdForTenant, create, updateStatus };

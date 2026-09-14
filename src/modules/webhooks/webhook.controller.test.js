@@ -16,10 +16,12 @@
 jest.mock('./webhook.service');
 jest.mock('../channels/inbound.gateway');
 jest.mock('../channels/channelOnboardingCompletion.service');
+jest.mock('../channels/outboundDelivery.service');
 
 const webhookService = require('./webhook.service');
 const inboundGateway = require('../channels/inbound.gateway');
 const channelOnboardingCompletion = require('../channels/channelOnboardingCompletion.service');
+const outboundDeliveryService = require('../channels/outboundDelivery.service');
 const logger = require('../../utils/logger');
 const { gupshupWebhook } = require('./webhook.controller');
 
@@ -53,6 +55,8 @@ describe('webhook.controller#gupshupWebhook() — interceptación de account-eve
     jest.clearAllMocks();
     webhookService.verifyGupshupAuth.mockReturnValue(true);
     inboundGateway.handle.mockResolvedValue(undefined);
+    outboundDeliveryService.isDeliveryReceipt.mockReturnValue(false);
+    outboundDeliveryService.reconcileDeliveryReceipt.mockResolvedValue([]);
   });
 
   test('auth inválida: 401, nunca llega a evaluar el payload', async () => {
@@ -91,7 +95,7 @@ describe('webhook.controller#gupshupWebhook() — interceptación de account-eve
     expect(next).not.toHaveBeenCalled();
   });
 
-  test('handleGupshupAccountVerified rechaza: se loguea el error, nunca rompe la respuesta ya enviada', async () => {
+  test('handleGupshupAccountVerified rechaza: no responde 2xx y delega al middleware de error', async () => {
     channelOnboardingCompletion.isAccountVerifiedEvent.mockReturnValue(true);
     const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => {});
     channelOnboardingCompletion.handleGupshupAccountVerified.mockRejectedValue(new Error('Mongo caído'));
@@ -104,12 +108,8 @@ describe('webhook.controller#gupshupWebhook() — interceptación de account-eve
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(res.status).toHaveBeenCalledWith(200);
-    expect(errorSpy).toHaveBeenCalledWith(
-      '[webhook] channelOnboardingCompletion.handleGupshupAccountVerified error:',
-      expect.objectContaining({ message: 'Mongo caído' })
-    );
-    expect(next).not.toHaveBeenCalled();
+    expect(res.status).not.toHaveBeenCalledWith(200);
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ message: 'Mongo caído' }));
 
     errorSpy.mockRestore();
   });
@@ -131,7 +131,34 @@ describe('webhook.controller#gupshupWebhook() — interceptación de account-eve
     expect(inboundGateway.handle).toHaveBeenCalledWith(MENSAJERIA_PAYLOAD);
   });
 
-  test('inboundGateway.handle() rechaza: se loguea el error, nunca rompe la respuesta ya enviada', async () => {
+  test('message-event de delivery se reconcilia y nunca entra al pipeline inbound', async () => {
+    const receipt = { type: 'message-event', payload: { id: 'gs-message-id', type: 'delivered' } };
+    outboundDeliveryService.isDeliveryReceipt.mockReturnValue(true);
+
+    const res = mockRes();
+    const next = jest.fn();
+    await gupshupWebhook({ headers: {}, body: receipt }, res, next);
+
+    expect(outboundDeliveryService.reconcileDeliveryReceipt).toHaveBeenCalledWith(receipt);
+    expect(inboundGateway.handle).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  test('no envía ACK hasta que la persistencia/encolado durable confirma', async () => {
+    channelOnboardingCompletion.isAccountVerifiedEvent.mockReturnValue(false);
+    let release;
+    inboundGateway.handle.mockReturnValue(new Promise((resolve) => { release = resolve; }));
+    const res = mockRes();
+    const pending = gupshupWebhook({ headers: {}, body: MENSAJERIA_PAYLOAD }, res, jest.fn());
+    await Promise.resolve();
+    expect(res.status).not.toHaveBeenCalled();
+    release();
+    await pending;
+    expect(res.status).toHaveBeenCalledWith(200);
+  });
+
+  test('inboundGateway.handle() rechaza: no responde 2xx y delega al middleware de error', async () => {
     channelOnboardingCompletion.isAccountVerifiedEvent.mockReturnValue(false);
     const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => {});
     inboundGateway.handle.mockRejectedValue(new Error('Mongo caído'));
@@ -144,12 +171,8 @@ describe('webhook.controller#gupshupWebhook() — interceptación de account-eve
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(res.status).toHaveBeenCalledWith(200);
-    expect(errorSpy).toHaveBeenCalledWith(
-      '[webhook] inboundGateway.handle error:',
-      expect.objectContaining({ message: 'Mongo caído' })
-    );
-    expect(next).not.toHaveBeenCalled();
+    expect(res.status).not.toHaveBeenCalledWith(200);
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ message: 'Mongo caído' }));
 
     errorSpy.mockRestore();
   });

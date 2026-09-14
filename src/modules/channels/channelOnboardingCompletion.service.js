@@ -116,7 +116,13 @@ async function markFailed(session, message) {
  */
 async function handleGupshupAccountVerified(gsAppId) {
   const session = await ChannelOnboardingSession.findOneAndUpdate(
-    { 'gupshup.appId': gsAppId, status: 'gupshup_registering' },
+    {
+      'gupshup.appId': gsAppId,
+      $or: [
+        { status: 'gupshup_registering' },
+        { status: 'failed', 'error.step': 'channel_creation' },
+      ],
+    },
     { $set: { status: 'completing' } },
     { new: true, sort: { createdAt: -1 } }
   );
@@ -143,8 +149,9 @@ async function handleGupshupAccountVerified(gsAppId) {
     // No debería pasar nunca en este estado — callbackEmbeddedSignup() (PR-04)
     // ya los deja seteados antes de avanzar a gupshup_registering. Fail-loud:
     // es un estado inconsistente real, no algo que un retry vaya a arreglar solo.
-    await markFailed(session, `Sesión ${session._id} en gupshup_registering sin phoneNumber/phoneNumberId — estado inconsistente`);
-    return;
+    const error = new Error(`Sesión ${session._id} en gupshup_registering sin phoneNumber/phoneNumberId — estado inconsistente`);
+    await markFailed(session, error.message);
+    throw error;
   }
 
   try {
@@ -164,12 +171,17 @@ async function handleGupshupAccountVerified(gsAppId) {
     // las sesiones candidatas del mismo tenant/appId).
     const wabaInfo = await partnerApps.getWabaInfo(session.gupshup.appId, apikey);
 
-    const channel = await WhatsAppChannel.create({
+    let channel = await WhatsAppChannel.findOne({ provider: 'gupshup', phoneNumberId: wabaInfo.phoneId });
+    if (channel && (String(channel.tenantId) !== String(session.tenantId) || String(channel.businessId) !== String(session.tenantId))) {
+      throw new Error('El número verificado ya pertenece a otro tenant');
+    }
+    if (!channel) {
+      channel = await WhatsAppChannel.create({
       tenantId: session.tenantId,
       businessId: session.tenantId,
       connectionType: 'DEDICATED',
-      status: 'active',
-      onboardingStatus: 'completed',
+      status: 'pending',
+      onboardingStatus: 'in_progress',
       // PR2 (docs/implementation/known-issues.md, 07/sep/2026): 'legacy'
       // PROVISORIO acá a propósito — recién se confirma 'partner' más abajo
       // (junto con credentialsReference), DESPUÉS de que ChannelCredentials
@@ -196,14 +208,18 @@ async function handleGupshupAccountVerified(gsAppId) {
       providerAccountId: nombreAppGupshup(session.tenantId),
       webhookReference: session.gupshup.webhookReference,
       displayName: session.displayName,
-    });
+      });
+    }
 
-    const credentials = await ChannelCredentials.create({
-      channel: channel._id,
-      tenantId: session.tenantId,
-      provider: 'gupshup',
-      apiKeys: [{ value: channelCrypto.encrypt(apikey, String(channel._id)) }],
-    });
+    let credentials = await ChannelCredentials.findOne({ channel: channel._id, tenantId: session.tenantId, provider: 'gupshup' });
+    if (!credentials) {
+      credentials = await ChannelCredentials.create({
+        channel: channel._id,
+        tenantId: session.tenantId,
+        provider: 'gupshup',
+        apiKeys: [{ value: channelCrypto.encrypt(apikey, String(channel._id)) }],
+      });
+    }
 
     channel.credentialsReference = credentials._id;
     // PR2: recién ACÁ se confirma 'partner' — providerAppId (arriba) y el
@@ -212,6 +228,8 @@ async function handleGupshupAccountVerified(gsAppId) {
     // nunca se alcanza (ChannelCredentials.create() tiró), el canal quedó
     // con el 'legacy' provisorio de arriba — nunca 'partner' a medias.
     channel.outboundApi = 'partner';
+    channel.status = 'active';
+    channel.onboardingStatus = 'completed';
     await channel.save();
 
     session.channel = channel._id;
@@ -231,7 +249,19 @@ async function handleGupshupAccountVerified(gsAppId) {
       channelId: String(channel._id),
     });
   } catch (err) {
+    if (session.channel) {
+      await WhatsAppChannel.updateOne(
+        { _id: session.channel, tenantId: session.tenantId },
+        { $set: { status: 'error', onboardingStatus: 'failed' } }
+      ).catch(() => {});
+    } else {
+      await WhatsAppChannel.updateMany(
+        { providerAppId: session.gupshup.appId, tenantId: session.tenantId, status: { $ne: 'active' } },
+        { $set: { status: 'error', onboardingStatus: 'failed' } }
+      ).catch(() => {});
+    }
     await markFailed(session, err.message);
+    throw err;
   }
 }
 

@@ -493,7 +493,7 @@ const sendMedia = async (args, { conversation, business, lead }) => {
     return { success: false, error: 'No hay un canal de WhatsApp activo para este negocio.' };
   }
 
-  await channelService.sendMedia(channel._id, lead.phone, media);
+  await channelService.sendMedia(channel._id, lead.phone, media, business._id);
 
   const placeholder = media.type === 'image' ? '[Imagen]' : media.type === 'video' ? '[Video]' : '[Documento]';
   conversation.messages.push({

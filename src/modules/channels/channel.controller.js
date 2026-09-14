@@ -13,6 +13,8 @@ const partnerSubscriptions = require('./providers/gupshup/partner/partner.subscr
 const { AppError } = require('../../middleware/error.middleware');
 const { respuestaExito, respuestaError } = require('../../utils/response');
 const logger = require('../../utils/logger');
+const channelService = require('./channel.service');
+const channelCredentialsService = require('./channelCredentials.service');
 const { META_APP_ID, META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID, BACKEND_PUBLIC_URL, GUPSHUP_ONBOARDING_WEBHOOK_TOKEN, GUPSHUP_WEBHOOK_HEADER, GUPSHUP_WEBHOOK_TOKEN } = require('../../config/env');
 // Constante compartida vía un archivo sin dependencias propias — NO se
 // importa directo de channelOnboardingWebhook.controller.js acá (ese módulo
@@ -34,6 +36,55 @@ const GUPSHUP_ACCOUNT_SUBSCRIPTION_MARKER = 'gupshup:account-subscribed';
 // — independiente de la de ACCOUNT, ver el bloque correspondiente más abajo.
 const GUPSHUP_MESSAGES_SUBSCRIPTION_MARKER = 'gupshup:messages-subscribed';
 const GUPSHUP_MESSAGES_SUBSCRIPTION_TAG = 'creaos-messages';
+
+const reassignConversationChannel = async (req, res, next) => {
+  try {
+    const conversation = await channelService.reassignConversationChannel({
+      conversationId: req.params.conversationId,
+      channelId: req.body.channelId,
+      tenantId: req.businessId,
+      actorId: req.user._id,
+      reason: req.body.reason,
+    });
+    return respuestaExito(res, { message: 'Canal de la conversación reasignado', data: { conversation } });
+  } catch (err) { return next(err); }
+};
+
+const disconnectChannel = async (req, res, next) => {
+  try {
+    const result = await channelCredentialsService.revokeAllForChannel({
+      channelId: req.params.channelId,
+      tenantId: req.businessId,
+      actorId: req.user._id,
+    });
+    return respuestaExito(res, { message: 'Canal de WhatsApp desconectado', data: result });
+  } catch (err) { return next(err); }
+};
+
+const rotateChannelCredential = async (req, res, next) => {
+  try {
+    const result = await channelCredentialsService.rotateApiKey({
+      channelId: req.params.channelId,
+      tenantId: req.businessId,
+      apiKey: req.body.apiKey,
+      label: req.body.label,
+    });
+    return respuestaExito(res, { message: 'Credencial rotada', data: result });
+  } catch (err) { return next(err); }
+};
+
+const revokeChannelCredential = async (req, res, next) => {
+  try {
+    const result = await channelCredentialsService.revokeApiKey({
+      channelId: req.params.channelId,
+      tenantId: req.businessId,
+      credentialId: req.params.credentialId,
+      actorId: req.user._id,
+      reason: req.body.reason,
+    });
+    return respuestaExito(res, { message: 'Credencial revocada', data: result });
+  } catch (err) { return next(err); }
+};
 
 const DISPLAY_NAME_MAX_LENGTH = 100;
 
@@ -753,4 +804,8 @@ module.exports = {
   // crear el canal DEDICATED real, en vez de duplicar la convención de
   // nombre en dos lugares.
   nombreAppGupshup,
+  reassignConversationChannel,
+  disconnectChannel,
+  rotateChannelCredential,
+  revokeChannelCredential,
 };

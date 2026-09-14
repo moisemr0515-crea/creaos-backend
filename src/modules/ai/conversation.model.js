@@ -168,6 +168,14 @@ const conversationSchema = new mongoose.Schema(
     // canal activo del tenant") cuando este campo no está poblado, así que
     // ninguna conversación vieja se rompe por no tenerlo.
     whatsappChannel: { type: mongoose.Schema.Types.ObjectId, ref: 'WhatsAppChannel', default: null },
+    whatsappChannelStatus: { type: String, enum: ['ready', 'reassignment_required'], default: 'ready' },
+    whatsappChannelHistory: [{
+      from: { type: mongoose.Schema.Types.ObjectId, ref: 'WhatsAppChannel', default: null },
+      to: { type: mongoose.Schema.Types.ObjectId, ref: 'WhatsAppChannel', required: true },
+      changedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+      changedAt: { type: Date, default: Date.now },
+      reason: { type: String, default: 'manual_reassignment' },
+    }],
     status:     { type: String, enum: ['active', 'waiting', 'resolved', 'escalated'], default: 'active' },
     messages:   [messageSchema],
     aiEnabled:  { type: Boolean, default: true },

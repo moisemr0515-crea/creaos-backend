@@ -11,8 +11,9 @@ const mongoose = require('mongoose');
 const WhatsAppChannel = require('./whatsappChannel.model');
 const ChannelCredentials = require('./channelCredentials.model');
 const Business = require('../businesses/business.model');
+const Conversation = require('../ai/conversation.model');
 const { encrypt } = require('./channelCrypto');
-const { resolveCredentials } = require('./channelCredentials.service');
+const { resolveCredentials, rotateApiKey, revokeApiKey, revokeAllForChannel } = require('./channelCredentials.service');
 
 const MONGO_URI = 'mongodb://localhost:27017/creaos_test_channel_credentials';
 
@@ -25,6 +26,7 @@ describe('channelCredentials.service#resolveCredentials()', () => {
 
   afterAll(async () => {
     await ChannelCredentials.deleteMany({});
+    await Conversation.deleteMany({});
     await WhatsAppChannel.deleteMany({});
     await Business.deleteMany({});
     await mongoose.disconnect();
@@ -32,6 +34,7 @@ describe('channelCredentials.service#resolveCredentials()', () => {
 
   beforeEach(async () => {
     await ChannelCredentials.deleteMany({});
+    await Conversation.deleteMany({});
     await WhatsAppChannel.deleteMany({});
     business = await Business.create({ name: 'Negocio de prueba' });
   });
@@ -276,5 +279,43 @@ describe('channelCredentials.service#resolveCredentials()', () => {
     });
 
     await expect(resolveCredentials(canalReal)).rejects.toThrow(/credenciales ilegibles/);
+  });
+
+  test('rotación agrega una credencial cifrada y la convierte en la activa más reciente', async () => {
+    const canal = await WhatsAppChannel.create({ tenantId: business._id, businessId: business._id, provider: 'gupshup', providerAccountId: 'rotacion', phoneNumber: '+51911111119', phoneNumberId: 'pnid-rotacion', status: 'active', connectionType: 'DEDICATED' });
+    await ChannelCredentials.create({ channel: canal._id, tenantId: business._id, provider: 'gupshup', apiKeys: [{ value: encrypt('anterior', String(canal._id)), createdAt: new Date('2026-01-01') }] });
+    const result = await rotateApiKey({ channelId: canal._id, tenantId: business._id, apiKey: 'nueva', label: 'rotada' });
+    expect(result.activeKeys).toBe(2);
+    await expect(resolveCredentials(canal)).resolves.toMatchObject({ apiKey: 'nueva' });
+  });
+
+  test('revocar la última credencial suspende el canal y la credencial nunca vuelve a resolverse', async () => {
+    const canal = await WhatsAppChannel.create({ tenantId: business._id, businessId: business._id, provider: 'gupshup', providerAccountId: 'revocacion', phoneNumber: '+51911111120', phoneNumberId: 'pnid-revocacion', status: 'active', connectionType: 'DEDICATED' });
+    const creds = await ChannelCredentials.create({ channel: canal._id, tenantId: business._id, provider: 'gupshup', apiKeys: [{ value: encrypt('ultima', String(canal._id)) }] });
+    const result = await revokeApiKey({ channelId: canal._id, tenantId: business._id, credentialId: creds.apiKeys[0]._id, actorId: new mongoose.Types.ObjectId() });
+    expect(result.channelStatus).toBe('suspended');
+    await expect(resolveCredentials(canal)).rejects.toThrow(/todas las apiKeys están revocadas/);
+  });
+
+  test('desconexión revoca todas las credenciales, bloquea el canal y preserva el documento', async () => {
+    const canal = await WhatsAppChannel.create({ tenantId: business._id, businessId: business._id, provider: 'gupshup', providerAccountId: 'disconnect', phoneNumber: '+51911111121', phoneNumberId: 'pnid-disconnect', status: 'active', connectionType: 'DEDICATED' });
+    await ChannelCredentials.create({ channel: canal._id, tenantId: business._id, provider: 'gupshup', apiKeys: [{ value: encrypt('uno', String(canal._id)) }, { value: encrypt('dos', String(canal._id)) }] });
+    const conversation = await Conversation.create({ business: business._id, tenantId: business._id, lead: new mongoose.Types.ObjectId(), channel: 'whatsapp', whatsappChannel: canal._id, messages: [{ role: 'user', content: 'histórico' }] });
+    await revokeAllForChannel({ channelId: canal._id, tenantId: business._id, actorId: new mongoose.Types.ObjectId() });
+    const refreshedChannel = await WhatsAppChannel.findById(canal._id);
+    const refreshedCreds = await ChannelCredentials.findOne({ channel: canal._id });
+    expect(refreshedChannel.status).toBe('disconnected');
+    expect(refreshedCreds.apiKeys.every((entry) => entry.revokedAt)).toBe(true);
+    const preserved = await Conversation.findById(conversation._id);
+    expect(preserved).not.toBeNull();
+    expect(preserved.messages[0].content).toBe('histórico');
+    expect(preserved.whatsappChannelStatus).toBe('reassignment_required');
+  });
+
+  test('operaciones de credenciales rechazan un channelId de otro tenant', async () => {
+    const other = await Business.create({ name: 'Otro tenant' });
+    const canal = await WhatsAppChannel.create({ tenantId: other._id, businessId: other._id, provider: 'gupshup', providerAccountId: 'foreign', phoneNumber: '+51911111122', phoneNumberId: 'pnid-foreign-creds', status: 'active', connectionType: 'DEDICATED' });
+    await ChannelCredentials.create({ channel: canal._id, tenantId: other._id, provider: 'gupshup', apiKeys: [{ value: encrypt('foreign', String(canal._id)) }] });
+    await expect(revokeAllForChannel({ channelId: canal._id, tenantId: business._id, actorId: new mongoose.Types.ObjectId() })).rejects.toMatchObject({ statusCode: 404 });
   });
 });

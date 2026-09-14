@@ -30,6 +30,7 @@ const Business = require('../../businesses/business.model');
 const Lead = require('../../leads/lead.model');
 const Conversation = require('../../ai/conversation.model');
 const InboundEvent = require('../inboundEvent.model');
+const WhatsAppChannel = require('../whatsappChannel.model');
 const Pipeline = require('../../pipeline/pipeline.model');
 const Product = require('../../products/product.model');
 const aiService = require('../../ai/ai.service');
@@ -58,6 +59,7 @@ const completionFinal = (content) => ({
 describe('inbound.worker#processInboundJob() — fix del gap de businessContext (C.3, Etapa C3.1b)', () => {
   let business;
   let createSpy;
+  let channel;
 
   beforeAll(async () => {
     await mongoose.connect(MONGO_URI);
@@ -66,6 +68,7 @@ describe('inbound.worker#processInboundJob() — fix del gap de businessContext 
 
   afterAll(async () => {
     await InboundEvent.deleteMany({});
+    await WhatsAppChannel.deleteMany({});
     await Conversation.deleteMany({});
     await Lead.deleteMany({});
     await Pipeline.deleteMany({});
@@ -80,12 +83,14 @@ describe('inbound.worker#processInboundJob() — fix del gap de businessContext 
       planName: 'closer', limits: { aiEnabled: true, whatsappEnabled: true, automationsEnabled: true },
     });
     await InboundEvent.deleteMany({});
+    await WhatsAppChannel.deleteMany({});
     await Conversation.deleteMany({});
     await Lead.deleteMany({});
     await Pipeline.deleteMany({});
     await Product.deleteMany({});
     await Business.deleteMany({});
     business = await Business.create({ name: 'Negocio de prueba', aiPersonality: 'formal' });
+    channel = await WhatsAppChannel.create({ tenantId: business._id, businessId: business._id, provider: 'gupshup', connectionType: 'DEDICATED', phoneNumber: '+51999999998', phoneNumberId: `context-${new mongoose.Types.ObjectId()}`, status: 'active' });
     createSpy = jest.spyOn(aiService.openai.chat.completions, 'create');
     // qualifyLead() corre fire-and-forget después del reply (ver
     // inbound.worker.js#processInboundJob()) — mockeado acá para los 3
@@ -100,7 +105,7 @@ describe('inbound.worker#processInboundJob() — fix del gap de businessContext 
     InboundEvent.create({
       providerMessageId: `msg-${new mongoose.Types.ObjectId()}`,
       provider: 'gupshup',
-      channel: new mongoose.Types.ObjectId(),
+      channel: channel._id,
       tenantId: business._id,
       from: PHONE,
       text: '¿Tienen moringa?',

@@ -2,9 +2,7 @@ const GupshupProvider = require('./providers/gupshupProvider');
 const channelResolver = require('./channel.resolver');
 const tenantResolver = require('./tenant.resolver');
 const InboundEvent = require('./inboundEvent.model');
-const webhookService = require('../webhooks/webhook.service');
 const { enqueueInbound } = require('./queues/inbound.queue');
-const { WHATSAPP_QUEUE_PROCESSING_ENABLED } = require('../../config/env');
 const logger = require('../../utils/logger');
 
 /**
@@ -37,14 +35,16 @@ async function handle(rawPayload) {
     return;
   }
 
+  const errors = [];
   for (const msg of messages) {
     try {
       await handleOne(msg);
     } catch (err) {
-      // Un mensaje del batch no debe tumbar el resto.
       logger.error('[inboundGateway] error procesando mensaje', { message: err.message, stack: err.stack, providerMessageId: msg.providerMessageId });
+      errors.push(err);
     }
   }
+  if (errors.length) throw errors[0];
 }
 
 async function handleOne(msg) {
@@ -59,15 +59,18 @@ async function handleOne(msg) {
   const channel = await channelResolver.resolve({ provider: 'gupshup', phoneNumberId, wabaId, appName });
   if (!channel) {
     logger.warn('[inboundGateway] ningún WhatsAppChannel matchea este payload', { phoneNumberId, wabaId });
-    return;
+    throw new Error('No se pudo resolver un WhatsAppChannel para el mensaje entrante');
+  }
+  if (channel.status !== 'active') {
+    throw new Error(`WhatsAppChannel ${channel._id} no está activo`);
   }
 
   let tenantId;
   try {
     tenantId = await tenantResolver.resolve(channel);
   } catch (err) {
-    logger.error('[inboundGateway] tenant inválido, se descarta el mensaje', { channelId: channel._id, error: err.message });
-    return;
+    logger.error('[inboundGateway] tenant inválido, el mensaje no se acepta', { channelId: channel._id, error: err.message });
+    throw err;
   }
 
   let event;
@@ -86,54 +89,18 @@ async function handleOne(msg) {
     });
   } catch (err) {
     if (err.code === 11000) {
-      logger.info('[inboundGateway] mensaje duplicado (idempotencia), se ignora', { providerMessageId: msg.providerMessageId });
+      const existing = await InboundEvent.findOne({ providerMessageId: msg.providerMessageId });
+      if (existing && ['received', 'failed'].includes(existing.status)) {
+        await enqueueInbound(existing._id);
+      }
+      logger.info('[inboundGateway] mensaje duplicado (idempotencia), no se persiste otra vez', { providerMessageId: msg.providerMessageId });
       return;
     }
     throw err;
   }
 
-  event.status = 'processing';
-  await event.save();
-
-  if (WHATSAPP_QUEUE_PROCESSING_ENABLED) {
-    // Sub-fase 1.d: se encola, no se procesa acá. El InboundEvent queda en
-    // 'processing' hasta que inbound.worker.js (servicio Railway separado)
-    // lo marque 'processed'/'failed'.
-    try {
-      await enqueueInbound(event._id);
-    } catch (err) {
-      // Si falla el enqueue (Redis/BullMQ no disponible), el evento no debe
-      // quedar huérfano en 'processing' para siempre — se marca 'failed'
-      // acá mismo, igual que la rama síncrona de abajo. Sin esto, un
-      // reintento del mismo mensaje real de Gupshup se descartaría en
-      // silencio por el índice único de providerMessageId (E11000) sin
-      // haberse procesado nunca (hallazgo de code review).
-      event.status = 'failed';
-      event.error = err.message;
-      await event.save();
-      throw err;
-    }
-    return;
-  }
-
   try {
-    // Sin cambios respecto al flujo de 1.c — mismo Lead/Conversation/
-    // ai.service.js/gupshup.client.js que usa processGupshupMessage() hoy.
-    // Lo único distinto es que `tenantId` vino de ChannelResolver +
-    // TenantResolver, no de findGupshupConfig(). mediaType/mediaSourceUrl
-    // se pasan tal cual — processGupshupMessage() ya sabe qué hacer con
-    // ellos (feat/inbound-media-messages). PR-10a: se pasa también
-    // `channel._id` (ya resuelto acá arriba) para que, si esto crea una
-    // Conversation nueva, quede atada al canal real que la originó — ver
-    // Conversation.whatsappChannel.
-    await webhookService.processGupshupMessage(
-      { phone: msg.from, text: msg.text, name: msg.name, mediaType: msg.mediaType, mediaSourceUrl: msg.mediaSourceUrl },
-      tenantId,
-      channel._id
-    );
-    event.status = 'processed';
-    event.processedAt = new Date();
-    await event.save();
+    await enqueueInbound(event._id);
   } catch (err) {
     event.status = 'failed';
     event.error = err.message;

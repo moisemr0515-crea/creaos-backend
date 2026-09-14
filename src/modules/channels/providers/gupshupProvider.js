@@ -166,8 +166,9 @@ class GupshupProvider extends IChannelProvider {
    * @param {import('../whatsappChannel.model')} _channel — no usado hoy.
    * @returns {Promise<Array>}
    */
-  async listTemplates(_channel) {
-    return gupshupClient.listTemplates();
+  async listTemplates(channel) {
+    const credentials = await resolverCredencialesDeEnvio(channel);
+    return gupshupClient.listTemplates(credentials);
   }
 
   /**
@@ -253,12 +254,15 @@ class GupshupProvider extends IChannelProvider {
    * @returns {Promise<{connected: boolean, provider: string, phoneNumber: string|null, connectionType: string|null}>}
    */
   async getChannelStatus(channel) {
-    const connected = gupshupClient.estaConfigurado();
+    await channelCredentialsService.resolveCredentials(channel);
+    const connected = channel.status === 'active';
     return {
       connected,
       provider: 'gupshup',
       phoneNumber: connected ? channel.phoneNumber : null,
       connectionType: connected ? channel.connectionType : null,
+      channelId: channel._id,
+      status: channel.status,
     };
   }
 

@@ -28,7 +28,7 @@ describe('tenantResolver#resolve()', () => {
   });
 
   test('tenant activo: devuelve el tenantId validado', async () => {
-    const tenantId = await resolve({ tenantId: business._id });
+    const tenantId = await resolve({ tenantId: business._id, businessId: business._id });
     expect(String(tenantId)).toBe(String(business._id));
   });
 
@@ -37,20 +37,26 @@ describe('tenantResolver#resolve()', () => {
   // explícito con un channel-like DEDICATED para dejar constancia de que
   // no hace falta ninguna rama nueva acá.
   test('funciona igual sin importar el connectionType del channel (DEDICATED no es un caso especial)', async () => {
-    const channelDedicadoFalso = { tenantId: business._id, connectionType: 'DEDICATED' };
+    const channelDedicadoFalso = { tenantId: business._id, businessId: business._id, connectionType: 'DEDICATED' };
     const tenantId = await resolve(channelDedicadoFalso);
     expect(String(tenantId)).toBe(String(business._id));
   });
 
   test('tenant inexistente: AppError 403', async () => {
     const tenantIdInexistente = new mongoose.Types.ObjectId();
-    await expect(resolve({ tenantId: tenantIdInexistente })).rejects.toMatchObject({ statusCode: 403 });
+    await expect(resolve({ tenantId: tenantIdInexistente, businessId: tenantIdInexistente })).rejects.toMatchObject({ statusCode: 403 });
   });
 
   test('tenant inactivo (isActive:false): AppError 403 — mismo tratamiento que inexistente', async () => {
     await Business.updateOne({ _id: business._id }, { isActive: false });
-    await expect(resolve({ tenantId: business._id })).rejects.toMatchObject({ statusCode: 403 });
+    await expect(resolve({ tenantId: business._id, businessId: business._id })).rejects.toMatchObject({ statusCode: 403 });
   });
+});
+
+test('tenantResolver rechaza channel.businessId cruzado aunque tenantId exista', async () => {
+  const tenantId = new mongoose.Types.ObjectId();
+  const businessId = new mongoose.Types.ObjectId();
+  await expect(resolve({ tenantId, businessId })).rejects.toMatchObject({ statusCode: 500 });
 });
 
 describe('tenantResolver#assertTenantScope()', () => {

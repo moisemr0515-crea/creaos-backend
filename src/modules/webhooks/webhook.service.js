@@ -152,7 +152,7 @@ async function processMetaLead(entry, config) {
       source:        config.defaults?.source || 'facebook',
       pipelineStage: config.defaults?.pipelineStage || 'new',
       temperature:   config.defaults?.temperature || 'warm',
-      assignedTo:    config.defaults?.assignedTo || undefined,
+      assignedTo:    (await require('../users/userScope.service').assertActiveUserInBusiness(config.defaults?.assignedTo, business._id))?._id || undefined,
       tags:          config.defaults?.tags || [],
       adSource: {
         platform:     'meta',
@@ -249,7 +249,7 @@ async function processTikTokLead(payload, config) {
       source:        config.defaults?.source || 'tiktok',
       pipelineStage: config.defaults?.pipelineStage || 'new',
       temperature:   config.defaults?.temperature || 'warm',
-      assignedTo:    config.defaults?.assignedTo || undefined,
+      assignedTo:    (await require('../users/userScope.service').assertActiveUserInBusiness(config.defaults?.assignedTo, business._id))?._id || undefined,
       tags:          config.defaults?.tags || [],
       adSource: {
         platform:    'tiktok',
@@ -585,7 +585,7 @@ async function processGupshupMessage({ phone, text, name, mediaType, mediaSource
   if (!channel) {
     logger.warn('[gupshup] sin WhatsAppChannel activo para este tenant, no se pudo enviar la respuesta', { businessId, leadId: lead._id.toString() });
   } else {
-    await channelService.sendMessage(channel._id, phone, reply);
+    await channelService.sendMessage(channel._id, phone, reply, businessId);
 
     // PR36 del blueprint de Fase 2 — scoring automático (Buyer Profile +
     // psychologicalState, PR35) DESPUÉS de que el reply ya salió por

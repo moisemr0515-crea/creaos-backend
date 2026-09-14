@@ -2,6 +2,7 @@ const { AppError } = require('../../middleware/error.middleware');
 const channelRepository = require('./channel.repository');
 const GupshupProvider = require('./providers/gupshupProvider');
 const logger = require('../../utils/logger');
+const Conversation = require('../ai/conversation.model');
 
 /**
  * ChannelService — fachada pública del módulo channels/ (Blueprint §4.4).
@@ -24,11 +25,20 @@ function getProviderFor(channel) {
  * @param {string} to
  * @param {string} text
  */
-async function sendMessage(channelId, to, text) {
-  const channel = await channelRepository.findById(channelId);
+async function loadOperationalChannel(channelId, tenantId) {
+  if (!tenantId) throw new AppError('tenantId es requerido para operar un canal', 500);
+  const channel = await channelRepository.findByIdForTenant(channelId, tenantId);
   if (!channel) {
     throw new AppError(`WhatsAppChannel ${channelId} no encontrado`, 404);
   }
+  if (channel.status !== 'active') {
+    throw new AppError(`WhatsAppChannel ${channelId} no está activo`, 409);
+  }
+  return channel;
+}
+
+async function sendMessage(channelId, to, text, tenantId) {
+  const channel = await loadOperationalChannel(channelId, tenantId);
 
   const provider = getProviderFor(channel);
   return provider.sendMessage(channel, to, text);
@@ -41,11 +51,8 @@ async function sendMessage(channelId, to, text) {
  * @param {string} to
  * @param {{ id: string, params?: string[] }} template
  */
-async function sendTemplate(channelId, to, template) {
-  const channel = await channelRepository.findById(channelId);
-  if (!channel) {
-    throw new AppError(`WhatsAppChannel ${channelId} no encontrado`, 404);
-  }
+async function sendTemplate(channelId, to, template, tenantId) {
+  const channel = await loadOperationalChannel(channelId, tenantId);
 
   const provider = getProviderFor(channel);
   return provider.sendTemplate(channel, to, template);
@@ -56,11 +63,8 @@ async function sendTemplate(channelId, to, template) {
  * @param {string} channelId
  * @returns {Promise<Array>}
  */
-async function listTemplates(channelId) {
-  const channel = await channelRepository.findById(channelId);
-  if (!channel) {
-    throw new AppError(`WhatsAppChannel ${channelId} no encontrado`, 404);
-  }
+async function listTemplates(channelId, tenantId) {
+  const channel = await loadOperationalChannel(channelId, tenantId);
 
   const provider = getProviderFor(channel);
   return provider.listTemplates(channel);
@@ -73,11 +77,8 @@ async function listTemplates(channelId) {
  * @param {string} to
  * @param {{ url: string, type: 'image'|'video', caption?: string }} media
  */
-async function sendMedia(channelId, to, media) {
-  const channel = await channelRepository.findById(channelId);
-  if (!channel) {
-    throw new AppError(`WhatsAppChannel ${channelId} no encontrado`, 404);
-  }
+async function sendMedia(channelId, to, media, tenantId) {
+  const channel = await loadOperationalChannel(channelId, tenantId);
 
   const provider = getProviderFor(channel);
   return provider.sendMedia(channel, to, media);
@@ -90,11 +91,8 @@ async function sendMedia(channelId, to, media) {
  * @param {string} mediaUrl
  * @returns {Promise<{ buffer: Buffer, contentType: string|null }>}
  */
-async function downloadMedia(channelId, mediaUrl) {
-  const channel = await channelRepository.findById(channelId);
-  if (!channel) {
-    throw new AppError(`WhatsAppChannel ${channelId} no encontrado`, 404);
-  }
+async function downloadMedia(channelId, mediaUrl, tenantId) {
+  const channel = await loadOperationalChannel(channelId, tenantId);
 
   const provider = getProviderFor(channel);
   return provider.downloadMedia(channel, mediaUrl);
@@ -106,11 +104,8 @@ async function downloadMedia(channelId, mediaUrl) {
  * para mantener a ChannelService como la única puerta de entrada.
  * @param {string} channelId
  */
-async function getChannelStatus(channelId) {
-  const channel = await channelRepository.findById(channelId);
-  if (!channel) {
-    throw new AppError(`WhatsAppChannel ${channelId} no encontrado`, 404);
-  }
+async function getChannelStatus(channelId, tenantId) {
+  const channel = await loadOperationalChannel(channelId, tenantId);
 
   const provider = getProviderFor(channel);
   return provider.getChannelStatus(channel);
@@ -142,32 +137,33 @@ async function getChannelForTenant(tenantId) {
  * @returns {Promise<import('./whatsappChannel.model')|null>}
  */
 async function getChannelForConversation(conversation, tenantId) {
-  if (conversation?.whatsappChannel) {
-    const channel = await channelRepository.findById(conversation.whatsappChannel);
-    // Mismo criterio de "activo" que getChannelForTenant() — findById() no
-    // filtra por status, así que se chequea acá explícito. Si el canal de
-    // origen de esta conversación quedó suspendido/con error/desconectado
-    // después de recibir el mensaje, no tiene sentido intentar mandar por
-    // él — cae al fallback en vez de fallar (o peor, intentar mandar por un
-    // canal que sabemos que no está operativo).
-    if (channel && channel.status === 'active') return channel;
-
-    // Referencia rota (el canal no existe — caso hoy imposible, nada borra
-    // un WhatsAppChannel) o encontrado pero no activo — cualquiera de los 2
-    // cae al fallback en vez de fallar, y se deja constancia para poder
-    // detectarlo.
-    logger.warn('[channelService] conversation.whatsappChannel no resolvió a un WhatsAppChannel activo, cae al fallback de "primer canal activo del tenant"', {
-      conversationId: conversation._id ? String(conversation._id) : null,
-      whatsappChannel: String(conversation.whatsappChannel),
-      encontrado: Boolean(channel),
-      statusEncontrado: channel?.status ?? null,
-    });
+  if (!conversation || String(conversation.business) !== String(tenantId)) {
+    throw new AppError('Conversación fuera del tenant solicitado', 403);
   }
+  if (!conversation.whatsappChannel) {
+    if (conversation._id) await Conversation.updateOne({ _id: conversation._id, business: tenantId }, { whatsappChannelStatus: 'reassignment_required' });
+    throw new AppError('La conversación requiere asignar explícitamente un canal de WhatsApp', 409);
+  }
+  const channel = await channelRepository.findByIdForTenant(conversation.whatsappChannel, tenantId);
+  if (!channel || channel.status !== 'active') {
+    if (conversation._id) await Conversation.updateOne({ _id: conversation._id, business: tenantId }, { whatsappChannelStatus: 'reassignment_required' });
+    logger.warn('[channelService] canal original no operativo; envío bloqueado hasta reasignación', { conversationId: String(conversation._id), channelId: String(conversation.whatsappChannel) });
+    throw new AppError('El canal original no está operativo; la conversación requiere reasignación', 409);
+  }
+  return channel;
+}
 
-  // Sin whatsappChannel poblado (conversación previa a este campo, o
-  // iniciada sin un canal real de origen — ej. arrancada a mano desde el
-  // CRM) — mismo comportamiento que existía antes de PR-10a, sin cambios.
-  return getChannelForTenant(tenantId);
+async function reassignConversationChannel({ conversationId, channelId, tenantId, actorId, reason }) {
+  const channel = await channelRepository.findByIdForTenant(channelId, tenantId);
+  if (!channel || channel.status !== 'active') throw new AppError('Canal de destino no encontrado o inactivo', 404);
+  const conversation = await Conversation.findOne({ _id: conversationId, business: tenantId, isDeleted: false });
+  if (!conversation) throw new AppError('Conversación no encontrada', 404);
+  const previous = conversation.whatsappChannel || null;
+  conversation.whatsappChannel = channel._id;
+  conversation.whatsappChannelStatus = 'ready';
+  conversation.whatsappChannelHistory.push({ from: previous, to: channel._id, changedBy: actorId, reason: reason || 'manual_reassignment' });
+  await conversation.save();
+  return conversation;
 }
 
 function listChannels(tenantId) {
@@ -177,4 +173,5 @@ function listChannels(tenantId) {
 module.exports = {
   sendMessage, sendTemplate, listTemplates, sendMedia, downloadMedia, getChannelStatus,
   getChannelForTenant, getChannelForConversation, listChannels,
+  reassignConversationChannel,
 };

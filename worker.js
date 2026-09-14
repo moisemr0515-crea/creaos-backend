@@ -19,7 +19,7 @@ const { connectMongoDB, disconnectMongoDB } = require('./src/config/database');
 const { connectRedis, disconnectRedis } = require('./src/config/redis');
 const { getQueueConnection, disconnectQueueConnection, QUEUE_NAMES } = require('./src/config/queue');
 const { getInboundQueue } = require('./src/modules/channels/queues/inbound.queue');
-const { getOutboundQueue } = require('./src/modules/channels/queues/outbound.queue');
+const { getOutboundQueue, recoverPendingOutboundEvents } = require('./src/modules/channels/queues/outbound.queue');
 const { startInboundWorker } = require('./src/modules/channels/workers/inbound.worker');
 const { startOutboundWorker } = require('./src/modules/channels/workers/outbound.worker');
 // Caso 7 del backlog — motor de automatizaciones, trigger por tiempo.
@@ -32,7 +32,7 @@ const { startAutomationExecuteWorker } = require('./src/modules/automations/work
 // healthcheck de este servicio, no queda expuesto públicamente salvo que se
 // habilite networking explícito para este servicio (decisión de infra,
 // fuera de este archivo).
-const WORKER_PORT = process.env.WORKER_PORT || 3002;
+const WORKER_PORT = process.env.WORKER_PORT || PORT;
 
 let inboundWorker;
 let outboundWorker;
@@ -49,6 +49,7 @@ const iniciar = async () => {
     outboundWorker = startOutboundWorker();
     automationSweepWorker = startAutomationSweepWorker();
     automationExecuteWorker = startAutomationExecuteWorker();
+    await recoverPendingOutboundEvents();
     // Idempotente (upsertJobScheduler) — seguro de llamar en cada boot,
     // incluso con varias instancias de este worker arrancando a la vez
     // (rolling restart de Railway).
