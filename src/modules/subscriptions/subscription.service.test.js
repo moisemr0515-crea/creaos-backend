@@ -132,20 +132,20 @@ describe('subscription.service#checkLeadLimit() / contarLeadsActivos()', () => {
     expect(result).toEqual({ allowed: true, current: 5, limit: -1 });
   });
 
-  test('checkLeadLimit(): sin Plan poblado (fallback), usa 10 — no el 5 viejo previo al fix de pricing', async () => {
+  test('checkLeadLimit(): Starter usa el límite canónico de 20', async () => {
     // Sin crear ninguna Subscription: getCurrentSubscription() auto-crea
     // con el plan 'starter' real (seedeado en producción con
-    // leadsPerMonth:10 después de fix/plan-starter-leads-limit-mismatch).
+    // leadsPerMonth:20, igual al seed comercial vigente.
     await Plan.create({
       name: 'starter',
       displayName: 'Starter',
       price: 0,
-      limits: { leadsPerMonth: 10 },
+      limits: { leadsPerMonth: 20 },
       isActive: true,
     });
 
     const result = await checkLeadLimit(business._id);
-    expect(result.limit).toBe(10);
+    expect(result.limit).toBe(20);
   });
 
   test('contarLeadsActivos(): con 2 pipelines del negocio, une los stages de cierre de ambos', async () => {

@@ -3,6 +3,7 @@ const controller = require('./channel.controller');
 const { authenticate } = require('../../middleware/auth.middleware');
 const { injectTenant } = require('../../middleware/tenant.middleware');
 const { checkPermission } = require('../../middleware/rbac.middleware');
+const { requireCapability } = require('../../middleware/entitlement.middleware');
 
 // channel.routes.js — módulo channels/ (PR-03 §19 init; PR-04 §21-22 Meta
 // Callback: /code + /callback; PR-05 §55 Gupshup Registration:
@@ -17,9 +18,9 @@ router.use(authenticate, injectTenant);
 // businesses:settings — mismo permiso que usaba POST /whatsapp/connections
 // (el flujo que este endpoint reemplaza) y metaOauthConnect/Disconnect, en
 // los 4 pasos del onboarding.
-router.post('/whatsapp/embedded-signup/init', checkPermission('businesses:settings'), controller.initEmbeddedSignup);
-router.post('/whatsapp/embedded-signup/code', checkPermission('businesses:settings'), controller.codeEmbeddedSignup);
-router.post('/whatsapp/embedded-signup/callback', checkPermission('businesses:settings'), controller.callbackEmbeddedSignup);
-router.post('/whatsapp/embedded-signup/complete-gupshup', checkPermission('businesses:settings'), controller.completeGupshupEmbeddedSignup);
+router.post('/whatsapp/embedded-signup/init', checkPermission('businesses:settings'), requireCapability('whatsappEnabled'), controller.initEmbeddedSignup);
+router.post('/whatsapp/embedded-signup/code', checkPermission('businesses:settings'), requireCapability('whatsappEnabled'), controller.codeEmbeddedSignup);
+router.post('/whatsapp/embedded-signup/callback', checkPermission('businesses:settings'), requireCapability('whatsappEnabled'), controller.callbackEmbeddedSignup);
+router.post('/whatsapp/embedded-signup/complete-gupshup', checkPermission('businesses:settings'), requireCapability('whatsappEnabled'), controller.completeGupshupEmbeddedSignup);
 
 module.exports = router;

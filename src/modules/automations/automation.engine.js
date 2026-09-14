@@ -16,6 +16,7 @@ const notificationService = require('../admin/notification.service');
 // directa ni transitiva) — a diferencia de lead.service.js más abajo, este
 // require es seguro arriba del archivo, sin riesgo de ciclo.
 const channelService = require('../channels/channel.service');
+const subscriptionService = require('../subscriptions/subscription.service');
 const logger = require('../../utils/logger');
 
 // ─── Condition evaluation ─────────────────────────────────────────────────────
@@ -370,6 +371,10 @@ async function executeAction(action, lead) {
 // ─── Core runner ──────────────────────────────────────────────────────────────
 
 async function runAutomation(automation, lead, triggerData) {
+  await subscriptionService.assertCapability(automation.business, 'automationsEnabled');
+  if (automation.actions.some((action) => action.type === 'send_template')) {
+    await subscriptionService.assertCapability(automation.business, 'whatsappEnabled');
+  }
   const startedAt = Date.now();
   const log = await AutomationLog.create({
     business:   automation.business,

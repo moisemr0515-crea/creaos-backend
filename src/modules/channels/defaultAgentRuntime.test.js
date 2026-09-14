@@ -9,6 +9,7 @@ const mongoose = require('mongoose');
 const Business = require('../businesses/business.model');
 const Lead = require('../leads/lead.model');
 const aiService = require('../ai/ai.service');
+const subscriptionService = require('../subscriptions/subscription.service');
 const DefaultAgentRuntime = require('./defaultAgentRuntime');
 
 const MONGO_URI = 'mongodb://localhost:27017/creaos_test_default_agent_runtime';
@@ -30,6 +31,9 @@ describe('DefaultAgentRuntime#process()', () => {
 
   beforeEach(async () => {
     jest.restoreAllMocks();
+    jest.spyOn(subscriptionService, 'getEntitlement').mockResolvedValue({
+      planName: 'closer', limits: { aiEnabled: true, whatsappEnabled: true, automationsEnabled: true },
+    });
     await Lead.deleteMany({});
     await Business.deleteMany({});
     business = await Business.create({ name: 'Negocio de prueba' });
@@ -48,6 +52,16 @@ describe('DefaultAgentRuntime#process()', () => {
 
     expect(runAgentSpy).not.toHaveBeenCalled();
     expect(output).toMatchObject({ reply: null, actions: [], aiEnabled: false });
+  });
+
+  test('Starter conserva IA asistida y WhatsApp, pero no ejecuta IA automática', async () => {
+    subscriptionService.getEntitlement.mockResolvedValueOnce({
+      planName: 'starter', limits: { aiEnabled: true, whatsappEnabled: true, automationsEnabled: false },
+    });
+    const runAgentSpy = jest.spyOn(aiService, 'runAgent');
+    const output = await runtime.process({ conversationId: 'x', leadId: lead._id, businessContext: business });
+    expect(runAgentSpy).not.toHaveBeenCalled();
+    expect(output).toMatchObject({ reply: null, aiEnabled: false, metadata: { entitlementBlocked: true } });
   });
 
   test('outcome:"answer" — traduce responseText a reply y tokensUsed a metadata, mismo AgentRuntimeOutput de siempre', async () => {

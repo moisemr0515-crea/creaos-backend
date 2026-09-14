@@ -14,7 +14,8 @@ const getPlans = async (req, res, next) => {
 const getCurrentSubscription = async (req, res, next) => {
   try {
     const subscription = await service.getCurrentSubscription(req.businessId);
-    return respuestaExito(res, { message: 'Suscripción actual', data: { subscription } });
+    const entitlement = await service.getEntitlement(req.businessId, subscription);
+    return respuestaExito(res, { message: 'Suscripción actual', data: { subscription, entitlement } });
   } catch (err) { next(err); }
 };
 
@@ -66,9 +67,10 @@ const checkLeadLimit = async (req, res, next) => {
 
 const mpCallback = async (req, res, next) => {
   try {
-    const { preapproval_id, status } = req.query;
+    const status = ['approved', 'authorized', 'pending', 'rejected', 'failure', 'cancelled']
+      .includes(String(req.query.status)) ? String(req.query.status) : 'pending';
     const redirectBase = process.env.FRONTEND_URL || 'http://localhost:5173';
-    return res.redirect(`${redirectBase}/dashboard/billing?provider=mercadopago&status=${status || 'pending'}&sub_id=${preapproval_id || ''}`);
+    return res.redirect(`${redirectBase}/plan?checkout=return&provider=mercadopago&status=${encodeURIComponent(status)}`);
   } catch (err) { next(err); }
 };
 
@@ -97,10 +99,8 @@ const mercadopagoWebhook = async (req, res, next) => {
       return res.status(401).json({ error: 'Invalid signature' });
     }
 
-    res.status(200).json({ received: true });
-    await service.handleMercadoPagoWebhook(req.body).catch(e =>
-      console.error('[mp webhook]', e.message)
-    );
+    await service.handleMercadoPagoWebhook(req.body);
+    return res.status(200).json({ received: true });
   } catch (err) { next(err); }
 };
 

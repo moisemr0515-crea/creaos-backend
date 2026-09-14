@@ -36,6 +36,7 @@ const Notification = require('../../admin/notification.model');
 const User = require('../../users/user.model');
 const Role = require('../../roles/role.model');
 const aiService = require('../../ai/ai.service');
+const subscriptionService = require('../../subscriptions/subscription.service');
 const pushService = require('../../push/push.service');
 const { enqueueOutbound } = require('../queues/outbound.queue');
 const { processInboundJob } = require('./inbound.worker');
@@ -72,6 +73,9 @@ describe('inbound.worker#processInboundJob() — paridad con processGupshupMessa
   beforeEach(async () => {
     jest.clearAllMocks();
     jest.restoreAllMocks();
+    jest.spyOn(subscriptionService, 'getEntitlement').mockResolvedValue({
+      planName: 'closer', limits: { aiEnabled: true, whatsappEnabled: true, automationsEnabled: true },
+    });
     await Notification.deleteMany({});
     await OutboundEvent.deleteMany({});
     await InboundEvent.deleteMany({});

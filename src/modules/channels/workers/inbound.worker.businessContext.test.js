@@ -33,6 +33,7 @@ const InboundEvent = require('../inboundEvent.model');
 const Pipeline = require('../../pipeline/pipeline.model');
 const Product = require('../../products/product.model');
 const aiService = require('../../ai/ai.service');
+const subscriptionService = require('../../subscriptions/subscription.service');
 const { processInboundJob } = require('./inbound.worker');
 
 const MONGO_URI = 'mongodb://localhost:27017/creaos_test_inbound_worker_business_context';
@@ -75,6 +76,9 @@ describe('inbound.worker#processInboundJob() — fix del gap de businessContext 
 
   beforeEach(async () => {
     jest.restoreAllMocks();
+    jest.spyOn(subscriptionService, 'getEntitlement').mockResolvedValue({
+      planName: 'closer', limits: { aiEnabled: true, whatsappEnabled: true, automationsEnabled: true },
+    });
     await InboundEvent.deleteMany({});
     await Conversation.deleteMany({});
     await Lead.deleteMany({});

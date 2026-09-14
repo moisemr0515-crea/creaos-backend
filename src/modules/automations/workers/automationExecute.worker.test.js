@@ -19,6 +19,7 @@ const AutomationLog = require('../automation-log.model');
 const Pipeline = require('../../pipeline/pipeline.model');
 const Notification = require('../../admin/notification.model');
 const pushService = require('../../push/push.service');
+const subscriptionService = require('../../subscriptions/subscription.service');
 const { processExecuteJob } = require('./automationExecute.worker');
 const { DAYS_THRESHOLD_FIELD } = require('../timeTriggers.registry');
 
@@ -42,6 +43,8 @@ describe('automationExecute.worker#processExecuteJob()', () => {
   });
 
   beforeEach(async () => {
+    jest.restoreAllMocks();
+    jest.spyOn(subscriptionService, 'assertCapability').mockResolvedValue({ planName: 'closer' });
     await AutomationLog.deleteMany({});
     await Automation.deleteMany({});
     await Lead.deleteMany({});
@@ -167,6 +170,7 @@ describe('automationExecute.worker#processExecuteJob() — guardrail de notifica
 
   beforeEach(async () => {
     jest.restoreAllMocks();
+    jest.spyOn(subscriptionService, 'assertCapability').mockResolvedValue({ planName: 'closer' });
     await Notification.deleteMany({});
     await AutomationLog.deleteMany({});
     await Automation.deleteMany({});

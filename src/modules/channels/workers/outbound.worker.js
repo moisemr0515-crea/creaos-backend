@@ -4,6 +4,7 @@ const { moveToDeadLetter } = require('../queues/deadLetter.queue');
 const OutboundEvent = require('../outboundEvent.model');
 const Conversation = require('../../ai/conversation.model');
 const channelService = require('../channel.service');
+const subscriptionService = require('../../subscriptions/subscription.service');
 const logger = require('../../../utils/logger');
 
 /**
@@ -49,6 +50,19 @@ async function processOutboundJob(job) {
     event.error = 'aiEnabled se apagó (agente humano tomó control) antes del envío';
     await event.save();
     logger.info('[outboundWorker] envío cancelado, agente humano tomó control', { outboundEventId });
+    return;
+  }
+
+  // Revalida el plan al consumir la cola: una respuesta pudo generarse con
+  // entitlement válido y quedar pendiente mientras la suscripción cambiaba.
+  const entitlement = await subscriptionService.getEntitlement(event.tenantId);
+  if (!entitlement.limits.aiEnabled
+    || !entitlement.limits.whatsappEnabled
+    || !entitlement.limits.automationsEnabled) {
+    event.status = 'skipped';
+    event.error = 'Entitlement de IA/WhatsApp/automatizaciones no disponible al ejecutar el envío';
+    await event.save();
+    logger.info('[outboundWorker] envío cancelado por entitlement', { outboundEventId });
     return;
   }
 

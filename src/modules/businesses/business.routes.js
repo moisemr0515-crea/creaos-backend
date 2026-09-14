@@ -8,6 +8,7 @@ const { checkPermission } = require('../../middleware/rbac.middleware');
 const { validate } = require('../../middleware/validate.middleware');
 const { AppError } = require('../../middleware/error.middleware');
 const { traducirErroresDeMulter } = require('../../middleware/uploadErrors.middleware');
+const { requireCapability } = require('../../middleware/entitlement.middleware');
 
 const router = Router();
 
@@ -93,6 +94,7 @@ router.put('/current',
     body('aiSalesEnabled').optional().isBoolean().withMessage('aiSalesEnabled debe ser booleano').toBoolean(),
   ],
   validate,
+  requireCapability('aiEnabled', (req) => req.body.aiSalesEnabled === true),
   controller.updateNegocioActual
 );
 

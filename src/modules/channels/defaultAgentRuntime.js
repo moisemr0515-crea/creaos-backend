@@ -3,6 +3,7 @@ const Lead = require('../leads/lead.model');
 const aiService = require('../ai/ai.service');
 const { assertTenantScope } = require('./tenant.resolver');
 const { OPENAI_MODEL } = require('../../config/env');
+const subscriptionService = require('../subscriptions/subscription.service');
 
 /**
  * DefaultAgentRuntime — implementación de Fase 0-3 (sub-fase 1.d). Envoltorio
@@ -58,6 +59,18 @@ class DefaultAgentRuntime extends IAgentRuntime {
     // exactamente el tipo de "rompe en silencio entre pasos" que
     // assertTenantScope() existe para atajar antes de activar el flag.
     assertTenantScope(input.businessContext?._id, lead.business);
+
+    const entitlement = await subscriptionService.getEntitlement(input.businessContext?._id);
+    if (!entitlement.limits.aiEnabled
+      || !entitlement.limits.whatsappEnabled
+      || !entitlement.limits.automationsEnabled) {
+      return {
+        reply: null,
+        actions: [],
+        aiEnabled: false,
+        metadata: { tokensUsed: 0, model: OPENAI_MODEL, entitlementBlocked: true },
+      };
+    }
 
     // input.businessContext debe ser el documento Business COMPLETO desde
     // la Etapa C3.1b — ver agentRuntime.interface.js para el porqué

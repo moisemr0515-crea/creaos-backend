@@ -4,6 +4,7 @@ const Lead = require('../leads/lead.model');
 const Business = require('../businesses/business.model');
 const { AppError } = require('../../middleware/error.middleware');
 const { respuestaExito, buildMeta } = require('../../utils/response');
+const subscriptionService = require('../subscriptions/subscription.service');
 
 /**
  * Verifica que el lead detrás de una conversación siga activo (existe y
@@ -323,7 +324,12 @@ const toggleAI = async (req, res, next) => {
     if (!conversation) throw new AppError('Conversación no encontrada', 404);
     await assertLeadActive(conversation.lead);
 
-    conversation.aiEnabled = !conversation.aiEnabled;
+    const nextEnabled = !conversation.aiEnabled;
+    if (nextEnabled) {
+      await subscriptionService.assertCapability(req.businessId, 'aiEnabled');
+      await subscriptionService.assertCapability(req.businessId, 'automationsEnabled');
+    }
+    conversation.aiEnabled = nextEnabled;
     await conversation.save();
 
     return respuestaExito(res, {

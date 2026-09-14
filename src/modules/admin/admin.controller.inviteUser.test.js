@@ -54,12 +54,12 @@ describe('admin.controller#inviteUser() — bloqueo duro de plan', () => {
     business = await Business.create({ name: 'Negocio de prueba' });
   });
 
-  const crearSubscripcionConLimite = async (maxUsers) => {
+  const crearSubscripcionConLimite = async (maxUsers, planName = 'starter') => {
     const plan = await Plan.create({
-      name: 'starter',
+      name: planName,
       displayName: 'Plan de prueba',
       price: 0,
-      limits: { maxUsers },
+      limits: { maxUsers, multiUser: maxUsers > 1 },
     });
     await Subscription.create({
       business: business._id,
@@ -97,8 +97,8 @@ describe('admin.controller#inviteUser() — bloqueo duro de plan', () => {
     expect(await User.countDocuments({ business: business._id })).toBe(1);
   });
 
-  test('rechaza con 403 cuando el negocio ya está en el límite — NO crea el usuario', async () => {
-    await crearSubscripcionConLimite(1);
+  test.each(['starter', 'closer', 'dominator'])('%s rechaza un segundo usuario con 403', async (planName) => {
+    await crearSubscripcionConLimite(1, planName);
     await crearUsuario();
 
     const req = {

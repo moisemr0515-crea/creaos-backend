@@ -71,6 +71,56 @@ const getCurrentSubscription = async (businessId) => {
   return sub;
 };
 
+const ENTITLED_STATUSES = new Set(['active', 'trialing']);
+const CAPABILITY_LABELS = {
+  aiEnabled: 'IA',
+  whatsappEnabled: 'WhatsApp',
+  automationsEnabled: 'automatizaciones',
+  advancedReports: 'reportes avanzados',
+};
+
+const normalizeLimits = (limits = {}) => ({
+  leadsPerMonth: Number.isFinite(limits.leadsPerMonth) ? limits.leadsPerMonth : 20,
+  aiEnabled: limits.aiEnabled === true,
+  automationsEnabled: limits.automationsEnabled === true,
+  maxActiveAutomations: Number.isFinite(limits.maxActiveAutomations) ? limits.maxActiveAutomations : 0,
+  whatsappEnabled: limits.whatsappEnabled === true,
+  multiUser: limits.multiUser === true,
+  maxUsers: Number.isFinite(limits.maxUsers) ? limits.maxUsers : 1,
+  advancedReports: limits.advancedReports === true,
+});
+
+const getEntitlement = async (businessId, existingSubscription = null) => {
+  const sub = existingSubscription || await getCurrentSubscription(businessId);
+  let effectivePlan = ENTITLED_STATUSES.has(sub.status) ? sub.plan : null;
+  if (!effectivePlan) {
+    effectivePlan = await Plan.findOne({ name: 'starter', isActive: true });
+    if (!effectivePlan) throw new AppError('Plan starter no encontrado. Ejecuta npm run seed:plans', 500);
+  }
+  return {
+    planName: effectivePlan.name || 'starter',
+    subscriptionStatus: sub.status,
+    provider: sub.provider,
+    limits: normalizeLimits(effectivePlan.limits),
+    pending: sub.pendingStatus ? {
+      planName: sub.pendingPlanName || null,
+      provider: sub.pendingProvider || null,
+      status: sub.pendingStatus,
+    } : null,
+  };
+};
+
+const assertCapability = async (businessId, capability) => {
+  if (!Object.prototype.hasOwnProperty.call(CAPABILITY_LABELS, capability)) {
+    throw new AppError('Capacidad de plan desconocida', 500);
+  }
+  const entitlement = await getEntitlement(businessId);
+  if (entitlement.limits[capability] !== true) {
+    throw new AppError(`Tu plan actual no incluye ${CAPABILITY_LABELS[capability]}`, 403);
+  }
+  return entitlement;
+};
+
 // ─── 3. createStripeCustomer ─────────────────────────────────────────────────
 
 const createStripeCustomer = async (business) => {
@@ -125,19 +175,21 @@ const createStripeSubscription = async (businessId, planName, paymentMethodId) =
 
   const clientSecret = stripeSubscription.latest_invoice?.payment_intent?.client_secret;
 
-  // Persist in MongoDB
-  const now = new Date();
-  await Subscription.findByIdAndUpdate(sub._id, {
-    plan:                plan._id,
-    planName,
-    status:              'trialing',
-    provider:            'stripe',
+  const providerStatus = stripeSubscription.status;
+  const authorized = ENTITLED_STATUSES.has(providerStatus);
+  const update = {
     stripeCustomerId:    customerId,
     stripeSubscriptionId: stripeSubscription.id,
     currentPeriodStart:  new Date(stripeSubscription.current_period_start * 1000),
     currentPeriodEnd:    new Date(stripeSubscription.current_period_end * 1000),
-    trialEnd:            new Date(stripeSubscription.trial_end * 1000),
-  });
+    trialEnd:            stripeSubscription.trial_end ? new Date(stripeSubscription.trial_end * 1000) : undefined,
+    pendingPlan:         plan._id,
+    pendingPlanName:     planName,
+    pendingProvider:     'stripe',
+    pendingStatus:       authorized ? 'approved' : 'pending',
+  };
+  if (authorized) Object.assign(update, { plan: plan._id, planName, status: providerStatus, provider: 'stripe' });
+  await Subscription.findByIdAndUpdate(sub._id, update);
 
   return { subscription: stripeSubscription, clientSecret };
 };
@@ -174,14 +226,14 @@ const createMercadoPagoSubscription = async (businessId, planName, payerEmail) =
     },
   });
 
-  // Persist pending subscription
+  // Registra la intención; no cambia el plan efectivo antes del webhook.
   const sub = await getCurrentSubscription(businessId);
   await Subscription.findByIdAndUpdate(sub._id, {
-    plan:             plan._id,
-    planName,
-    status:           'incomplete',
-    provider:         'mercadopago',
     mpSubscriptionId: result.id,
+    pendingPlan:      plan._id,
+    pendingPlanName:  planName,
+    pendingProvider:  'mercadopago',
+    pendingStatus:    'pending',
   });
 
   return { initPoint: result.init_point, subscriptionId: result.id };
@@ -204,17 +256,31 @@ const handleStripeWebhook = async (rawBody, signature) => {
 
   const data = event.data?.object;
 
+  if (event.id && await Subscription.exists({ processedWebhookEvents: event.id })) {
+    return { received: true, type: event.type, duplicate: true };
+  }
+
   switch (event.type) {
     case 'customer.subscription.updated': {
       const sub = await Subscription.findOne({ stripeSubscriptionId: data.id });
       if (!sub) break;
-      await Subscription.findByIdAndUpdate(sub._id, {
+      const update = {
         status:             data.status,
         currentPeriodStart: new Date(data.current_period_start * 1000),
         currentPeriodEnd:   new Date(data.current_period_end * 1000),
         cancelAtPeriodEnd:  data.cancel_at_period_end,
         trialEnd:           data.trial_end ? new Date(data.trial_end * 1000) : undefined,
-      });
+      };
+      if (ENTITLED_STATUSES.has(data.status) && sub.pendingPlan && sub.pendingPlanName) {
+        Object.assign(update, {
+          plan: sub.pendingPlan,
+          planName: sub.pendingPlanName,
+          provider: 'stripe',
+          pendingStatus: 'approved',
+        });
+      }
+      if (event.id) update.$addToSet = { processedWebhookEvents: event.id };
+      await Subscription.findByIdAndUpdate(sub._id, update);
       break;
     }
 
@@ -222,14 +288,16 @@ const handleStripeWebhook = async (rawBody, signature) => {
       const sub = await Subscription.findOne({ stripeSubscriptionId: data.id });
       if (!sub) break;
       const starter = await Plan.findOne({ name: 'starter' });
-      await Subscription.findByIdAndUpdate(sub._id, {
+      const update = {
         status:    'canceled',
         canceledAt: new Date(),
         plan:      starter?._id,
         planName:  'starter',
         provider:  'free',
         cancelAtPeriodEnd: false,
-      });
+      };
+      if (event.id) update.$addToSet = { processedWebhookEvents: event.id };
+      await Subscription.findByIdAndUpdate(sub._id, update);
       break;
     }
 
@@ -238,8 +306,18 @@ const handleStripeWebhook = async (rawBody, signature) => {
       if (!stripeSubId) break;
       const sub = await Subscription.findOne({ stripeSubscriptionId: stripeSubId });
       if (!sub) break;
-      await Subscription.findByIdAndUpdate(sub._id, {
+      await Subscription.findOneAndUpdate({
+        _id: sub._id,
+        ...(event.id ? { processedWebhookEvents: { $ne: event.id } } : {}),
+      }, {
         status: 'active',
+        ...(sub.pendingProvider === 'stripe' && sub.pendingPlan && sub.pendingPlanName ? {
+          plan: sub.pendingPlan,
+          planName: sub.pendingPlanName,
+          provider: 'stripe',
+          pendingStatus: 'approved',
+        } : {}),
+        ...(event.id ? { $addToSet: { processedWebhookEvents: event.id } } : {}),
         $push: {
           paymentHistory: {
             amount:            data.amount_paid / 100,
@@ -259,9 +337,13 @@ const handleStripeWebhook = async (rawBody, signature) => {
       const stripeSubId = data.subscription;
       if (!stripeSubId) break;
       await Subscription.findOneAndUpdate(
-        { stripeSubscriptionId: stripeSubId },
+        {
+          stripeSubscriptionId: stripeSubId,
+          ...(event.id ? { processedWebhookEvents: { $ne: event.id } } : {}),
+        },
         {
           status: 'past_due',
+          ...(event.id ? { $addToSet: { processedWebhookEvents: event.id } } : {}),
           $push: {
             paymentHistory: {
               amount:   data.amount_due / 100,
@@ -311,40 +393,57 @@ const handleMercadoPagoWebhook = async (data) => {
   const { type, data: notification } = data;
   if (type !== 'preapproval' || !notification?.id) return;
 
-  try {
-    const client = getMP();
-    const pa     = new PreApproval(client);
-    const mpSub  = await pa.get({ id: notification.id });
+  const client = getMP();
+  const pa     = new PreApproval(client);
+  const mpSub  = await pa.get({ id: notification.id });
+  const sub = await Subscription.findOne({ mpSubscriptionId: String(mpSub.id) });
+  if (!sub) return { received: true, ignored: true };
 
-    const businessId = mpSub.metadata?.businessId;
-    const planId     = mpSub.metadata?.planId;
-    if (!businessId) return;
+  const metadata = mpSub.metadata || {};
+  const businessId = metadata.businessId || metadata.business_id;
+  const planId = metadata.planId || metadata.plan_id;
+  const planName = metadata.planName || metadata.plan_name;
+  const metadataMatches = String(sub.business) === String(businessId)
+    && String(sub.pendingPlan) === String(planId)
+    && sub.pendingPlanName === planName
+    && sub.pendingProvider === 'mercadopago';
+  if (!metadataMatches) throw new AppError('Metadata de suscripción Mercado Pago inválida', 400);
 
-    if (mpSub.status === 'authorized') {
-      await Subscription.findOneAndUpdate(
-        { business: businessId },
-        {
-          plan:             planId,
-          planName:         mpSub.metadata?.planName || 'closer',
-          status:           'active',
-          provider:         'mercadopago',
-          mpSubscriptionId: mpSub.id,
-          mpPayerId:        String(mpSub.payer_id || ''),
-          currentPeriodStart: new Date(),
-          currentPeriodEnd:   new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-        },
-        { upsert: true }
-      );
-    } else if (['cancelled', 'paused'].includes(mpSub.status)) {
-      const starter = await Plan.findOne({ name: 'starter' });
-      await Subscription.findOneAndUpdate(
-        { mpSubscriptionId: mpSub.id },
-        { status: 'canceled', canceledAt: new Date(), plan: starter?._id, planName: 'starter', provider: 'free' }
-      );
-    }
-  } catch (err) {
-    console.error('[MP webhook]', err.message);
+  const plan = await Plan.findOne({ _id: planId, name: planName, isActive: true });
+  if (!plan) throw new AppError('Plan de Mercado Pago inválido', 400);
+
+  if (mpSub.status === 'authorized') {
+    const activated = await Subscription.findOneAndUpdate(
+      { _id: sub._id, pendingStatus: { $ne: 'approved' } },
+      {
+        plan: plan._id,
+        planName: plan.name,
+        status: 'active',
+        provider: 'mercadopago',
+        mpPayerId: String(mpSub.payer_id || ''),
+        currentPeriodStart: new Date(),
+        currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+        pendingStatus: 'approved',
+      },
+      { new: true }
+    );
+    return { received: true, activated: Boolean(activated), duplicate: !activated };
   }
+
+  if (['cancelled', 'paused', 'rejected'].includes(mpSub.status)) {
+    if (sub.pendingStatus === 'approved') {
+      const starter = await Plan.findOne({ name: 'starter' });
+      await Subscription.findByIdAndUpdate(sub._id, {
+        status: 'canceled', canceledAt: new Date(), plan: starter?._id,
+        planName: 'starter', provider: 'free', pendingStatus: 'cancelled',
+      });
+    } else {
+      await Subscription.findByIdAndUpdate(sub._id, {
+        pendingStatus: mpSub.status === 'rejected' ? 'rejected' : 'cancelled',
+      });
+    }
+  }
+  return { received: true };
 };
 
 // ─── 8. cancelSubscription ───────────────────────────────────────────────────
@@ -409,8 +508,8 @@ const cancelSubscription = async (businessId, atPeriodEnd = true) => {
  * el pipeline exacto de cada lead vía agregación; no antes.
  */
 const checkLeadLimit = async (businessId) => {
-  const sub = await getCurrentSubscription(businessId);
-  const limit = sub.plan?.limits?.leadsPerMonth ?? 10; // fallback alineado al Starter real (10, no 5 — ver fix/plan-starter-leads-limit-mismatch)
+  const entitlement = await getEntitlement(businessId);
+  const limit = entitlement.limits.leadsPerMonth;
 
   if (limit === -1) {
     const current = await contarLeadsActivos(businessId);
@@ -454,8 +553,8 @@ const contarLeadsActivos = async (businessId) => {
  * bien poblado, fail-closed al mínimo, nunca de más.
  */
 const checkUserLimit = async (businessId) => {
-  const sub = await getCurrentSubscription(businessId);
-  const limit = sub.plan?.limits?.maxUsers ?? 1;
+  const entitlement = await getEntitlement(businessId);
+  const limit = entitlement.limits.maxUsers;
   const current = await User.countDocuments({ business: businessId, isActive: true });
   return { allowed: current < limit, current, limit };
 };
@@ -486,6 +585,8 @@ const incrementLeadCount = async (businessId) => {
 module.exports = {
   getPlans,
   getCurrentSubscription,
+  getEntitlement,
+  assertCapability,
   createStripeCustomer,
   createStripeSubscription,
   createMercadoPagoSubscription,

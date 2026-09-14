@@ -33,6 +33,14 @@ const subscriptionSchema = new mongoose.Schema(
     mpSubscriptionId: String,
     mpPayerId:        String,
 
+    // Cambio de plan solicitado pero todavía no autorizado por el proveedor.
+    // Nunca se usa para conceder capacidades; el entitlement efectivo solo
+    // lee plan/planName cuando la suscripción está active/trialing.
+    pendingPlan:     { type: mongoose.Schema.Types.ObjectId, ref: 'Plan' },
+    pendingPlanName: { type: String, enum: ['starter', 'closer', 'dominator'] },
+    pendingProvider: { type: String, enum: ['stripe', 'mercadopago'] },
+    pendingStatus:   { type: String, enum: ['pending', 'approved', 'rejected', 'cancelled'] },
+
     // Periodo actual
     currentPeriodStart: Date,
     currentPeriodEnd:   Date,
@@ -45,6 +53,7 @@ const subscriptionSchema = new mongoose.Schema(
     leadsResetAt:       { type: Date, default: Date.now },
 
     paymentHistory: { type: [paymentHistorySchema], default: [] },
+    processedWebhookEvents: { type: [String], default: [] },
   },
   { timestamps: true }
 );

@@ -21,9 +21,11 @@ const PLANS = [
     currency:    'USD',
     interval:    'month',
     features:    [
-      '10 leads/mes',
+      '20 oportunidades activas',
       '1 usuario',
       'CRM básico',
+      'IA básica asistida',
+      'WhatsApp integrado',
       'Pipeline visual',
       'Soporte por email',
     ],
@@ -34,10 +36,10 @@ const PLANS = [
       // oportunidades de venta activas", nunca se baja, así que ningún
       // negocio Starter existente puede quedar sobre el límite por esto.
       leadsPerMonth:      20,
-      aiEnabled:          false,
+      aiEnabled:          true,
       automationsEnabled: false,
       maxActiveAutomations: 0,
-      whatsappEnabled:    false,
+      whatsappEnabled:    true,
       multiUser:          false,
       maxUsers:           1,
       advancedReports:    false,
@@ -52,11 +54,11 @@ const PLANS = [
     currency:    'USD',
     interval:    'month',
     features:    [
-      '100 leads/mes',
-      '3 usuarios',
-      'IA Vendedora 24/7',
-      'Automatizaciones',
-      'WhatsApp Business',
+      '300 oportunidades activas',
+      '1 usuario',
+      'IA automática 24/7',
+      'Hasta 100 automatizaciones activas',
+      'WhatsApp integrado',
       'Webhooks Meta & TikTok',
       'Soporte prioritario',
     ],
@@ -73,11 +75,10 @@ const PLANS = [
       automationsEnabled: true,
       maxActiveAutomations: 100,
       whatsappEnabled:    true,
-      multiUser:          true,
-      // Cambio de negocio confirmado por Moises (24/ago/2026) — no es fix
-      // de mismatch, es bajar el límite real: 3→1. Auditoría de población
-      // hecha antes de aplicar: solo CREA OS (cuenta interna) lo superaba,
-      // resuelto aparte subiéndolo a Dominator.
+      // La oferta comercial vigente incluye un único usuario en todos los
+      // planes. La infraestructura multiusuario se conserva para el futuro,
+      // pero ningún plan actual la habilita.
+      multiUser:          false,
       maxUsers:           1,
       advancedReports:    false,
     },
@@ -91,11 +92,11 @@ const PLANS = [
     currency:    'USD',
     interval:    'month',
     features:    [
-      '300 leads/mes',
-      '10 usuarios',
-      'IA avanzada con GPT-4o',
-      'Automatizaciones ilimitadas',
-      'WhatsApp Business',
+      '1000 oportunidades activas',
+      '1 usuario',
+      'IA avanzada',
+      'Hasta 400 automatizaciones activas',
+      'WhatsApp integrado',
       'Reportes avanzados',
       'API personalizada',
       'Soporte dedicado',
@@ -109,22 +110,9 @@ const PLANS = [
       automationsEnabled: true,
       maxActiveAutomations: 400,
       whatsappEnabled:    true,
-      multiUser:          true,
-      // Auditoría de billing (12/sep/2026): baja de 3 a 1, alineado al copy
-      // real de plan.tsx desde la auditoría de pricing del 23/ago/2026
-      // ("1 Usuario" en Dominator — el flujo de invitación multiusuario
-      // está roto: sin UI para invitar, contraseña temporal nunca enviada,
-      // ver known-issues.md). Ese copy nunca se reflejó acá en Plan.limits,
-      // así que quedó invisible mientras el panel de negocio mostraba
-      // "Starter" para toda cuenta (bug corregido en PR #32) — al pasar a
-      // leer Plan.limits en vivo, la inconsistencia se hizo visible.
-      // Auditado antes de bajarlo: el único negocio Dominator real es
-      // CREA OS (cuenta interna), con 2 usuarios activos hoy — confirmado
-      // y aceptado explícitamente por Moises que quede así (no hay plan
-      // superior al que subirla esta vez). No afecta a los 2 usuarios
-      // existentes (checkUserLimit() solo bloquea invitaciones NUEVAS, no
-      // desactiva a nadie) — bloquearía un tercer usuario si se intentara
-      // invitar, hasta que el flujo de invitación real se arregle.
+      // La infraestructura multiusuario se conserva, pero la oferta comercial
+      // vigente limita también Dominator a un único usuario.
+      multiUser:          false,
       maxUsers:           1,
       advancedReports:    true,
     },

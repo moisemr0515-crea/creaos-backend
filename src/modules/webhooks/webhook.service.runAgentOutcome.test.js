@@ -19,6 +19,7 @@ const Lead = require('../leads/lead.model');
 const Conversation = require('../ai/conversation.model');
 const aiService = require('../ai/ai.service');
 const channelService = require('../channels/channel.service');
+const subscriptionService = require('../subscriptions/subscription.service');
 const { processGupshupMessage } = require('./webhook.service');
 
 const MONGO_URI = 'mongodb://localhost:27017/creaos_test_webhook_service_run_agent_outcome';
@@ -40,6 +41,9 @@ describe('webhook.service#processGupshupMessage() — reacción a outcome:"error
 
   beforeEach(async () => {
     jest.restoreAllMocks();
+    jest.spyOn(subscriptionService, 'getEntitlement').mockResolvedValue({
+      planName: 'closer', limits: { aiEnabled: true, whatsappEnabled: true, automationsEnabled: true },
+    });
     await Conversation.deleteMany({});
     await Lead.deleteMany({});
     await Pipeline.deleteMany({});

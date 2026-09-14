@@ -24,11 +24,11 @@ const planesSinSeedAvisados = new Set();
  * seed faltante), pero deja un logger.error bien ruidoso para que se note en
  * vez de comportarse indistinguible de un Starter legítimo.
  */
-const resolverLimitePlan = (sub) => {
-  const limite = sub.plan?.limits?.maxActiveAutomations;
+const resolverLimitePlan = (entitlement) => {
+  const limite = entitlement.limits?.maxActiveAutomations;
 
   if (limite === undefined) {
-    const planName = sub.planName || sub.plan?.name || '?';
+    const planName = entitlement.planName || '?';
     if (!planesSinSeedAvisados.has(planName)) {
       planesSinSeedAvisados.add(planName);
       logger.error(
@@ -50,8 +50,8 @@ const resolverLimitePlan = (sub) => {
  * convenio que subscriptionService#checkLeadLimit).
  */
 const verificarLimiteAutomatizaciones = async (businessId, excludeAutomationId = null) => {
-  const sub = await subscriptionService.getCurrentSubscription(businessId);
-  const limite = resolverLimitePlan(sub);
+  const entitlement = await subscriptionService.getEntitlement(businessId);
+  const limite = resolverLimitePlan(entitlement);
 
   if (limite === -1) return { limite, activas: null };
 
@@ -337,12 +337,12 @@ const testAutomation = async (businessId, automationId, leadId) => {
 const obtenerEstadoAutomatizaciones = async (businessId, userId) => {
   await asegurarAutomatizacionesSemilla(businessId, userId);
 
-  const sub = await subscriptionService.getCurrentSubscription(businessId);
-  const limite = resolverLimitePlan(sub);
+  const entitlement = await subscriptionService.getEntitlement(businessId);
+  const limite = resolverLimitePlan(entitlement);
   const activas = await Automation.countDocuments({ business: businessId, isActive: true, isDeleted: false });
 
   return {
-    plan: sub.planName,
+    plan: entitlement.planName,
     limite,
     activas,
     disponibles: limite === -1 ? -1 : Math.max(limite - activas, 0),

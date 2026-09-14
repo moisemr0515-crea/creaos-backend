@@ -132,7 +132,7 @@ Antes de dar el ítem por cerrado, se corrió un script ad-hoc de solo lectura (
 
 ### Problema
 
-`inviteUser()` creaba usuarios nuevos sin consultar en ningún momento `Business.plan` ni la `Subscription` del negocio — `Plan.limits.maxUsers` no se aplicaba nunca. Aparte, el número que veía el cliente en la UI de precios (`plan.tsx`, copy estático "1 Usuario"/"1 Usuario"/"3 Usuarios") no tenía ninguna garantía de estar sincronizado con el seed real de `Plan.limits.maxUsers` — eran dos fuentes de verdad independientes.
+`inviteUser()` creaba usuarios nuevos sin consultar en ningún momento `Business.plan` ni la `Subscription` del negocio — `Plan.limits.maxUsers` no se aplicaba nunca. Aparte, el número que veía el cliente en la UI de precios no tenía ninguna garantía de estar sincronizado con el seed real de `Plan.limits.maxUsers` — eran dos fuentes de verdad independientes.
 
 ### Fix (ya implementado, PR previo a esta sesión)
 
@@ -140,7 +140,7 @@ Antes de dar el ítem por cerrado, se corrió un script ad-hoc de solo lectura (
 
 `admin.controller.js#inviteUser()`: bloqueo duro al principio de la función, antes de cualquier otra validación — rechaza con 403 si el negocio ya está en su límite.
 
-Sobre el copy de `plan.tsx`: verificado el 11/sep/2026 que hoy coincide con el seed real (`plans.seed.js`: Starter=1, Closer=1, Dominator=3 — commit `4a603df chore(plans): baja maxUsers de Closer y Dominator`, ajustó el seed para alinearlo al copy ya existente). No se encontró ninguna pantalla de gestión de equipo/invitar usuarios en `crea-os-ignite` — el copy de `plan.tsx` es la única superficie del frontend que menciona el límite de usuarios hoy.
+La decisión comercial vigente fija `maxUsers:1` y `multiUser:false` para Starter, Closer y Dominator. `plan.tsx` obtiene ese límite desde `Plan.limits`; no existe una segunda constante comercial en el frontend. No se encontró ninguna pantalla de gestión de equipo/invitar usuarios en `crea-os-ignite`.
 
 Tests: `subscription.service.checkUserLimit.test.js` + `admin.controller.inviteUser.test.js`.
 
@@ -551,7 +551,7 @@ No es un PR — es sacar esa entrada de `ALLOWED_ORIGINS` directo en el dashboar
 ## 2026-09-11 — Invitar usuarios (multi-usuario) no funciona de punta a punta, aunque el límite de plan sí es real
 
 **Estado:** Abierto — identificado durante la sincronización del copy de `/plan`, no resuelto (decisión explícita del usuario: dejarlo anotado, no arreglarlo ahora).
-**Prioridad:** Media — bloquea una feature que Dominator vendía como "3 Usuarios"; el copy ya se corrigió a "1 Usuario" para no seguir prometiéndola mientras esto no se resuelva.
+**Prioridad:** Baja para la oferta vigente — los tres planes comerciales están limitados a un usuario; la infraestructura se conserva para una posible versión futura.
 **Detectado en:** sesión de sincronización de `/plan` del 11/sep/2026 (misma auditoría que "Seguimiento automático"/"Cierre asistido por IA" y los límites de plan de más arriba en esta bitácora).
 **Archivos involucrados:** [`admin.controller.js#inviteUser()`](../../src/modules/admin/admin.controller.js), [`admin.routes.js`](../../src/modules/admin/admin.routes.js) (`POST /admin/config/users/invite`), [`subscription.service.js#checkUserLimit()`](../../src/modules/subscriptions/subscription.service.js) (esto sí funciona), [`utils/email.js#enviarEmailVerificacion()`](../../src/utils/email.js), [`auth.service.js#verifyEmail()`](../../src/modules/auth/auth.service.js) — y la ausencia total de nada equivalente en `crea-os-ignite/src/`.
 
@@ -567,10 +567,10 @@ El enforcement del límite de usuarios por plan **sí es real**: `inviteUser()` 
 
 El único camino teórico para que un usuario invitado llegue a entrar sería que, por su cuenta y sin que nada se lo indique, use "olvidé mi contraseña" con su email — un workaround no guiado, no mencionado en el email que realmente reciben.
 
-### Decisión implementada (11/sep/2026)
+### Decisión comercial vigente
 
-`plan.tsx`: Dominator pasó de anunciar "3 Usuarios" a "1 Usuario" (igual que Starter/Closer) — el límite real de plan sigue siendo `maxUsers:3` en el backend (sin cambios, sigue enforced), pero el copy deja de prometer una funcionalidad que hoy no se puede usar de punta a punta.
+Starter, Closer y Dominator usan `maxUsers:1` y `multiUser:false`. El backend aplica el límite mediante `checkUserLimit()` y el frontend lo refleja desde `Plan.limits`.
 
 ### Decisión pendiente
 
-Arreglar los 3 eslabones (UI de invitación en el producto, email de invitación real con contraseña/token de "primera vez" en vez de reusar el de auto-registro, pantalla de aceptar invitación) es lo que habilitaría subir el copy de Dominator de vuelta a "3 Usuarios" — no antes. Queda documentado para retomar como su propio PR (o blueprint chico) cuando se priorice.
+Si en el futuro se ofrece multiusuario, primero deberán definirse nuevos límites comerciales y completarse los tres eslabones: UI de invitación, email de invitación real y pantalla para aceptar la invitación/crear contraseña. La infraestructura backend no se elimina.

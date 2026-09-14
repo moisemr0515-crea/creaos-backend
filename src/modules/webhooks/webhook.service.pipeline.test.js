@@ -16,6 +16,7 @@ const Conversation = require('../ai/conversation.model');
 const WebhookConfig = require('./webhookConfig.model');
 const aiService = require('../ai/ai.service');
 const channelService = require('../channels/channel.service');
+const subscriptionService = require('../subscriptions/subscription.service');
 const { processGupshupMessage, processWhatsAppMessage } = require('./webhook.service');
 
 const MONGO_URI = 'mongodb://localhost:27017/creaos_test_webhook_service_pipeline';
@@ -38,6 +39,9 @@ describe('webhook.service — leads de WhatsApp entrante quedan con pipeline set
 
   beforeEach(async () => {
     jest.restoreAllMocks();
+    jest.spyOn(subscriptionService, 'getEntitlement').mockResolvedValue({
+      planName: 'closer', limits: { aiEnabled: true, whatsappEnabled: true, automationsEnabled: true },
+    });
     await Conversation.deleteMany({});
     await Lead.deleteMany({});
     await Pipeline.deleteMany({});

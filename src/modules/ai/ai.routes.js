@@ -5,6 +5,7 @@ const { authenticate } = require('../../middleware/auth.middleware');
 const { injectTenant } = require('../../middleware/tenant.middleware');
 const { checkPermission } = require('../../middleware/rbac.middleware');
 const { AppError } = require('../../middleware/error.middleware');
+const { requireCapability } = require('../../middleware/entitlement.middleware');
 
 const router = Router();
 
@@ -25,18 +26,18 @@ const uploadMedia = multer({
 router.use(authenticate, injectTenant);
 
 // Rutas sin :conversationId (antes para evitar conflictos)
-router.post('/suggest', checkPermission('leads:update'), controller.suggestResponse);
-router.post('/',        checkPermission('leads:create'), controller.startConversation);
+router.post('/suggest', checkPermission('leads:update'), requireCapability('aiEnabled'), controller.suggestResponse);
+router.post('/',        checkPermission('leads:create'), requireCapability('aiEnabled'), controller.startConversation);
 router.get('/',         checkPermission('leads:read'),   controller.listConversations);
 
 // Rutas con :conversationId
 router.get('/:conversationId',               checkPermission('leads:read'),   controller.getConversation);
-router.post('/:conversationId/message',      checkPermission('leads:update'), controller.sendMessage);
-router.post('/:conversationId/agent-message', checkPermission('leads:update'), controller.sendAgentMessage);
-router.post('/:conversationId/template-message', checkPermission('leads:update'), controller.sendTemplateMessage);
-router.post('/:conversationId/media-message', checkPermission('leads:update'), uploadMedia.single('media'), controller.sendMediaMessage);
-router.post('/:conversationId/qualify',      checkPermission('leads:update'), controller.qualifyLead);
-router.post('/:conversationId/summary',      checkPermission('leads:update'), controller.getSummary);
+router.post('/:conversationId/message',      checkPermission('leads:update'), requireCapability('aiEnabled'), controller.sendMessage);
+router.post('/:conversationId/agent-message', checkPermission('leads:update'), requireCapability('whatsappEnabled'), controller.sendAgentMessage);
+router.post('/:conversationId/template-message', checkPermission('leads:update'), requireCapability('whatsappEnabled'), controller.sendTemplateMessage);
+router.post('/:conversationId/media-message', checkPermission('leads:update'), requireCapability('whatsappEnabled'), uploadMedia.single('media'), controller.sendMediaMessage);
+router.post('/:conversationId/qualify',      checkPermission('leads:update'), requireCapability('aiEnabled'), controller.qualifyLead);
+router.post('/:conversationId/summary',      checkPermission('leads:update'), requireCapability('aiEnabled'), controller.getSummary);
 router.patch('/:conversationId/toggle-ai',   checkPermission('leads:update'), controller.toggleAI);
 router.patch('/:conversationId/escalate',    checkPermission('leads:update'), controller.escalate);
 

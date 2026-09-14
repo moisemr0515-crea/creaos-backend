@@ -6,6 +6,10 @@ const { checkPermission } = require('../../middleware/rbac.middleware');
 
 const router = Router();
 
+// Mercado Pago vuelve desde un navegador externo: el retorno es público y
+// solo informa UX. No concede entitlement ni necesita una sesión.
+router.get('/mp/callback', controller.mpCallback);
+
 // ─── Rutas protegidas ─────────────────────────────────────────────────────────
 router.use(authenticate, injectTenant);
 
@@ -15,9 +19,5 @@ router.get('/leads/limit',             controller.checkLeadLimit);
 router.post('/stripe/subscribe',       checkPermission('leads:create'), controller.stripeSubscribe);
 router.post('/mercadopago/subscribe',  checkPermission('leads:create'), controller.mercadopagoSubscribe);
 router.post('/cancel',                 checkPermission('leads:delete'), controller.cancelSubscription);
-
-// ─── MP callback (redirect sin auth) ─────────────────────────────────────────
-// Nota: registrado sin authenticate porque MP redirige aquí desde fuera
-router.get('/mp/callback', controller.mpCallback);
 
 module.exports = router;

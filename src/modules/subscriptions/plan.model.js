@@ -12,7 +12,7 @@ const planSchema = new mongoose.Schema(
     interval:    { type: String, enum: ['month', 'year'], default: 'month' },
     features:    [String],
     limits: {
-      leadsPerMonth:      { type: Number, default: 5 },
+      leadsPerMonth:      { type: Number, default: 20 },
       aiEnabled:          { type: Boolean, default: false },
       automationsEnabled: { type: Boolean, default: false },
       // Máximo de automatizaciones ACTIVAS simultáneas (no de automatizaciones

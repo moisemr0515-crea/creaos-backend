@@ -4,6 +4,7 @@ const WebhookConfig = require('./webhookConfig.model');
 const Conversation = require('../ai/conversation.model');
 const Business = require('../businesses/business.model');
 const aiService = require('../ai/ai.service');
+const subscriptionService = require('../subscriptions/subscription.service');
 const channelService = require('../channels/channel.service');
 const notificationService = require('../admin/notification.service');
 const pushService = require('../push/push.service');
@@ -531,6 +532,17 @@ async function processGupshupMessage({ phone, text, name, mediaType, mediaSource
     }
 
     return { lead, conversation };
+  }
+
+  const entitlement = await subscriptionService.getEntitlement(businessId);
+  if (!entitlement.limits.aiEnabled
+    || !entitlement.limits.whatsappEnabled
+    || !entitlement.limits.automationsEnabled) {
+    logger.info('[gupshup] respuesta automática bloqueada por entitlement', {
+      businessId: String(businessId),
+      plan: entitlement.planName,
+    });
+    return { lead, conversation, entitlementBlocked: true };
   }
 
   // C.3 — Etapa C3.1 (Runtime Contract): runAgent() es un envoltorio de
