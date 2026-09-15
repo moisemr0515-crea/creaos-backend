@@ -152,7 +152,7 @@ Mismo script ad-hoc de solo lectura de la entrada anterior (`scripts/check-plan-
 
 ## 2026-09-10 — `AutomationLog.createdAt` indexado pero nunca poblado (`timestamps:false`)
 
-**Estado:** Abierto — identificado al agregar un índice nuevo al lado (Caso 7 del backlog, PR `feat/automation-time-trigger-model`), no arreglado a propósito: fuera del alcance de ese PR.
+**Estado:** RESUELTO — eliminado el índice huérfano en la limpieza P3, manteniendo `timestamps:false` y el índice útil sobre `startedAt`.
 **Prioridad:** Baja — el índice no rompe nada ni causa datos incorrectos, simplemente no puede usarse nunca para nada (queda huérfano).
 **Detectado en:** revisión de `automation-log.model.js` mientras se agregaba el índice de cooldown para el barrido de triggers de tiempo.
 **Archivos involucrados:** [`automation-log.model.js`](../../src/modules/automations/automation-log.model.js).
@@ -161,13 +161,9 @@ Mismo script ad-hoc de solo lectura de la entrada anterior (`scripts/check-plan-
 
 El schema tiene `{ timestamps: false }` (línea 31) — Mongoose nunca agrega ni popula `createdAt`/`updatedAt` en ningún documento de esta colección. Pero la línea 35 tiene `automationLogSchema.index({ business: 1, createdAt: -1 })` — un índice sobre un campo que no existe en ningún documento real. No causa un error (Mongo indexa igual, simplemente todos los valores son "ausentes"), pero el índice es 100% inútil: cualquier query que intente usarlo (`AutomationLog.find({business}).sort({createdAt:-1})`, por ejemplo) no puede aprovecharlo para nada, porque no hay ningún `createdAt` real que ordenar. El campo que sí existe y cumple ese rol es `startedAt` (con default `Date.now`, y ya indexado aparte para el TTL de 90 días).
 
-### Alcance propuesto para el PR de seguimiento
+### Resolución
 
-Decisión simple, dos caminos:
-- **Borrar el índice muerto** (`{business:1, createdAt:-1}`) si nada depende de él — lo más probable, dado que `createdAt` nunca tiene valor.
-- O, si en algún momento se decide que SÍ conviene tener timestamps reales en los logs (auditoría, debugging), activar `{ timestamps: true }` y entonces el índice empieza a tener sentido — pero esto es una decisión de producto/observabilidad, no un fix mecánico.
-
-Cualquiera de los dos es una diferencia de una línea — bajo riesgo, bajo esfuerzo, sin apuro.
+Se confirmó que ninguna consulta usa `AutomationLog.createdAt`. Se eliminó únicamente el índice `{business:1, createdAt:-1}` y se añadió una regresión que impide volver a declarar índices sobre un campo inexistente. Los timestamps y la política TTL basada en `startedAt` no cambiaron.
 
 ---
 

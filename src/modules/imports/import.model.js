@@ -36,7 +36,10 @@ const importSchema = new mongoose.Schema(
     completedAt:      Date,
     processingTimeMs: Number,
   },
-  { timestamps: true }
+  // `errors` es parte del contrato persistido y de la API de importaciones.
+  // Mongoose lo permite; solo se silencia el warning de nombre reservado en
+  // este schema para evitar renombrar datos existentes sin una migración.
+  { timestamps: true, suppressReservedKeysWarning: true }
 );
 
 module.exports = mongoose.model('Import', importSchema);

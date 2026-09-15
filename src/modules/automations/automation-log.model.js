@@ -32,11 +32,6 @@ const automationLogSchema = new mongoose.Schema(
 );
 
 automationLogSchema.index({ business: 1, automation: 1 });
-// NOTA (documentado en docs/implementation/known-issues.md, no se arregla
-// acá): este schema tiene `{timestamps:false}` — `createdAt` no existe en
-// ningún documento. Este índice queda huérfano (nunca puede usarse para
-// nada) desde que se creó. Fuera de alcance de este PR.
-automationLogSchema.index({ business: 1, createdAt: -1 });
 automationLogSchema.index({ business: 1, status: 1 });
 // Para el cooldown del barrido de triggers de tiempo (Caso 7 del backlog):
 // antes de encolar la ejecución de una automatización de tiempo para un

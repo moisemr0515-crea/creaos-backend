@@ -55,6 +55,11 @@ describe('automation-log.model — cooldown del barrido de triggers de tiempo', 
       startedAt,
     });
 
+  test('no declara índices sobre createdAt porque el schema usa timestamps:false', () => {
+    const indexes = AutomationLog.schema.indexes().map(([fields]) => fields);
+    expect(indexes).not.toContainEqual({ business: 1, createdAt: -1 });
+  });
+
   test('encuentra un log reciente dentro de la ventana de cooldown (24h)', async () => {
     await crearLog(new Date(Date.now() - 2 * HOUR_MS)); // hace 2h
 
