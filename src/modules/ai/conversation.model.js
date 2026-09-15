@@ -125,8 +125,9 @@ const leadQualificationSchema = new mongoose.Schema(
 // arriba: un subdocumento opcional, sin _id propio, que las tools de
 // producto (ver ai/tools/index.js#searchProducts) mutan EN MEMORIA sobre el
 // documento que generateReply() ya tiene cargado, sin guardar aparte (mismo
-// criterio que escalateToHuman/updateLeadStage — un único conversation.save()
-// al final del loop). No es un sistema de memoria nuevo: es exactamente lo
+// criterio que escalateToHuman/updateLeadStage — una única persistencia
+// atómica al final del loop). No es un sistema de memoria nuevo: es
+// exactamente lo
 // que pide el documento maestro ("no crear un sistema paralelo si ya existe
 // contexto conversacional, agregar si hace falta activeProductId/
 // activeProductName") — resuelve el caso "¿tienen moringa?" → "¿cuánto
@@ -182,6 +183,10 @@ const conversationSchema = new mongoose.Schema(
     escalatedAt: Date,
     resolvedAt:  Date,
     summary:    String,
+    // Cantidad de mensajes iniciales ya incorporados en `summary`. Permite
+    // mantener una memoria incremental sin volver a resumir todo el historial
+    // en cada turno ni perder lo ocurrido antes de la ventana reciente.
+    summaryThroughMessageCount: { type: Number, default: 0, min: 0 },
     leadQualification: leadQualificationSchema,
     activeProduct: activeProductSchema,
     totalTokensUsed: { type: Number, default: 0 },
