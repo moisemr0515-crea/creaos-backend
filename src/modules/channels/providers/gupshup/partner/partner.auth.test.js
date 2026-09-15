@@ -4,8 +4,13 @@
 // GUPSHUP_PARTNER_EMAIL/SECRET se setean ANTES de requerir los módulos bajo
 // prueba, mismo criterio que channelCredentials.service.test.js con
 // CHANNEL_CREDENTIALS_KEY — config/env.js los lee al cargar.
+const originalPartnerEmail = process.env.GUPSHUP_PARTNER_EMAIL;
+const originalPartnerSecret = process.env.GUPSHUP_PARTNER_SECRET;
 process.env.GUPSHUP_PARTNER_EMAIL = 'partner@creaos.test';
 process.env.GUPSHUP_PARTNER_SECRET = 'secret-de-prueba';
+
+// Ningún test debe cargar credenciales desde el .env local del desarrollador.
+jest.mock('dotenv', () => ({ config: jest.fn() }));
 
 // Se preserva la clase real GupshupHttpError (para que `instanceof` siga
 // funcionando dentro de partner.auth.js) y solo se mockea `request`.
@@ -20,6 +25,13 @@ const { getRedis } = require('../../../../../config/redis');
 const partnerAuth = require('./partner.auth');
 
 describe('partner.auth', () => {
+  afterAll(() => {
+    if (originalPartnerEmail === undefined) delete process.env.GUPSHUP_PARTNER_EMAIL;
+    else process.env.GUPSHUP_PARTNER_EMAIL = originalPartnerEmail;
+    if (originalPartnerSecret === undefined) delete process.env.GUPSHUP_PARTNER_SECRET;
+    else process.env.GUPSHUP_PARTNER_SECRET = originalPartnerSecret;
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
   });
@@ -110,15 +122,8 @@ describe('partner.auth', () => {
       let getRedisFresh;
 
       jest.isolateModules(() => {
-        // Vaciar (no `delete`) a propósito: config/env.js vuelve a llamar
-        // dotenv.config() al re-requerirse en este registro aislado, y
-        // dotenv NUNCA pisa una key que ya existe en process.env (aunque
-        // esté vacía) -- pero SÍ la repuebla desde el .env real si la key
-        // fue borrada del todo. Si el .env local tiene credenciales reales
-        // (como las que se agregaron para la verificación en vivo del
-        // hallazgo #1 del contrato), un `delete` haría que este test dejara
-        // de simular el escenario "sin configurar" -- silenciosamente
-        // volvería a tener las credenciales reales y el test fallaría.
+        // Vaciar ambas variables simula configuración ausente. dotenv está
+        // mockeado, por lo que el resultado no depende del .env local.
         process.env.GUPSHUP_PARTNER_EMAIL = '';
         process.env.GUPSHUP_PARTNER_SECRET = '';
 

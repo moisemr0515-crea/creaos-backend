@@ -18,14 +18,12 @@ const logger = require('./src/utils/logger');
 const { connectMongoDB, disconnectMongoDB } = require('./src/config/database');
 const { connectRedis, disconnectRedis } = require('./src/config/redis');
 const { getQueueConnection, disconnectQueueConnection, QUEUE_NAMES } = require('./src/config/queue');
-const { checkCoreHealth } = require('./src/health/health.service');
-const { getInboundQueue } = require('./src/modules/channels/queues/inbound.queue');
-const { getOutboundQueue, recoverPendingOutboundEvents } = require('./src/modules/channels/queues/outbound.queue');
+const { checkWorkerHealth } = require('./src/health/workerHealth.service');
+const { recoverPendingOutboundEvents } = require('./src/modules/channels/queues/outbound.queue');
 const { startInboundWorker } = require('./src/modules/channels/workers/inbound.worker');
 const { startOutboundWorker } = require('./src/modules/channels/workers/outbound.worker');
 // Caso 7 del backlog — motor de automatizaciones, trigger por tiempo.
-const { getAutomationSweepQueue, scheduleAutomationSweep } = require('./src/modules/automations/queues/automationSweep.queue');
-const { getAutomationExecuteQueue } = require('./src/modules/automations/queues/automationExecute.queue');
+const { scheduleAutomationSweep } = require('./src/modules/automations/queues/automationSweep.queue');
 const { startAutomationSweepWorker } = require('./src/modules/automations/workers/automationSweep.worker');
 const { startAutomationExecuteWorker } = require('./src/modules/automations/workers/automationExecute.worker');
 
@@ -57,25 +55,25 @@ const iniciar = async () => {
     await scheduleAutomationSweep();
 
     httpServer = http.createServer(async (req, res) => {
-      if (req.url === '/health') {
+      if (req.url === '/health/live') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok' }));
+        return;
+      }
+      if (req.url === '/health' || req.url === '/health/ready') {
         try {
-          const [coreHealth, inboundCounts, outboundCounts, sweepCounts, executeCounts] = await Promise.all([
-            checkCoreHealth(),
-            getInboundQueue().getJobCounts(),
-            getOutboundQueue().getJobCounts(),
-            getAutomationSweepQueue().getJobCounts(),
-            getAutomationExecuteQueue().getJobCounts(),
-          ]);
-          res.writeHead(coreHealth.ok ? 200 : 503, { 'Content-Type': 'application/json' });
+          const health = await checkWorkerHealth({ workers: {
+            inbound: inboundWorker,
+            outbound: outboundWorker,
+            automationSweep: automationSweepWorker,
+            automationExecute: automationExecuteWorker,
+          } });
+          res.writeHead(health.ok ? 200 : 503, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
-            status: coreHealth.ok ? 'ok' : 'degraded',
-            dependencies: coreHealth.dependencies,
-            queues: {
-              [QUEUE_NAMES.INBOUND]: inboundCounts,
-              [QUEUE_NAMES.OUTBOUND]: outboundCounts,
-              [QUEUE_NAMES.AUTOMATION_SWEEP]: sweepCounts,
-              [QUEUE_NAMES.AUTOMATION_EXECUTE]: executeCounts,
-            },
+            status: health.ok ? 'ok' : 'degraded',
+            dependencies: health.dependencies,
+            queues: health.queues,
+            workers: health.workers,
           }));
         } catch (err) {
           res.writeHead(503, { 'Content-Type': 'application/json' });

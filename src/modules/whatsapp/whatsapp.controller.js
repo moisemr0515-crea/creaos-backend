@@ -1,60 +1,5 @@
-const WhatsAppConnection = require('./whatsappConnection.model');
-const { AppError } = require('../../middleware/error.middleware');
 const { respuestaExito } = require('../../utils/response');
-const logger = require('../../utils/logger');
 const channelService = require('../channels/channel.service');
-
-// ─── POST /api/v1/whatsapp/connections ───────────────────────────────────────
-
-const createConnection = async (req, res, next) => {
-  try {
-    throw new AppError('Este endpoint legacy fue retirado. Usa Embedded Signup para crear un canal real.', 410);
-  } catch (err) {
-    next(err);
-  }
-};
-
-// ─── GET /api/v1/whatsapp/connections ────────────────────────────────────────
-
-const listConnections = async (req, res, next) => {
-  try {
-    const connections = await WhatsAppConnection.find({ business: req.businessId }).sort({ createdAt: -1 }).lean();
-
-    return respuestaExito(res, {
-      message: 'Conexiones de WhatsApp obtenidas',
-      data: { connections: connections.map((item) => ({ ...item, status: item.status === 'connected' ? 'legacy_simulated' : item.status, operational: false })) },
-    });
-  } catch (err) {
-    next(err);
-  }
-};
-
-// ─── DELETE /api/v1/whatsapp/connections/:id ─────────────────────────────────
-
-const disconnectConnection = async (req, res, next) => {
-  try {
-    const connection = await WhatsAppConnection.findOneAndUpdate(
-      { _id: req.params.id, business: req.businessId },
-      { $set: { status: 'disconnected' } },
-      { new: true }
-    );
-
-    if (!connection) throw new AppError('Conexión no encontrada', 404);
-
-    logger.info('[whatsapp] Conexión desconectada', {
-      businessId: req.businessId.toString(),
-      userId: req.user?._id?.toString(),
-      connectionId: connection._id.toString(),
-    });
-
-    return respuestaExito(res, {
-      message: 'Conexión de WhatsApp desconectada',
-      data: { connection },
-    });
-  } catch (err) {
-    next(err);
-  }
-};
 
 // ─── GET /api/v1/whatsapp/status ──────────────────────────────────────────────
 // Fase 1.1 (Provider Abstraction): reemplaza la llamada directa a
@@ -117,4 +62,4 @@ const getTemplates = async (req, res, next) => {
   }
 };
 
-module.exports = { createConnection, listConnections, disconnectConnection, getStatus, getTemplates };
+module.exports = { getStatus, getTemplates };

@@ -28,7 +28,6 @@ router.get('/global/ai/cost-timeseries', checkRole(ROLES.SUPER_ADMIN), ctrl.getG
 
 // ─── SuperAdmin: leads y WhatsApp global ──────────────────────────────────────
 router.get('/leads/global',              checkRole(ROLES.SUPER_ADMIN), ctrl.getGlobalLeads);
-router.get('/whatsapp/connections',      checkRole(ROLES.SUPER_ADMIN), ctrl.getGlobalWhatsappConnections);
 
 // ─── SuperAdmin: configuración global de la organización ──────────────────────
 router.get('/organization/settings',    checkRole(ROLES.SUPER_ADMIN), ctrl.getOrganizationSettings);

@@ -9,10 +9,6 @@ const router = Router();
 
 router.use(authenticate, injectTenant);
 
-router.post('/connections',     checkPermission('businesses:settings'), requireCapability('whatsappEnabled'), controller.createConnection);
-router.get('/connections',      checkPermission('businesses:settings'), requireCapability('whatsappEnabled'), controller.listConnections);
-router.delete('/connections/:id', checkPermission('businesses:settings'), requireCapability('whatsappEnabled'), controller.disconnectConnection);
-
 // Fix 2 (Caso 8): status real del canal (env vars de Gupshup), no simulado.
 // checkPermission('leads:read') porque cualquiera que vea el chat de un lead
 // necesita saber si el canal está disponible, no solo quien administra settings.

@@ -6,7 +6,6 @@ const Conversation       = require('../ai/conversation.model');
 const Automation         = require('../automations/automation.model');
 const Subscription       = require('../subscriptions/subscription.model');
 const Plan               = require('../subscriptions/plan.model');
-const WhatsAppConnection = require('../whatsapp/whatsappConnection.model');
 const { PIPELINE_STAGES, STAGE_LABELS } = Lead;
 const { OPENAI_MODEL } = require('../../config/env');
 const { getPricing, getBlendedRate } = require('../../config/aiPricing');
@@ -491,47 +490,6 @@ const getGlobalLeadsList = async (filters, { page = 1, limit = 20 } = {}) => {
   return { items, total };
 };
 
-// ─── 10. getGlobalWhatsappConnections ─────────────────────────────────────────
-// NOTA: la integración de WhatsApp es 100% simulada (isSimulated: true, v1.1).
-// No existe todavía un registro de webhooks recibidos por conexión (eso vendrá
-// con la integración real vía Gupshup Partner API, v1.2 / ticket #264467), por
-// lo que `status` es el valor guardado en WhatsAppConnection y
-// `lastWebhookReceivedAt` se devuelve como null hasta que esa data exista.
-
-const getGlobalWhatsappConnections = async () => {
-  const connections = await WhatsAppConnection.find({})
-    .populate('business', 'name')
-    .sort({ createdAt: -1 });
-
-  const businessIds = connections.map((c) => c.business?._id).filter(Boolean);
-  const subscriptions = await Subscription.find(
-    { business: { $in: businessIds } },
-    'business planName leadsUsedThisMonth'
-  );
-  const subByBusiness = subscriptions.reduce(
-    (acc, sub) => ({ ...acc, [sub.business.toString()]: sub }),
-    {}
-  );
-
-  return connections.map((conn) => {
-    const sub = conn.business ? subByBusiness[conn.business._id.toString()] : null;
-
-    return {
-      connectionId: conn._id,
-      businessId:   conn.business?._id || null,
-      businessName: conn.business?.name || null,
-      whatsappNumber: conn.phoneNumber,
-      wabaId:       conn.wabaId,
-      status:       conn.status,
-      connectedAt:  conn.connectedAt,
-      lastWebhookReceivedAt: null,
-      isSimulated:  conn.isSimulated,
-      plan:               sub?.planName || null,
-      leadsUsedThisMonth: sub?.leadsUsedThisMonth ?? null,
-    };
-  });
-};
-
 module.exports = {
   getGlobalStats,
   getBusinessStats,
@@ -543,5 +501,4 @@ module.exports = {
   getAICostTimeseries,
   getGlobalLeadsFunnel,
   getGlobalLeadsList,
-  getGlobalWhatsappConnections,
 };

@@ -126,15 +126,6 @@ const getGlobalLeads = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-// ─── WhatsApp global (SuperAdmin) ──────────────────────────────────────────────
-
-const getGlobalWhatsappConnections = async (req, res, next) => {
-  try {
-    const connections = await dashboardService.getGlobalWhatsappConnections();
-    respuestaExito(res, { message: 'Conexiones de WhatsApp (global)', data: connections });
-  } catch (err) { next(err); }
-};
-
 // ─── Organization Settings (SuperAdmin) ────────────────────────────────────────
 // Configuración global de la plataforma (identidad legal y de marca), no por-negocio.
 
@@ -645,8 +636,6 @@ module.exports = {
   getGlobalAICostTimeseries,
   // Leads global (Super Admin)
   getGlobalLeads,
-  // WhatsApp global (Super Admin)
-  getGlobalWhatsappConnections,
   // Organization Settings (Super Admin)
   getOrganizationSettings,
   updateOrganizationSettings,

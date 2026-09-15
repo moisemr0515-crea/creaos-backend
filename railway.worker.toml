@@ -1,6 +1,6 @@
 [build]
 builder = "nixpacks"
-buildCommand = "npm install --production=false"
+buildCommand = "npm ci --omit=dev"
 
 [deploy]
 startCommand = "node worker.js"

@@ -85,7 +85,11 @@ app.use((req, res, next) => {
 });
 
 // ─── HEALTH CHECK ─────────────────────────────────────────────────────────────
-app.get('/health', async (req, res) => {
+app.get('/health/live', (_req, res) => {
+  res.status(200).json({ success: true, status: 'ok' });
+});
+
+const readinessHandler = async (_req, res) => {
   const health = await checkCoreHealth();
   res.status(health.ok ? 200 : 503).json({
     success: health.ok,
@@ -94,7 +98,10 @@ app.get('/health', async (req, res) => {
     env: NODE_ENV,
     timestamp: new Date().toISOString(),
   });
-});
+};
+
+app.get('/health', readinessHandler);
+app.get('/health/ready', readinessHandler);
 
 // ─── RUTAS DE LA API ──────────────────────────────────────────────────────────
 app.use('/api/v1/auth',      authRoutes);

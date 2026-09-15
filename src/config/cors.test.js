@@ -1,7 +1,7 @@
 jest.mock('./env', () => ({
   NODE_ENV: 'production',
   FRONTEND_URL: 'https://creaosapp.com',
-  ALLOWED_ORIGINS: ['https://preview-123.vercel.app'],
+  ALLOWED_ORIGINS: ['https://preview-123.vercel.app', 'http://insecure.example'],
   CAPACITOR_ORIGINS: ['https://localhost'],
 }));
 
@@ -20,8 +20,19 @@ describe('CORS exacto', () => {
     'https://creaosapp.com.evil.test',
     'https://crea-os-ignite-attacker.vercel.app',
     'http://localhost:5173',
+    'http://insecure.example',
     'not-an-origin',
   ])('rechaza origen no configurado o parecido %s', (origin) => {
     expect(isAllowedOrigin(origin)).toBe(false);
+  });
+
+  test('devuelve un error operacional 403 para un origen rechazado', () => {
+    const callback = jest.fn();
+    require('./cors').corsOptions.origin('https://attacker.example', callback);
+
+    expect(callback).toHaveBeenCalledWith(expect.objectContaining({
+      statusCode: 403,
+      isOperational: true,
+    }));
   });
 });
