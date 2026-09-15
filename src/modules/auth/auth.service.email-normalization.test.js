@@ -7,11 +7,9 @@
 // detección de duplicados en registrar() y el lookup de login()/
 // forgotPassword().
 //
-// Alcance deliberadamente acotado: login()/registrar() completos (éxito)
-// requieren Redis conectado (generarRefreshToken()) — no forma parte de
-// este fix ni de este archivo. Cada test de acá llega hasta el punto
-// exacto donde se puede confirmar que la normalización funcionó, sin
-// necesitar que el resto del flujo (tokens) tenga éxito.
+// Alcance deliberadamente acotado: login() exitoso requiere Redis conectado
+// para crear la cookie de sesión; estos casos llegan solo hasta el punto en
+// que se confirma la normalización.
 const mongoose = require('mongoose');
 const Business = require('../businesses/business.model');
 const Role = require('../roles/role.model');

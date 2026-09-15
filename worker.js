@@ -12,12 +12,13 @@ const { validateEnv, PORT } = require('./src/config/env');
 
 // El worker no sirve webhooks. Valida solo su configuración base; la API es
 // quien valida al arrancar los secretos de integraciones HTTP configuradas.
-validateEnv({ validateWebhookIntegrations: false });
+validateEnv({ runtime: 'worker', validateWebhookIntegrations: false });
 
 const logger = require('./src/utils/logger');
 const { connectMongoDB, disconnectMongoDB } = require('./src/config/database');
 const { connectRedis, disconnectRedis } = require('./src/config/redis');
 const { getQueueConnection, disconnectQueueConnection, QUEUE_NAMES } = require('./src/config/queue');
+const { checkCoreHealth } = require('./src/health/health.service');
 const { getInboundQueue } = require('./src/modules/channels/queues/inbound.queue');
 const { getOutboundQueue, recoverPendingOutboundEvents } = require('./src/modules/channels/queues/outbound.queue');
 const { startInboundWorker } = require('./src/modules/channels/workers/inbound.worker');
@@ -58,15 +59,17 @@ const iniciar = async () => {
     httpServer = http.createServer(async (req, res) => {
       if (req.url === '/health') {
         try {
-          const [inboundCounts, outboundCounts, sweepCounts, executeCounts] = await Promise.all([
+          const [coreHealth, inboundCounts, outboundCounts, sweepCounts, executeCounts] = await Promise.all([
+            checkCoreHealth(),
             getInboundQueue().getJobCounts(),
             getOutboundQueue().getJobCounts(),
             getAutomationSweepQueue().getJobCounts(),
             getAutomationExecuteQueue().getJobCounts(),
           ]);
-          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.writeHead(coreHealth.ok ? 200 : 503, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
-            status: 'ok',
+            status: coreHealth.ok ? 'ok' : 'degraded',
+            dependencies: coreHealth.dependencies,
             queues: {
               [QUEUE_NAMES.INBOUND]: inboundCounts,
               [QUEUE_NAMES.OUTBOUND]: outboundCounts,
@@ -76,7 +79,7 @@ const iniciar = async () => {
           }));
         } catch (err) {
           res.writeHead(503, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ status: 'error', error: err.message }));
+          res.end(JSON.stringify({ status: 'degraded' }));
         }
         return;
       }

@@ -1,7 +1,10 @@
 const express = require('express');
 const helmet = require('helmet');
 const cors = require('cors');
-const { FRONTEND_URL, ALLOWED_ORIGINS, NODE_ENV } = require('./config/env');
+const { NODE_ENV } = require('./config/env');
+const { corsOptions } = require('./config/cors');
+const { helmetOptions } = require('./config/securityHeaders');
+const { checkCoreHealth } = require('./health/health.service');
 const { rateLimitGeneral } = require('./middleware/rateLimit.middleware');
 const { errorHandler } = require('./middleware/error.middleware');
 const logger = require('./utils/logger');
@@ -44,49 +47,12 @@ const app = express();
 app.set('trust proxy', 2);
 
 // ─── SEGURIDAD: HEADERS HTTP ──────────────────────────────────────────────────
-app.use(helmet());
+app.use(helmet(helmetOptions));
 
 // ─── CORS ─────────────────────────────────────────────────────────────────────
-// Previews dinámicos de Vercel del frontend crea-os-ignite — Vercel genera
-// una URL nueva por rama/commit (crea-os-ignite-git-<rama>-<team>.vercel.app
-// o crea-os-ignite-<hash>-<team>.vercel.app), así que no hay un string fijo
-// que agregar a ALLOWED_ORIGINS. A propósito NO alcanza con el sufijo
-// `.vercel.app` solo — eso aceptaría
-// CORS de cualquier proyecto de cualquier cuenta de Vercel, no solo los
-// previews de este frontend. El prefijo `crea-os-ignite-` acota el match al
-// proyecto real.
-const esOrigenVercelPreview = (origin) => {
-  try {
-    const { protocol, hostname } = new URL(origin);
-    return protocol === 'https:' && hostname.startsWith('crea-os-ignite-') && hostname.endsWith('.vercel.app');
-  } catch {
-    return false;
-  }
-};
-
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      // Permitir requests sin origin (Postman, apps móviles)
-      if (!origin) return callback(null, true);
-
-      // Localhost siempre permitido en desarrollo (cualquier puerto)
-      const esLocalhostDev =
-        NODE_ENV !== 'production' && /^https?:\/\/localhost(:\d+)?$/.test(origin);
-
-      const origenesPermitidos = [FRONTEND_URL, ...ALLOWED_ORIGINS];
-
-      if (esLocalhostDev || esOrigenVercelPreview(origin) || origenesPermitidos.includes(origin)) {
-        callback(null, true);
-      } else {
-        callback(new Error(`CORS: Origen no permitido → ${origin}`));
-      }
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-  })
-);
+// Solo orígenes exactos configurados. Los previews deben agregarse de forma
+// explícita a ALLOWED_ORIGINS; un prefijo de proyecto es falsificable.
+app.use(cors(corsOptions));
 
 // ─── PARSEO DEL BODY ──────────────────────────────────────────────────────────
 // Captura rawBody para verificación de firmas HMAC de webhooks (Meta, TikTok)
@@ -119,10 +85,12 @@ app.use((req, res, next) => {
 });
 
 // ─── HEALTH CHECK ─────────────────────────────────────────────────────────────
-app.get('/health', (req, res) => {
-  res.json({
-    success: true,
-    message: 'CREA OS API funcionando',
+app.get('/health', async (req, res) => {
+  const health = await checkCoreHealth();
+  res.status(health.ok ? 200 : 503).json({
+    success: health.ok,
+    status: health.ok ? 'ok' : 'degraded',
+    dependencies: health.dependencies,
     env: NODE_ENV,
     timestamp: new Date().toISOString(),
   });

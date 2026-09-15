@@ -2,8 +2,11 @@ const BASE_ENV = {
   NODE_ENV: 'production',
   MONGODB_URI: 'mongodb://example.invalid/test',
   REDIS_URL: 'redis://example.invalid:6379',
-  JWT_SECRET: 'test-jwt-secret',
-  JWT_REFRESH_SECRET: 'test-refresh-secret',
+  JWT_SECRET: 'test-jwt-secret-with-at-least-32-characters',
+  JWT_REFRESH_SECRET: 'different-refresh-secret-with-at-least-32-chars',
+  FRONTEND_URL: 'https://creaosapp.test',
+  OPENAI_API_KEY: 'test-openai-key',
+  RESEND_API_KEY: 'test-resend-key',
   META_APP_ID: '',
   META_APP_SECRET: '',
   WHATSAPP_TOKEN: '',
@@ -17,12 +20,19 @@ const BASE_ENV = {
   GUPSHUP_PARTNER_SECRET: '',
   GUPSHUP_ONBOARDING_WEBHOOK_TOKEN: '',
   BACKEND_PUBLIC_URL: '',
+  CHANNEL_CREDENTIALS_KEY: '',
   STRIPE_SECRET_KEY: '',
   STRIPE_PUBLIC_KEY: '',
   STRIPE_WEBHOOK_SECRET: '',
   MP_ACCESS_TOKEN: '',
   MP_PUBLIC_KEY: '',
   MP_WEBHOOK_SECRET: '',
+  CLOUDINARY_CLOUD_NAME: '',
+  CLOUDINARY_API_KEY: '',
+  CLOUDINARY_API_SECRET: '',
+  FIREBASE_PROJECT_ID: '',
+  FIREBASE_CLIENT_EMAIL: '',
+  FIREBASE_PRIVATE_KEY: '',
 };
 
 const loadEnv = (overrides = {}) => {
@@ -53,6 +63,30 @@ describe('validateEnv — seguridad de webhooks en producción', () => {
 
   test('integraciones no configuradas pueden permanecer deshabilitadas', () => {
     expect(() => loadEnv().validateEnv()).not.toThrow();
+  });
+
+  test('BACKEND_PUBLIC_URL por sí sola no habilita onboarding de Gupshup', () => {
+    expect(() => loadEnv({ BACKEND_PUBLIC_URL: 'https://api.creaosapp.test' }).validateEnv()).not.toThrow();
+  });
+
+  test('API de producción falla temprano si falta un servicio core', () => {
+    const env = loadEnv({ OPENAI_API_KEY: undefined });
+    expect(() => env.validateEnv()).toThrow(/OPENAI_API_KEY/);
+  });
+
+  test('worker exige solo sus dependencias críticas y no secretos JWT', () => {
+    const env = loadEnv({ JWT_SECRET: undefined, JWT_REFRESH_SECRET: undefined, FRONTEND_URL: undefined, RESEND_API_KEY: undefined });
+    expect(() => env.validateEnv({ runtime: 'worker' })).not.toThrow();
+  });
+
+  test('configuración parcial de una integración opcional falla al arrancar', () => {
+    const env = loadEnv({ FIREBASE_PROJECT_ID: 'configured' });
+    expect(() => env.validateEnv()).toThrow(/FIREBASE_CLIENT_EMAIL/);
+  });
+
+  test('JWT cortos o iguales fallan en la API de producción', () => {
+    const env = loadEnv({ JWT_SECRET: 'short', JWT_REFRESH_SECRET: 'short' });
+    expect(() => env.validateEnv()).toThrow(/al menos 32 caracteres/);
   });
 
   test('development conserva el flujo local controlado', () => {

@@ -42,18 +42,6 @@ const validarLogin = [
     .notEmpty().withMessage('La contraseña es requerida'),
 ];
 
-// ─── LOGOUT ──────────────────────────────────────────────────────────────────
-const validarLogout = [
-  body('refreshToken')
-    .notEmpty().withMessage('El refreshToken es requerido'),
-];
-
-// ─── REFRESH TOKEN ───────────────────────────────────────────────────────────
-const validarRefreshToken = [
-  body('refreshToken')
-    .notEmpty().withMessage('El refreshToken es requerido'),
-];
-
 // ─── FORGOT PASSWORD ─────────────────────────────────────────────────────────
 const validarForgotPassword = [
   body('email')
@@ -93,8 +81,6 @@ const validarVerifyEmail = [
 module.exports = {
   validarRegistro,
   validarLogin,
-  validarLogout,
-  validarRefreshToken,
   validarForgotPassword,
   validarResetPassword,
   validarVerifyEmail,

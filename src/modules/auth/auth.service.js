@@ -84,8 +84,8 @@ const revocarRefreshToken = async (userId, jti) => {
  *
  * Hallazgo real (no hipotético): con revocarRefreshToken() (DEL
  * inmediato) usado también para rotación, dos requests casi simultáneas
- * usando el MISMO refreshToken (2 pestañas compartiendo localStorage, un
- * doble-render de React, un retry de red tras un timeout) chocaban: la
+   * usando el MISMO refreshToken (2 pestañas compartiendo la cookie HttpOnly,
+   * un doble-render de React, un retry de red tras un timeout) chocaban: la
  * primera rotaba bien, la segunda encontraba el token ya borrado y
  * fallaba con 401 "ya fue utilizado" — si el frontend interpreta eso
  * como "no autenticado", fuerza un logout aunque la sesión siguiera
@@ -95,9 +95,8 @@ const revocarRefreshToken = async (userId, jti) => {
  * REFRESH_ROTATION_GRACE_SECONDS siguientes) todavía encuentra el token
  * "vigente" en Redis y recibe su propio par de tokens nuevos — no pasa
  * nada raro: los dos pares nuevos pertenecen al mismo usuario autenticado
- * (exactamente igual que ya pasa hoy con 2 pestañas que cada una tiene su
- * PROPIO refreshToken desde el login — esto no es un caso nuevo de "2
- * sesiones válidas a la vez", ya existía). Pasada la ventana, el token
+   * (todos pertenecen al mismo usuario y conservan un TTL acotado). Pasada
+   * la ventana, el token
  * viejo expira igual que antes — no queda utilizable indefinidamente.
  *
  * No se usa para logout (ver revocarRefreshToken de arriba) — ahí sigue
@@ -183,13 +182,7 @@ const registrar = async ({ name, email, password, businessName, phone }) => {
   // Popular el rol antes de generar tokens
   await usuario.populate('role', 'slug permissions');
 
-  // Generar tokens
-  const accessToken = generarAccessToken(usuario);
-  const { token: refreshToken } = await generarRefreshToken(usuario);
-
   return {
-    accessToken,
-    refreshToken,
     usuario: {
       _id: usuario._id,
       name: usuario.name,
@@ -285,6 +278,9 @@ const logout = async ({ refreshToken }) => {
  * Implementa rotación de refresh tokens por seguridad.
  */
 const refreshAccessToken = async ({ refreshToken }) => {
+  if (!refreshToken) {
+    throw new AppError('Refresh token inválido o expirado', 401);
+  }
   // Verificar JWT
   let payload;
   try {

@@ -1,19 +1,34 @@
 require('dotenv').config();
 
-// Variables obligatorias para arrancar el servidor
-const REQUIRED_VARS = [
-  'NODE_ENV',
-  'MONGODB_URI',
-  'REDIS_URL',
-  'JWT_SECRET',
-  'JWT_REFRESH_SECRET',
-];
+const REQUIRED_BY_RUNTIME = {
+  api: [
+    'NODE_ENV',
+    'MONGODB_URI',
+    'REDIS_URL',
+    'JWT_SECRET',
+    'JWT_REFRESH_SECRET',
+    'FRONTEND_URL',
+    'OPENAI_API_KEY',
+    'RESEND_API_KEY',
+  ],
+  worker: ['NODE_ENV', 'MONGODB_URI', 'REDIS_URL', 'OPENAI_API_KEY'],
+};
 
 /**
  * Lanza un error si faltan variables de entorno críticas.
  * Se llama antes de iniciar el servidor.
  */
 const hasValue = (name) => typeof process.env[name] === 'string' && process.env[name].trim().length > 0;
+
+const requireCompleteGroup = (missing, variables) => {
+  if (!variables.some(hasValue)) return;
+  variables.filter((name) => !hasValue(name)).forEach((name) => missing.push(name));
+};
+
+const requireIfEnabled = (missing, evidence, required) => {
+  if (!evidence.some(hasValue)) return;
+  required.filter((name) => !hasValue(name)).forEach((name) => missing.push(name));
+};
 
 const validateProductionWebhookEnv = () => {
   if (process.env.NODE_ENV !== 'production') return;
@@ -40,7 +55,7 @@ const validateProductionWebhookEnv = () => {
     ['GUPSHUP_WEBHOOK_TOKEN']
   );
   requireIfConfigured(
-    ['GUPSHUP_PARTNER_EMAIL', 'GUPSHUP_PARTNER_SECRET', 'BACKEND_PUBLIC_URL'],
+    ['GUPSHUP_PARTNER_EMAIL', 'GUPSHUP_PARTNER_SECRET', 'META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID'],
     ['GUPSHUP_ONBOARDING_WEBHOOK_TOKEN']
   );
   requireIfConfigured(['STRIPE_SECRET_KEY', 'STRIPE_PUBLIC_KEY'], ['STRIPE_WEBHOOK_SECRET']);
@@ -51,15 +66,80 @@ const validateProductionWebhookEnv = () => {
   }
 };
 
-const validateEnv = ({ validateWebhookIntegrations = true } = {}) => {
-  const faltantes = REQUIRED_VARS.filter((v) => !process.env[v]);
+const validateProductionIntegrations = ({ runtime }) => {
+  if (process.env.NODE_ENV !== 'production') return;
+  const missing = [];
+
+  requireCompleteGroup(missing, ['CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET']);
+  requireCompleteGroup(missing, ['FIREBASE_PROJECT_ID', 'FIREBASE_CLIENT_EMAIL', 'FIREBASE_PRIVATE_KEY']);
+
+  if (runtime === 'api') {
+    requireCompleteGroup(missing, ['STRIPE_SECRET_KEY', 'STRIPE_PUBLIC_KEY', 'STRIPE_WEBHOOK_SECRET']);
+    requireCompleteGroup(missing, ['MP_ACCESS_TOKEN', 'MP_PUBLIC_KEY', 'MP_WEBHOOK_SECRET']);
+    requireCompleteGroup(missing, ['WHATSAPP_TOKEN', 'WHATSAPP_PHONE_ID']);
+    requireCompleteGroup(missing, ['GUPSHUP_API_KEY', 'GUPSHUP_APP_NAME', 'GUPSHUP_PHONE_NUMBER']);
+    requireIfEnabled(
+      missing,
+      ['GUPSHUP_PARTNER_EMAIL', 'GUPSHUP_PARTNER_SECRET', 'META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID'],
+      [
+        'GUPSHUP_PARTNER_EMAIL',
+        'GUPSHUP_PARTNER_SECRET',
+        'GUPSHUP_ONBOARDING_WEBHOOK_TOKEN',
+        'BACKEND_PUBLIC_URL',
+        'CHANNEL_CREDENTIALS_KEY',
+      ]
+    );
+  }
+
+  if (missing.length > 0) {
+    throw new Error(`❌ Configuración parcial de integración: ${[...new Set(missing)].join(', ')}`);
+  }
+};
+
+const validateProductionSecurity = ({ runtime }) => {
+  if (process.env.NODE_ENV !== 'production') return;
+
+  if (runtime === 'api') {
+    if (process.env.JWT_SECRET.length < 32 || process.env.JWT_REFRESH_SECRET.length < 32) {
+      throw new Error('❌ JWT_SECRET y JWT_REFRESH_SECRET deben tener al menos 32 caracteres en producción');
+    }
+    if (process.env.JWT_SECRET === process.env.JWT_REFRESH_SECRET) {
+      throw new Error('❌ JWT_SECRET y JWT_REFRESH_SECRET deben ser diferentes');
+    }
+  }
+
+  if (hasValue('CHANNEL_CREDENTIALS_KEY') && !/^[a-f0-9]{64}$/i.test(process.env.CHANNEL_CREDENTIALS_KEY.trim())) {
+    throw new Error('❌ CHANNEL_CREDENTIALS_KEY debe contener exactamente 32 bytes en hexadecimal');
+  }
+
+  const originVars = ['FRONTEND_URL', 'ALLOWED_ORIGINS', 'CAPACITOR_ORIGINS'];
+  for (const name of originVars) {
+    for (const value of (process.env[name] || '').split(',').map((item) => item.trim()).filter(Boolean)) {
+      let url;
+      try {
+        url = new URL(value);
+      } catch {
+        throw new Error(`❌ ${name} contiene un origen inválido`);
+      }
+      if (!['https:', 'http:'].includes(url.protocol) || url.origin !== value.replace(/\/$/, '')) {
+        throw new Error(`❌ ${name} debe contener orígenes exactos, sin rutas ni patrones`);
+      }
+    }
+  }
+};
+
+const validateEnv = ({ runtime = 'api', validateWebhookIntegrations = runtime === 'api' } = {}) => {
+  if (!REQUIRED_BY_RUNTIME[runtime]) throw new Error(`Runtime desconocido: ${runtime}`);
+  const faltantes = REQUIRED_BY_RUNTIME[runtime].filter((v) => !hasValue(v));
   if (faltantes.length > 0) {
     throw new Error(
       `❌ Variables de entorno faltantes: ${faltantes.join(', ')}\n` +
         '   Copia .env.example a .env y completa los valores.'
     );
   }
+  validateProductionSecurity({ runtime });
   if (validateWebhookIntegrations) validateProductionWebhookEnv();
+  validateProductionIntegrations({ runtime });
 };
 
 module.exports = {
@@ -108,6 +188,12 @@ module.exports = {
 
   // CORS — lista de orígenes permitidos separados por coma
   ALLOWED_ORIGINS: (process.env.ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((origen) => origen.trim())
+    .filter(Boolean),
+  // Origen local real del WebView Android de Capacitor. Puede ampliarse con
+  // valores exactos separados por coma, nunca con comodines.
+  CAPACITOR_ORIGINS: (process.env.CAPACITOR_ORIGINS || 'https://localhost')
     .split(',')
     .map((origen) => origen.trim())
     .filter(Boolean),

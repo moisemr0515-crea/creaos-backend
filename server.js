@@ -7,7 +7,7 @@ require('dns').setServers(['8.8.8.8', '1.1.1.1']);
 const { validateEnv, PORT } = require('./src/config/env');
 
 // Validar variables críticas antes de arrancar
-validateEnv();
+validateEnv({ runtime: 'api' });
 
 const logger = require('./src/utils/logger');
 const app = require('./src/app');

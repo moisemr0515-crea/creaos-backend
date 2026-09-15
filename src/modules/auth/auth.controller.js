@@ -1,5 +1,12 @@
 const authService = require('./auth.service');
 const { respuestaExito } = require('../../utils/response');
+const {
+  getRefreshTokenFromRequest,
+  setRefreshCookie,
+  clearRefreshCookie,
+} = require('./authCookie');
+
+const withoutRefreshToken = ({ refreshToken, ...publicResult }) => publicResult;
 
 /**
  * POST /api/v1/auth/register
@@ -23,18 +30,20 @@ const register = async (req, res, next) => {
 
 /**
  * POST /api/v1/auth/login
- * Autentica credenciales y devuelve accessToken + refreshToken.
+ * Autentica credenciales. El access token se devuelve y el refresh queda
+ * exclusivamente en una cookie HttpOnly.
  */
 const login = async (req, res, next) => {
   try {
     const { email, password } = req.body;
 
     const resultado = await authService.login({ email, password });
+    setRefreshCookie(res, resultado.refreshToken);
 
     return respuestaExito(res, {
       statusCode: 200,
       message: 'Inicio de sesión exitoso',
-      data: resultado,
+      data: withoutRefreshToken(resultado),
     });
   } catch (error) {
     next(error);
@@ -44,39 +53,43 @@ const login = async (req, res, next) => {
 /**
  * POST /api/v1/auth/logout
  * Invalida el refresh token en Redis.
- * Requiere Bearer token válido.
+ * La cookie HttpOnly identifica la sesión aunque el access haya expirado.
  */
 const logout = async (req, res, next) => {
   try {
-    const { refreshToken } = req.body;
+    const refreshToken = getRefreshTokenFromRequest(req);
 
     await authService.logout({ refreshToken });
+    clearRefreshCookie(res);
 
     return respuestaExito(res, {
       statusCode: 200,
       message: 'Sesión cerrada exitosamente',
     });
   } catch (error) {
+    clearRefreshCookie(res);
     next(error);
   }
 };
 
 /**
  * POST /api/v1/auth/refresh
- * Genera nuevo accessToken a partir de un refreshToken válido.
+ * Genera un access token nuevo usando exclusivamente la cookie HttpOnly.
  */
 const refresh = async (req, res, next) => {
   try {
-    const { refreshToken } = req.body;
+    const refreshToken = getRefreshTokenFromRequest(req);
 
     const resultado = await authService.refreshAccessToken({ refreshToken });
+    setRefreshCookie(res, resultado.refreshToken);
 
     return respuestaExito(res, {
       statusCode: 200,
       message: 'Token renovado exitosamente',
-      data: resultado,
+      data: withoutRefreshToken(resultado),
     });
   } catch (error) {
+    clearRefreshCookie(res);
     next(error);
   }
 };

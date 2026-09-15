@@ -3,14 +3,11 @@ const controller = require('./auth.controller');
 const {
   validarRegistro,
   validarLogin,
-  validarLogout,
-  validarRefreshToken,
   validarForgotPassword,
   validarResetPassword,
   validarVerifyEmail,
 } = require('./auth.validator');
 const { validate } = require('../../middleware/validate.middleware');
-const { authenticate } = require('../../middleware/auth.middleware');
 const {
   rateLimitLogin,
   rateLimitForgotPassword,
@@ -25,11 +22,12 @@ router.post('/register', rateLimitRegister, validarRegistro, validate, controlle
 // POST /api/v1/auth/login
 router.post('/login', rateLimitLogin, validarLogin, validate, controller.login);
 
-// POST /api/v1/auth/logout  (requiere autenticación)
-router.post('/logout', authenticate, validarLogout, validate, controller.logout);
+// POST /api/v1/auth/logout — la cookie HttpOnly identifica la sesión incluso
+// si el access token ya expiró.
+router.post('/logout', controller.logout);
 
 // POST /api/v1/auth/refresh
-router.post('/refresh', validarRefreshToken, validate, controller.refresh);
+router.post('/refresh', controller.refresh);
 
 // POST /api/v1/auth/forgot-password
 router.post('/forgot-password', rateLimitForgotPassword, validarForgotPassword, validate, controller.forgotPassword);
