@@ -9,12 +9,19 @@ const {
 } = require('./auth.validator');
 const { validate } = require('../../middleware/validate.middleware');
 const {
+  rateLimitAuthGeneral,
   rateLimitLogin,
   rateLimitForgotPassword,
   rateLimitRegister,
 } = require('../../middleware/rateLimit.middleware');
 
 const router = Router();
+
+// Balde propio de /auth/*, separado del de recursos de negocio — ver
+// rateLimitAuthGeneral() en rateLimit.middleware.js (Bloque A del
+// diagnóstico post-hardening). Corre para TODAS las rutas de este router,
+// ADEMÁS de (no en reemplazo de) los limiters específicos de abajo.
+router.use(rateLimitAuthGeneral);
 
 // POST /api/v1/auth/register
 router.post('/register', rateLimitRegister, validarRegistro, validate, controller.register);
