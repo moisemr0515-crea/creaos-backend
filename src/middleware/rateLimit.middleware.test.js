@@ -16,7 +16,12 @@ jest.mock('../config/env', () => ({ JWT_SECRET: 'secreto-de-prueba' }));
 
 const jwt = require('jsonwebtoken');
 const logger = require('../utils/logger');
-const { claveRateLimitGeneral, claveRateLimitLogin, crearHandlerBloqueo } = require('./rateLimit.middleware');
+const {
+  claveRateLimitGeneral,
+  claveRateLimitLogin,
+  debeOmitirRateLimitGeneral,
+  crearHandlerBloqueo,
+} = require('./rateLimit.middleware');
 
 function mockReq({ authHeader, ip = '1.2.3.4', body } = {}) {
   return { headers: { authorization: authHeader }, ip, body };
@@ -114,6 +119,31 @@ describe('rateLimit.middleware#claveRateLimitGeneral()', () => {
     const clave = claveRateLimitGeneral({ ip: '9.9.9.9' });
 
     expect(clave).toBe('9.9.9.9');
+  });
+});
+
+// Bloque A del diagnóstico post-hardening (docs/post-hardening-diagnostico/,
+// 16-17/sep/2026): antes, /api/v1/auth/* compartía el mismo balde de
+// rateLimitGeneral que el resto de la API — un dashboard con mucho polling
+// agotaba el balde, y como apiFetch mandaba el Authorization Bearer incluso
+// en /auth/login, el siguiente login del mismo usuario caía en el mismo
+// balde ya agotado. debeOmitirRateLimitGeneral() es el `skip` que separa
+// /auth/* a su propio limiter (rateLimitAuthGeneral).
+describe('rateLimit.middleware#debeOmitirRateLimitGeneral()', () => {
+  test('cualquier ruta bajo /api/v1/auth/ se omite de rateLimitGeneral', () => {
+    expect(debeOmitirRateLimitGeneral({ originalUrl: '/api/v1/auth/login' })).toBe(true);
+    expect(debeOmitirRateLimitGeneral({ originalUrl: '/api/v1/auth/refresh' })).toBe(true);
+    expect(debeOmitirRateLimitGeneral({ originalUrl: '/api/v1/auth/logout' })).toBe(true);
+  });
+
+  test('rutas de negocio NO se omiten (siguen bajo rateLimitGeneral)', () => {
+    expect(debeOmitirRateLimitGeneral({ originalUrl: '/api/v1/leads' })).toBe(false);
+    expect(debeOmitirRateLimitGeneral({ originalUrl: '/api/v1/businesses/current' })).toBe(false);
+    expect(debeOmitirRateLimitGeneral({ originalUrl: '/api/v1/pipeline' })).toBe(false);
+  });
+
+  test('un path que solo contiene "auth" en otro lugar de la URL no matchea (evita falsos positivos)', () => {
+    expect(debeOmitirRateLimitGeneral({ originalUrl: '/api/v1/businesses/current?ref=auth' })).toBe(false);
   });
 });
 

@@ -2379,3 +2379,47 @@ segundo `RUN` que hoy monta `/app/node_modules/.cache` y choca con la
 limpieza de `npm ci`. No se pudo verificar en este entorno por falta de
 `nixpacks` CLI y de un daemon de Docker corriendo — requiere probarse
 con un deploy real antes de adoptarlo.
+
+---
+
+## 78. ADENDA (17/sep/2026) — Bloque A resuelto: rate limiter compartido + falta de manejo de errores en frontend
+
+Con el deploy ya destrabado (adenda 77), se implementaron las 2 causas
+raíz del Bloque A identificadas en el diagnóstico original (Falla 4:
+Leads/Pipeline/Stats cargando infinito; Falla 5: 429 en login):
+
+**PARTE 1 (creaos-backend, branch `fix/rate-limit-auth-isolation`):**
+`/api/v1/auth/*` deja de compartir presupuesto con el resto de la API.
+Se agregó `rateLimitAuthGeneral` (balde propio, 50 req/15min por IP) y un
+`skip` en `rateLimitGeneral` (`debeOmitirRateLimitGeneral()`) que excluye
+`/api/v1/auth/*` de su balde de 100 req/15min por usuario.
+`rateLimitLogin` (5 intentos/15min por email, fuerza bruta) queda
+intacto, sin cambios. También se corrigió `apiFetch` (frontend,
+`client.ts`) para que deje de adjuntar `Authorization: Bearer` en
+llamadas a `/api/v1/auth/*` — ahí no hay sesión propia (login, register)
+o se identifica por la cookie HttpOnly (refresh, logout), y adjuntar un
+token viejo hacía que el rate limiter contara ese login contra el balde
+ya agotado del usuario.
+
+**PARTE 2 (crea-os-ignite-main, branch `fix/frontend-loading-error-handling`):**
+`try/catch/finally` en `load()` (leads.tsx), `loadBoard()` (pipeline.tsx)
+y el efecto de carga de `stats.tsx` — antes, un rechazo de cualquier
+promesa del `Promise.all` (429, 401, 500, red) dejaba `setLoading(false)`
+sin ejecutarse nunca, mostrando el spinner cargando para siempre.
+
+**Mejora de infraestructura de testing pendiente (NO aplicada, decisión
+explícita del usuario 17/sep/2026):** el test que idealmente probaría
+PARTE 2 end-to-end (mockear un 429/401 en una llamada paralela y
+verificar que el componente sale de `loading` y muestra un estado de
+error) requiere renderizar los componentes de React reales. El repo de
+frontend (`crea-os-ignite-main`) documenta explícitamente en
+`vitest.config.ts` que sus tests son "de lógica pura... no de
+renderizado de componentes" — no hay jsdom, no hay
+`@testing-library/react`, y `include` está limitado a `*.test.ts` (no
+`.tsx`). Agregar tests de renderizado de componentes requiere meter esa
+infraestructura (nueva dependencia + entorno DOM) como una tarea
+aparte, deliberada, no colada dentro de un fix puntual. Mientras tanto,
+PARTE 2 se validó por lectura directa de código (el mismo patrón
+`try/catch/finally` que ya usa `loadMore()` en `leads.tsx`, líneas
+130-149, sin tests de render tampoco) más el paso de la suite completa
+(lógica pura) y de TypeScript.

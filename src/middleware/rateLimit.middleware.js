@@ -97,7 +97,36 @@ function claveRateLimitGeneral(req) {
 }
 
 /**
- * Rate limit global para todas las rutas de la API.
+ * Excluye /api/v1/auth/* de `rateLimitGeneral` (ver Bloque A del diagnóstico
+ * post-hardening, docs/post-hardening-diagnostico/, 16-17/sep/2026).
+ *
+ * Incidente real confirmado en producción: `rateLimitGeneral` es un único
+ * balde de 100 requests/15min POR USUARIO compartido entre TODA la API
+ * (`/api/v1/leads`, `/pipeline`, `/stats`, `/businesses/current`, etc. Y
+ * `/auth/*`). Una sesión normal de dashboard (varios widgets pidiendo datos
+ * casi en simultáneo) agota ese balde en menos de 2 minutos de uso legítimo.
+ * Como `apiFetch` (crea-os-ignite-main, client.ts) adjuntaba el
+ * `Authorization: Bearer` incluso en `/auth/login`, y `claveRateLimitGeneral`
+ * decodifica ese header con `ignoreExpiration:true`, el siguiente intento de
+ * login del MISMO usuario cae en el mismo balde ya agotado por el dashboard
+ * → "Demasiadas solicitudes" al querer volver a entrar, sin haber hecho
+ * fuerza bruta ni nada abusivo.
+ *
+ * /auth/* pasa a tener su propio balde (`rateLimitAuthGeneral`, más abajo),
+ * separado del de recursos de negocio. `rateLimitLogin` (por email, mucho
+ * más estricto, pensado para fuerza bruta) sigue corriendo TAL CUAL, sin
+ * cambios, específicamente en `/login` — esto no lo reemplaza ni lo afloja.
+ *
+ * @param {import('express').Request} req
+ * @returns {boolean}
+ */
+function debeOmitirRateLimitGeneral(req) {
+  return req.originalUrl.startsWith('/api/v1/auth');
+}
+
+/**
+ * Rate limit global para las rutas de negocio de la API (todo excepto
+ * /api/v1/auth/*, ver debeOmitirRateLimitGeneral() arriba).
  * 100 requests por 15 minutos — por usuario autenticado si se puede
  * identificar uno (ver claveRateLimitGeneral()), por IP si no.
  */
@@ -106,11 +135,38 @@ const rateLimitGeneral = rateLimit({
   max: 100,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: debeOmitirRateLimitGeneral,
   keyGenerator: claveRateLimitGeneral,
   handler: crearHandlerBloqueo('rateLimitGeneral', claveRateLimitGeneral),
   message: {
     success: false,
     message: 'Demasiadas solicitudes. Intenta de nuevo en 15 minutos.',
+  },
+});
+
+/**
+ * Rate limit general de /api/v1/auth/* — balde propio, separado por completo
+ * de `rateLimitGeneral` (ver debeOmitirRateLimitGeneral() arriba). Por IP:
+ * estos endpoints corren antes de que exista sesión (login, register) o
+ * identifican la sesión por la cookie HttpOnly, no por el access token
+ * (refresh, logout) — no hay un `userId` fiable y anterior a la sesión para
+ * usar de clave.
+ *
+ * `rateLimitLogin`, `rateLimitRegister` y `rateLimitForgotPassword` (más
+ * abajo) siguen corriendo ADEMÁS de este, en sus rutas específicas, con
+ * límites más estrictos pensados para fuerza bruta/spam. Este es un techo
+ * más generoso encima de TODO /auth/*, incluyendo rutas que hoy no tenían
+ * ningún límite propio (refresh, logout, verify-email, reset-password).
+ */
+const rateLimitAuthGeneral = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutos
+  max: 50,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: crearHandlerBloqueo('rateLimitAuthGeneral', (req) => req.ip),
+  message: {
+    success: false,
+    message: 'Demasiadas solicitudes de autenticación. Intenta de nuevo en 15 minutos.',
   },
 });
 
@@ -216,6 +272,7 @@ const rateLimitMissionRegenerate = rateLimit({
 
 module.exports = {
   rateLimitGeneral,
+  rateLimitAuthGeneral,
   rateLimitLogin,
   rateLimitForgotPassword,
   rateLimitRegister,
@@ -225,5 +282,6 @@ module.exports = {
   // rate limiter completo.
   claveRateLimitGeneral,
   claveRateLimitLogin,
+  debeOmitirRateLimitGeneral,
   crearHandlerBloqueo,
 };
