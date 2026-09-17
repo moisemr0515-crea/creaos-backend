@@ -1,6 +1,8 @@
 [build]
 builder = "nixpacks"
-buildCommand = "npm ci --omit=dev"
+# Revertido de "npm ci --omit=dev" — ver el comentario en railway.toml
+# (mismo bug, mismo fix, worker y API comparten build).
+buildCommand = "npm install --production=false"
 
 [deploy]
 startCommand = "node worker.js"

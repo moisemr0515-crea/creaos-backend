@@ -1,6 +1,15 @@
 [build]
 builder = "nixpacks"
-buildCommand = "npm ci --omit=dev"
+# Revertido de "npm ci --omit=dev" (16/sep/2026, diagnóstico post-hardening):
+# ese comando rompía el build en Railway con EBUSY al hacer rmdir de
+# /app/node_modules/.cache (cache mount de Nixpacks que choca con la
+# limpieza que hace npm ci) — bloqueó 3 deploys seguidos (P2-A, P2-B, P3)
+# durante más de 24h. Pendiente como mejora técnica: mover el install a
+# un nixpacks.toml con [phases.install] en vez de buildCommand, para
+# recuperar "npm ci --omit=dev" (reproducibilidad exacta del lockfile +
+# imagen sin devDependencies) sin duplicar la fase de instalación que
+# Nixpacks ya detecta solo — ver docs/post-hardening-diagnostico/.
+buildCommand = "npm install --production=false"
 
 [deploy]
 startCommand = "npm start"
