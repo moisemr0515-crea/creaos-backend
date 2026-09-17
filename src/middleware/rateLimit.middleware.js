@@ -117,11 +117,25 @@ function claveRateLimitGeneral(req) {
  * más estricto, pensado para fuerza bruta) sigue corriendo TAL CUAL, sin
  * cambios, específicamente en `/login` — esto no lo reemplaza ni lo afloja.
  *
+ * Incidente del 17/sep/2026 (mismo día, descubierto probando el fix de
+ * arriba en producción): separar /auth/* destapó un segundo problema.
+ * `GET /api/v1/users/me` es la primera llamada que hace el frontend
+ * apenas loguea (auth-context.tsx#refreshUser()) — si el balde de negocio
+ * de ese usuario ya estaba agotado (por ejemplo, por pruebas repetidas de
+ * dashboard), el login respondía 200 pero ESA llamada devolvía 429, y el
+ * frontend (antes de su propio fix, ver ese repo) lo trataba igual que
+ * "no hay sesión": deslogueaba en silencio segundos después de loguear
+ * bien. `/users/me` no es una ruta de auth, pero es tan crítica para
+ * arrancar la sesión como si lo fuera — se excluye también.
+ *
  * @param {import('express').Request} req
  * @returns {boolean}
  */
 function debeOmitirRateLimitGeneral(req) {
-  return req.originalUrl.startsWith('/api/v1/auth');
+  if (req.originalUrl.startsWith('/api/v1/auth')) return true;
+  const path = req.originalUrl.split('?')[0];
+  if (req.method === 'GET' && path === '/api/v1/users/me') return true;
+  return false;
 }
 
 /**

@@ -145,6 +145,29 @@ describe('rateLimit.middleware#debeOmitirRateLimitGeneral()', () => {
   test('un path que solo contiene "auth" en otro lugar de la URL no matchea (evita falsos positivos)', () => {
     expect(debeOmitirRateLimitGeneral({ originalUrl: '/api/v1/businesses/current?ref=auth' })).toBe(false);
   });
+
+  // Incidente del 17/sep/2026 (mismo día, descubierto probando el fix de
+  // arriba en producción): GET /api/v1/users/me es la primera llamada que
+  // hace el frontend apenas loguea (auth-context.tsx#refreshUser()) — si
+  // esta ruta seguía bajo rateLimitGeneral y el balde de negocio del
+  // usuario ya estaba agotado, el login respondía 200 pero esta llamada
+  // devolvía 429, y el frontend lo trataba como "no hay sesión".
+  test('GET /api/v1/users/me se omite de rateLimitGeneral', () => {
+    expect(debeOmitirRateLimitGeneral({ originalUrl: '/api/v1/users/me', method: 'GET' })).toBe(true);
+  });
+
+  test('PUT /api/v1/users/me (actualizar perfil) NO se omite — mismo path, distinto método', () => {
+    expect(debeOmitirRateLimitGeneral({ originalUrl: '/api/v1/users/me', method: 'PUT' })).toBe(false);
+  });
+
+  test('otras rutas de /api/v1/users/ (no /me) NO se omiten', () => {
+    expect(debeOmitirRateLimitGeneral({ originalUrl: '/api/v1/users', method: 'GET' })).toBe(false);
+    expect(debeOmitirRateLimitGeneral({ originalUrl: '/api/v1/users/6a52de897e51be411da70626', method: 'PUT' })).toBe(false);
+  });
+
+  test('GET /api/v1/users/me con query string igual se omite', () => {
+    expect(debeOmitirRateLimitGeneral({ originalUrl: '/api/v1/users/me?ts=123', method: 'GET' })).toBe(true);
+  });
 });
 
 describe('rateLimit.middleware#claveRateLimitLogin()', () => {
