@@ -153,4 +153,109 @@ async function sendMediaMessage(to, media, { apiKey, appId } = {}) {
   return json;
 }
 
-module.exports = { sendTextMessage, sendMediaMessage };
+/**
+ * Lista las plantillas aprobadas del canal vía la API Partner de Gupshup.
+ * Reemplaza a gupshup.client.js#listTemplates() (Legacy) para canales con
+ * outboundApi:'partner' — bug real de producción (17/sep/2026,
+ * docs/post-hardening-diagnostico/ en creaos-backend): gupshupProvider.js#
+ * listTemplates() llamaba SIEMPRE al cliente Legacy, sin bifurcar por
+ * resolveOutboundMode() como sí hacen sendMessage()/sendMedia() — los 3
+ * WhatsAppChannel activos en producción están en modo 'partner', así que
+ * sus credenciales (Partner App Access Token) nunca funcionan contra el
+ * endpoint Legacy (`api.gupshup.io/wa/app/{appName}/template`, que espera
+ * un apikey self-serve) → 401 "Authentication Failed" → 500 en
+ * GET /api/v1/whatsapp/templates, siempre.
+ *
+ * Endpoint confirmado contra la documentación OFICIAL de Gupshup Partner
+ * (17/sep/2026): https://partner-docs.gupshup.io/reference/get_partner-app-appid-templates
+ * — GET /partner/app/{appId}/templates, mismo header Authorization que
+ * sendTextMessage()/sendMediaMessage() (NO "apikey").
+ *
+ * @param {{ apiKey: string, appId: string }} credentials
+ * @returns {Promise<Array>} lista cruda de plantillas tal como las devuelve Gupshup
+ */
+async function listTemplates({ apiKey, appId } = {}) {
+  logger.info('[GupshupPartnerClient] listando plantillas via Partner API', {
+    appId,
+    hasApiKey: Boolean(apiKey),
+  });
+
+  const response = await fetch(`${PARTNER_API_BASE_URL}/partner/app/${appId}/templates`, {
+    method: 'GET',
+    headers: { Authorization: apiKey },
+  });
+
+  if (!response.ok) {
+    const errText = await response.text().catch(() => '');
+    logger.error('[GupshupPartnerClient] Partner API respondió error (listar plantillas)', { status: response.status, body: errText, appId });
+    throw new Error(`Gupshup Partner API error (template list): ${response.status} ${errText}`);
+  }
+
+  const json = await response.json();
+  logger.info('[GupshupPartnerClient] plantillas listadas via Partner API exitosamente', { appId, cantidad: (json.templates || []).length });
+  return json.templates || [];
+}
+
+/**
+ * Envía un mensaje de plantilla aprobada vía la API Partner de Gupshup —
+ * reemplaza a gupshup.client.js#sendTemplateMessage() (Legacy) para
+ * canales con outboundApi:'partner'. Mismo bug/mismo motivo que
+ * listTemplates() arriba: sendTemplate() en gupshupProvider.js tampoco
+ * bifurcaba por resolveOutboundMode().
+ *
+ * A diferencia de sendTextMessage()/sendMediaMessage() (API v3, JSON,
+ * estilo WhatsApp Cloud API), este endpoint es form-urlencoded — mismo
+ * shape exacto que gupshup.client.js#sendTemplateMessage() (Legacy): los
+ * nombres de campo (`channel`, `source`, `destination`, `src.name`,
+ * `template`) son IDÉNTICOS, solo cambia la base URL y el header de auth
+ * (Authorization en vez de apikey), igual que en el resto de este
+ * archivo. Endpoint confirmado contra la documentación OFICIAL de
+ * Gupshup Partner (17/sep/2026):
+ * https://partner-docs.gupshup.io/reference/post_partner-app-appid-template-msg
+ *
+ * @param {string} to
+ * @param {{ id: string, params?: string[] }} template — id de la plantilla en
+ *   Gupshup y los valores para sus variables {{1}}, {{2}}, ... en orden.
+ * @param {{ apiKey: string, appId: string, source: string, appName: string }} credentials —
+ *   `source` (número del canal) y `appName` (nombre de la app en Gupshup)
+ *   son los mismos campos que ya resuelve gupshupProvider.js#
+ *   resolverCredencialesDeEnvio() para el envío de texto/media.
+ */
+async function sendTemplateMessage(to, template, { apiKey, appId, source, appName } = {}) {
+  logger.info('[GupshupPartnerClient] enviando plantilla via Partner API', {
+    to,
+    appId,
+    templateId: template?.id,
+    hasApiKey: Boolean(apiKey),
+    source,
+  });
+
+  const body = new URLSearchParams({
+    channel: 'whatsapp',
+    source,
+    destination: to,
+    'src.name': appName,
+    template: JSON.stringify({ id: template.id, params: template.params || [] }),
+  });
+
+  const response = await fetch(`${PARTNER_API_BASE_URL}/partner/app/${appId}/template/msg`, {
+    method: 'POST',
+    headers: {
+      Authorization: apiKey,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: body.toString(),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text().catch(() => '');
+    logger.error('[GupshupPartnerClient] Partner API respondió error (plantilla)', { status: response.status, body: errText, appId });
+    throw new Error(`Gupshup Partner API error (template send): ${response.status} ${errText}`);
+  }
+
+  const json = await response.json();
+  logger.info('[GupshupPartnerClient] plantilla enviada via Partner API exitosamente', { to, appId, gupshupResponse: json });
+  return json;
+}
+
+module.exports = { sendTextMessage, sendMediaMessage, listTemplates, sendTemplateMessage };

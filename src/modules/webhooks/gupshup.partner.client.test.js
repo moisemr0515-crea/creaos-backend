@@ -2,7 +2,7 @@
 // diseño de migración de outbound (docs/implementation/known-issues.md,
 // 07/sep/2026). Mismo patrón que gupshup.client.test.js: mockea
 // global.fetch, nunca pega contra Gupshup real.
-const { sendTextMessage, sendMediaMessage } = require('./gupshup.partner.client');
+const { sendTextMessage, sendMediaMessage, listTemplates, sendTemplateMessage } = require('./gupshup.partner.client');
 
 describe('gupshup.partner.client#sendTextMessage()', () => {
   const originalFetch = global.fetch;
@@ -238,5 +238,168 @@ describe('gupshup.partner.client#sendMediaMessage()', () => {
     const result = await sendMediaMessage('51923523382', { url: 'https://cloudinary.test/x.png', type: 'image' }, CREDENCIALES);
 
     expect(result).toEqual(respuestaGupshup);
+  });
+});
+
+// Bug real de producción (17/sep/2026, docs/post-hardening-diagnostico/ en
+// creaos-backend): GET /api/v1/whatsapp/templates devolvía 500 SIEMPRE para
+// los 3 WhatsAppChannel activos hoy (todos outboundApi:'partner') porque
+// gupshupProvider.js#listTemplates() llamaba siempre al cliente Legacy, que
+// rechaza credenciales Partner con 401 "Authentication Failed". Endpoint
+// confirmado contra la documentación OFICIAL de Gupshup Partner (17/sep/2026):
+// https://partner-docs.gupshup.io/reference/get_partner-app-appid-templates
+describe('gupshup.partner.client#listTemplates()', () => {
+  const originalFetch = global.fetch;
+  const CREDENCIALES = { apiKey: 'partner-app-access-token-real', appId: '4f81131f-3b56-4bf5-808f-4e05176d0315' };
+
+  beforeEach(() => {
+    global.fetch = jest.fn();
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    jest.restoreAllMocks();
+  });
+
+  function mockJsonResponse(body, ok = true, status = 200) {
+    return { ok, status, json: async () => body, text: async () => JSON.stringify(body) };
+  }
+
+  test('URL exacta (GET) y header Authorization con el Partner App Access Token — NUNCA "apikey"', async () => {
+    global.fetch.mockResolvedValue(mockJsonResponse({ status: 'success', templates: [] }));
+
+    await listTemplates(CREDENCIALES);
+
+    const [url, init] = global.fetch.mock.calls[0];
+    expect(url).toBe('https://partner.gupshup.io/partner/app/4f81131f-3b56-4bf5-808f-4e05176d0315/templates');
+    expect(init.method).toBe('GET');
+    expect(init.headers.Authorization).toBe('partner-app-access-token-real');
+    expect(init.headers.apikey).toBeUndefined();
+  });
+
+  test('respuesta ok: devuelve json.templates', async () => {
+    const plantillas = [{ id: 'tpl-1', elementName: 'bienvenida', status: 'APPROVED' }];
+    global.fetch.mockResolvedValue(mockJsonResponse({ status: 'success', templates: plantillas }));
+
+    const result = await listTemplates(CREDENCIALES);
+
+    expect(result).toEqual(plantillas);
+  });
+
+  test('respuesta sin campo templates: devuelve array vacío, no undefined', async () => {
+    global.fetch.mockResolvedValue(mockJsonResponse({ status: 'success' }));
+
+    const result = await listTemplates(CREDENCIALES);
+
+    expect(result).toEqual([]);
+  });
+
+  test('respuesta con error (401 de Gupshup): tira un Error con status+body, mismo formato que el resto del cliente', async () => {
+    global.fetch.mockResolvedValue(mockJsonResponse({ message: 'Authentication Failed', status: 'error' }, false, 401));
+
+    await expect(listTemplates(CREDENCIALES)).rejects.toThrow('Gupshup Partner API error (template list): 401');
+  });
+
+  test('nunca imprime la credencial — el texto del error no contiene el apiKey', async () => {
+    global.fetch.mockResolvedValue(mockJsonResponse({ message: 'Authentication Failed' }, false, 401));
+
+    try {
+      await listTemplates(CREDENCIALES);
+    } catch (err) {
+      expect(err.message).not.toContain('partner-app-access-token-real');
+    }
+  });
+});
+
+// Send msg With Template ID — confirmado contra la documentación OFICIAL
+// de Gupshup Partner (17/sep/2026):
+// https://partner-docs.gupshup.io/reference/post_partner-app-appid-template-msg
+// Mismo shape form-urlencoded que gupshup.client.js#sendTemplateMessage()
+// (Legacy) — channel/source/destination/src.name/template son idénticos,
+// solo cambian la base URL y el header de auth.
+describe('gupshup.partner.client#sendTemplateMessage()', () => {
+  const originalFetch = global.fetch;
+  const CREDENCIALES = {
+    apiKey: 'partner-app-access-token-real',
+    appId: '4f81131f-3b56-4bf5-808f-4e05176d0315',
+    source: '51900000001',
+    appName: 'creaos507f1f77bcf86cd799439011',
+  };
+
+  beforeEach(() => {
+    global.fetch = jest.fn();
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    jest.restoreAllMocks();
+  });
+
+  function mockJsonResponse(body, ok = true, status = 200) {
+    return { ok, status, json: async () => body, text: async () => JSON.stringify(body) };
+  }
+
+  test('URL exacta (POST) y header Authorization — NUNCA "apikey"', async () => {
+    global.fetch.mockResolvedValue(mockJsonResponse({ status: 'submitted', messageId: 'msg-tpl-1' }));
+
+    await sendTemplateMessage('51923523382', { id: 'tpl-1', params: [] }, CREDENCIALES);
+
+    const [url, init] = global.fetch.mock.calls[0];
+    expect(url).toBe('https://partner.gupshup.io/partner/app/4f81131f-3b56-4bf5-808f-4e05176d0315/template/msg');
+    expect(init.method).toBe('POST');
+    expect(init.headers.Authorization).toBe('partner-app-access-token-real');
+    expect(init.headers.apikey).toBeUndefined();
+    expect(init.headers['Content-Type']).toBe('application/x-www-form-urlencoded');
+  });
+
+  test('body form-urlencoded con el shape exacto: channel/source/destination/src.name/template', async () => {
+    global.fetch.mockResolvedValue(mockJsonResponse({ status: 'submitted', messageId: 'msg-tpl-1' }));
+
+    await sendTemplateMessage('51923523382', { id: 'tpl-1', params: ['Ana', 'lunes'] }, CREDENCIALES);
+
+    const [, init] = global.fetch.mock.calls[0];
+    const body = new URLSearchParams(init.body);
+    expect(body.get('channel')).toBe('whatsapp');
+    expect(body.get('source')).toBe('51900000001');
+    expect(body.get('destination')).toBe('51923523382');
+    expect(body.get('src.name')).toBe('creaos507f1f77bcf86cd799439011');
+    expect(JSON.parse(body.get('template'))).toEqual({ id: 'tpl-1', params: ['Ana', 'lunes'] });
+  });
+
+  test('template sin params: manda params: [] (no undefined, no lo omite)', async () => {
+    global.fetch.mockResolvedValue(mockJsonResponse({ status: 'submitted' }));
+
+    await sendTemplateMessage('51923523382', { id: 'tpl-1' }, CREDENCIALES);
+
+    const [, init] = global.fetch.mock.calls[0];
+    const body = new URLSearchParams(init.body);
+    expect(JSON.parse(body.get('template'))).toEqual({ id: 'tpl-1', params: [] });
+  });
+
+  test('respuesta ok: devuelve el JSON crudo de Gupshup', async () => {
+    const respuestaGupshup = { status: 'submitted', messageId: 'msg-tpl-real-1' };
+    global.fetch.mockResolvedValue(mockJsonResponse(respuestaGupshup));
+
+    const result = await sendTemplateMessage('51923523382', { id: 'tpl-1' }, CREDENCIALES);
+
+    expect(result).toEqual(respuestaGupshup);
+  });
+
+  test('respuesta con error (400/401 de Gupshup): tira un Error con status+body', async () => {
+    global.fetch.mockResolvedValue(mockJsonResponse({ message: 'Authentication Failed' }, false, 401));
+
+    await expect(sendTemplateMessage('51923523382', { id: 'tpl-1' }, CREDENCIALES)).rejects.toThrow(
+      'Gupshup Partner API error (template send): 401'
+    );
+  });
+
+  test('nunca imprime la credencial — el texto del error no contiene el apiKey', async () => {
+    global.fetch.mockResolvedValue(mockJsonResponse({ message: 'Authentication Failed' }, false, 401));
+
+    try {
+      await sendTemplateMessage('51923523382', { id: 'tpl-1' }, CREDENCIALES);
+    } catch (err) {
+      expect(err.message).not.toContain('partner-app-access-token-real');
+    }
   });
 });

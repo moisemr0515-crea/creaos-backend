@@ -293,6 +293,69 @@ describe('GupshupProvider', () => {
       await expect(provider.sendTemplate(channelDedicado, '51987654321', { id: 'tpl-1' })).rejects.toBe(error);
       expect(gupshupClient.sendTemplateMessage).not.toHaveBeenCalled();
     });
+
+    // Bug real de producción (17/sep/2026, docs/post-hardening-diagnostico/):
+    // antes, sendTemplate() llamaba SIEMPRE a gupshup.client.js (Legacy), sin
+    // resolveOutboundMode() — a diferencia de sendMessage()/sendMedia(), que
+    // ya bifurcaban. Mismo patrón de test que "routing Partner/Legacy" de
+    // sendMessage() arriba.
+    describe('routing Partner/Legacy por outboundApi', () => {
+      test('canal PLATFORM: sigue por Legacy, NUNCA llama a gupshupPartnerClient', async () => {
+        channelCredentialsService.resolveCredentials.mockResolvedValue({ apiKey: 'apikey-del-env-de-platform' });
+        gupshupClient.sendTemplateMessage.mockResolvedValue({ status: 'submitted' });
+
+        await provider.sendTemplate(channelPlatform, '51987654321', { id: 'tpl-1' });
+
+        expect(gupshupClient.sendTemplateMessage).toHaveBeenCalled();
+        expect(gupshupPartnerClient.sendTemplateMessage).not.toHaveBeenCalled();
+      });
+
+      test('canal DEDICATED con outboundApi:"legacy" (no migrado todavía): sigue por Legacy', async () => {
+        channelCredentialsService.resolveCredentials.mockResolvedValue({ apiKey: 'apikey-real' });
+        gupshupClient.sendTemplateMessage.mockResolvedValue({ status: 'submitted' });
+
+        await provider.sendTemplate(channelDedicado, '51987654321', { id: 'tpl-1' });
+
+        expect(gupshupClient.sendTemplateMessage).toHaveBeenCalled();
+        expect(gupshupPartnerClient.sendTemplateMessage).not.toHaveBeenCalled();
+      });
+
+      test('canal DEDICATED con outboundApi:"partner" + providerAppId: usa Partner con appId+source+appName correctos, NUNCA llama a Legacy', async () => {
+        channelCredentialsService.resolveCredentials.mockResolvedValue({ apiKey: 'partner-app-access-token-real' });
+        gupshupPartnerClient.sendTemplateMessage.mockResolvedValue({ status: 'submitted', messageId: 'msg-tpl-1' });
+
+        const template = { id: 'tpl-1', params: ['Ana'] };
+        const result = await provider.sendTemplate(channelDedicadoPartner, '51923523382', template);
+
+        expect(gupshupPartnerClient.sendTemplateMessage).toHaveBeenCalledWith('51923523382', template, {
+          apiKey: 'partner-app-access-token-real',
+          source: '51967424911',
+          appName: 'creaos6a9b96597ed1485fda9fade3',
+          appId: 'app-real-de-gupshup',
+        });
+        expect(gupshupClient.sendTemplateMessage).not.toHaveBeenCalled();
+        expect(result).toEqual({ status: 'submitted', messageId: 'msg-tpl-1' });
+      });
+
+      test('canal outboundApi:"partner" SIN providerAppId: tira error controlado, ningún cliente se llama', async () => {
+        const canalInconsistente = { ...channelDedicadoPartner, providerAppId: null };
+
+        await expect(provider.sendTemplate(canalInconsistente, '51923523382', { id: 'tpl-1' })).rejects.toThrow(
+          /declarado outboundApi:'partner' pero sin providerAppId/
+        );
+        expect(gupshupClient.sendTemplateMessage).not.toHaveBeenCalled();
+        expect(gupshupPartnerClient.sendTemplateMessage).not.toHaveBeenCalled();
+      });
+
+      test('canal outboundApi:"partner", Partner API responde error real: se propaga, NUNCA reintenta por Legacy', async () => {
+        channelCredentialsService.resolveCredentials.mockResolvedValue({ apiKey: 'partner-app-access-token-real' });
+        const errorPartner = new Error('Gupshup Partner API error (template send): 401 {"message":"Authentication Failed"}');
+        gupshupPartnerClient.sendTemplateMessage.mockRejectedValue(errorPartner);
+
+        await expect(provider.sendTemplate(channelDedicadoPartner, '51923523382', { id: 'tpl-1' })).rejects.toBe(errorPartner);
+        expect(gupshupClient.sendTemplateMessage).not.toHaveBeenCalled();
+      });
+    });
   });
 
   describe('sendMedia()', () => {
@@ -472,6 +535,68 @@ describe('GupshupProvider', () => {
       expect(templates).toEqual([{ id: 'tpl-1' }]);
       expect(channelCredentialsService.resolveCredentials).toHaveBeenCalledWith(channelDedicado);
       expect(gupshupClient.listTemplates).toHaveBeenCalledWith(expect.objectContaining({ apiKey: 'apikey-tenant', appName: channelDedicado.providerAccountId }));
+    });
+
+    // Bug real de producción (17/sep/2026, docs/post-hardening-diagnostico/):
+    // listTemplates() llamaba SIEMPRE a gupshup.client.js (Legacy), sin
+    // resolveOutboundMode() — con los 3 WhatsAppChannel activos en
+    // producción en modo 'partner', esto producía 401 "Authentication
+    // Failed" de Gupshup → 500 en GET /api/v1/whatsapp/templates, siempre.
+    describe('routing Partner/Legacy por outboundApi', () => {
+      test('canal PLATFORM: sigue por Legacy, NUNCA llama a gupshupPartnerClient', async () => {
+        channelCredentialsService.resolveCredentials.mockResolvedValue({ apiKey: 'apikey-del-env-de-platform' });
+        gupshupClient.listTemplates.mockResolvedValue([{ id: 'tpl-1' }]);
+
+        await provider.listTemplates(channelPlatform);
+
+        expect(gupshupClient.listTemplates).toHaveBeenCalled();
+        expect(gupshupPartnerClient.listTemplates).not.toHaveBeenCalled();
+      });
+
+      test('canal DEDICATED con outboundApi:"legacy" (no migrado todavía): sigue por Legacy', async () => {
+        channelCredentialsService.resolveCredentials.mockResolvedValue({ apiKey: 'apikey-real' });
+        gupshupClient.listTemplates.mockResolvedValue([{ id: 'tpl-1' }]);
+
+        await provider.listTemplates(channelDedicado);
+
+        expect(gupshupClient.listTemplates).toHaveBeenCalled();
+        expect(gupshupPartnerClient.listTemplates).not.toHaveBeenCalled();
+      });
+
+      test('canal DEDICATED con outboundApi:"partner" + providerAppId: usa Partner con appId+Authorization correctos, NUNCA llama a Legacy', async () => {
+        channelCredentialsService.resolveCredentials.mockResolvedValue({ apiKey: 'partner-app-access-token-real' });
+        gupshupPartnerClient.listTemplates.mockResolvedValue([{ id: 'tpl-real-1', status: 'APPROVED' }]);
+
+        const templates = await provider.listTemplates(channelDedicadoPartner);
+
+        expect(gupshupPartnerClient.listTemplates).toHaveBeenCalledWith({
+          apiKey: 'partner-app-access-token-real',
+          source: '51967424911',
+          appName: 'creaos6a9b96597ed1485fda9fade3',
+          appId: 'app-real-de-gupshup',
+        });
+        expect(gupshupClient.listTemplates).not.toHaveBeenCalled();
+        expect(templates).toEqual([{ id: 'tpl-real-1', status: 'APPROVED' }]);
+      });
+
+      test('canal outboundApi:"partner" SIN providerAppId: tira error controlado, ningún cliente se llama', async () => {
+        const canalInconsistente = { ...channelDedicadoPartner, providerAppId: null };
+
+        await expect(provider.listTemplates(canalInconsistente)).rejects.toThrow(
+          /declarado outboundApi:'partner' pero sin providerAppId/
+        );
+        expect(gupshupClient.listTemplates).not.toHaveBeenCalled();
+        expect(gupshupPartnerClient.listTemplates).not.toHaveBeenCalled();
+      });
+
+      test('canal outboundApi:"partner", Partner API responde error real: se propaga, NUNCA reintenta por Legacy', async () => {
+        channelCredentialsService.resolveCredentials.mockResolvedValue({ apiKey: 'partner-app-access-token-real' });
+        const errorPartner = new Error('Gupshup Partner API error (template list): 401 {"message":"Authentication Failed"}');
+        gupshupPartnerClient.listTemplates.mockRejectedValue(errorPartner);
+
+        await expect(provider.listTemplates(channelDedicadoPartner)).rejects.toBe(errorPartner);
+        expect(gupshupClient.listTemplates).not.toHaveBeenCalled();
+      });
     });
   });
 });

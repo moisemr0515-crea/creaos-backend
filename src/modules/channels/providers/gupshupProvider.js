@@ -152,23 +152,60 @@ class GupshupProvider extends IChannelProvider {
    * @param {{ id: string, params?: string[] }} template
    */
   async sendTemplate(channel, to, template) {
-    // Mismo criterio que sendMessage() (PR-07a).
+    // Bifurcación Legacy/Partner (17/sep/2026, docs/post-hardening-
+    // diagnostico/ en creaos-backend) — antes esto SIEMPRE llamaba al
+    // cliente Legacy, sin resolveOutboundMode(), a diferencia de
+    // sendMessage()/sendMedia(). Mismo criterio que esos 2: se resuelve
+    // el modo ANTES de gastar una consulta a ChannelCredentials/Partner
+    // API si la configuración del canal ya es inconsistente.
+    const modo = resolveOutboundMode(channel);
     const credenciales = await resolverCredencialesDeEnvio(channel);
+
+    if (modo === 'partner') {
+      logger.info('[GupshupProvider] plantilla outbound via Partner API', {
+        channelId: String(channel._id),
+        appId: credenciales.appId,
+        templateId: template?.id,
+      });
+      return gupshupPartnerClient.sendTemplateMessage(to, template, credenciales);
+    }
+
+    logger.info('[GupshupProvider] plantilla outbound via Legacy API', {
+      channelId: String(channel._id),
+      templateId: template?.id,
+    });
     return gupshupClient.sendTemplateMessage(to, template, credenciales);
   }
 
   /**
-   * GAP CONOCIDO, fuera de alcance de PR-07a a propósito (no es una función
-   * de "envío" — es lectura/listado): sigue sin usar `channel`, mismo motivo
-   * que gupshup.client.js#listTemplates() (GUPSHUP_APP_ID global) — un canal
-   * DEDICATED vería siempre las plantillas de la app de CREA OS.
+   * Bifurcación Legacy/Partner (17/sep/2026) — mismo motivo que
+   * sendTemplate() arriba: esto llamaba SIEMPRE al cliente Legacy, sin
+   * resolveOutboundMode(). Con los 3 WhatsAppChannel activos en
+   * producción en modo 'partner' (ver comentario de sendMedia() más
+   * abajo), esto producía un 401 "Authentication Failed" del lado de
+   * Gupshup en el 100% de los casos → 500 en
+   * GET /api/v1/whatsapp/templates, siempre — confirmado en logs de
+   * producción antes de este fix.
    *
-   * @param {import('../whatsappChannel.model')} _channel — no usado hoy.
+   * @param {import('../whatsappChannel.model')} channel
    * @returns {Promise<Array>}
    */
   async listTemplates(channel) {
-    const credentials = await resolverCredencialesDeEnvio(channel);
-    return gupshupClient.listTemplates(credentials);
+    const modo = resolveOutboundMode(channel);
+    const credenciales = await resolverCredencialesDeEnvio(channel);
+
+    if (modo === 'partner') {
+      logger.info('[GupshupProvider] listando plantillas via Partner API', {
+        channelId: String(channel._id),
+        appId: credenciales.appId,
+      });
+      return gupshupPartnerClient.listTemplates(credenciales);
+    }
+
+    logger.info('[GupshupProvider] listando plantillas via Legacy API', {
+      channelId: String(channel._id),
+    });
+    return gupshupClient.listTemplates(credenciales);
   }
 
   /**
