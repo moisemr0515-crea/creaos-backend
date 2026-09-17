@@ -2,6 +2,7 @@ const jwt = require('jsonwebtoken');
 const { JWT_SECRET } = require('../config/env');
 const { AppError, AUTH_SESSION_INVALID_CODE } = require('./error.middleware');
 const User = require('../modules/users/user.model');
+const { obtenerUsuarioCacheado, guardarUsuarioCacheado } = require('./authCache');
 
 /**
  * Verifica el Bearer token JWT en el header Authorization.
@@ -29,8 +30,14 @@ const authenticate = async (req, res, next) => {
       throw new AppError('Token inválido', 401, AUTH_SESSION_INVALID_CODE);
     }
 
-    // Buscar usuario activo en BD
-    const usuario = await User.findById(payload.sub).populate('role', 'slug permissions');
+    // Buscar usuario activo — cacheado 8s en Redis (ver authCache.js): esta
+    // consulta corre en TODA request autenticada, y era el primero de 3+
+    // round-trips secuenciales a Mongo antes de llegar al controller real.
+    let usuario = await obtenerUsuarioCacheado(payload.sub);
+    if (!usuario) {
+      usuario = await User.findById(payload.sub).populate('role', 'slug permissions');
+      if (usuario) await guardarUsuarioCacheado(payload.sub, usuario);
+    }
 
     if (!usuario) {
       throw new AppError('Usuario no encontrado', 401, AUTH_SESSION_INVALID_CODE);
@@ -69,7 +76,11 @@ const authenticateUnverified = async (req, res, next) => {
     const token = authHeader.split(' ')[1];
     const payload = jwt.verify(token, JWT_SECRET);
 
-    const usuario = await User.findById(payload.sub).populate('role', 'slug permissions');
+    let usuario = await obtenerUsuarioCacheado(payload.sub);
+    if (!usuario) {
+      usuario = await User.findById(payload.sub).populate('role', 'slug permissions');
+      if (usuario) await guardarUsuarioCacheado(payload.sub, usuario);
+    }
 
     if (!usuario || !usuario.isActive) {
       throw new AppError('Usuario no encontrado o inactivo', 401, AUTH_SESSION_INVALID_CODE);

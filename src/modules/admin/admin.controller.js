@@ -12,6 +12,7 @@ const { respuestaExito, buildMeta } = require('../../utils/response');
 const { hashPassword, generateToken } = require('../../utils/crypto');
 const { enviarEmailVerificacion }     = require('../../utils/email');
 const { ROLES } = require('../../config/constants');
+const { invalidarUsuarioCacheado, invalidarNegocioCacheado } = require('../../middleware/authCache');
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 
@@ -233,6 +234,10 @@ const suspendBusiness = async (req, res, next) => {
   try {
     const business = await Business.findByIdAndUpdate(req.params.id, { isActive: false }, { new: true });
     if (!business) throw new AppError('Negocio no encontrado', 404);
+    // Invalidación activa del cache de injectTenant() (ver authCache.js) —
+    // un negocio suspendido no debe seguir siendo accesible hasta que
+    // expire el TTL de 8s.
+    await invalidarNegocioCacheado(business._id);
     respuestaExito(res, { message: 'Negocio suspendido', data: { id: business._id, isActive: false } });
   } catch (err) { next(err); }
 };
@@ -241,6 +246,7 @@ const activateBusiness = async (req, res, next) => {
   try {
     const business = await Business.findByIdAndUpdate(req.params.id, { isActive: true }, { new: true });
     if (!business) throw new AppError('Negocio no encontrado', 404);
+    await invalidarNegocioCacheado(business._id);
     respuestaExito(res, { message: 'Negocio activado', data: { id: business._id, isActive: true } });
   } catch (err) { next(err); }
 };
@@ -357,6 +363,8 @@ const changeUserRole = async (req, res, next) => {
 
     target.role = role._id;
     await target.save();
+    // Invalidación activa del cache de authenticate() (ver authCache.js).
+    await invalidarUsuarioCacheado(target._id);
 
     respuestaExito(res, { message: 'Rol actualizado', data: { userId: target._id, newRole: roleSlug } });
   } catch (err) { next(err); }
@@ -376,6 +384,10 @@ const suspendUser = async (req, res, next) => {
     }
 
     await User.findByIdAndUpdate(req.params.id, { isActive: false });
+    // Invalidación activa del cache de authenticate() (ver authCache.js) —
+    // un usuario suspendido no debe seguir autenticándose hasta que
+    // expire el TTL de 8s.
+    await invalidarUsuarioCacheado(req.params.id);
     respuestaExito(res, { message: 'Usuario suspendido', data: { userId: target._id, isActive: false } });
   } catch (err) { next(err); }
 };
@@ -391,6 +403,7 @@ const activateUser = async (req, res, next) => {
     }
 
     await User.findByIdAndUpdate(req.params.id, { isActive: true });
+    await invalidarUsuarioCacheado(req.params.id);
     respuestaExito(res, { message: 'Usuario activado', data: { userId: target._id, isActive: true } });
   } catch (err) { next(err); }
 };

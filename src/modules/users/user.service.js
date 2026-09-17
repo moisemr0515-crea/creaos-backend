@@ -3,6 +3,7 @@ const Role = require('../roles/role.model');
 const { AppError } = require('../../middleware/error.middleware');
 const { hashPassword, comparePassword } = require('../../utils/crypto');
 const { ROLES } = require('../../config/constants');
+const { invalidarUsuarioCacheado } = require('../../middleware/authCache');
 
 // ─── MI PERFIL ────────────────────────────────────────────────────────────────
 
@@ -132,6 +133,13 @@ const actualizarUsuario = async (userId, businessId, actualizadorRole, { name, p
     runValidators: true,
   }).populate('role', 'slug name');
 
+  // Invalidación activa del cache de authenticate() (ver authCache.js) —
+  // solo cuando lo que cambió es justo lo que ese cache sirve (isActive,
+  // rol): la revocación de acceso no debe esperar el TTL de 8s.
+  if (isActive !== undefined || roleId !== undefined) {
+    await invalidarUsuarioCacheado(userId);
+  }
+
   return usuarioActualizado;
 };
 
@@ -153,6 +161,7 @@ const desactivarUsuario = async (userId, businessId, solicitanteId) => {
   }
 
   await User.findByIdAndUpdate(userId, { isActive: false });
+  await invalidarUsuarioCacheado(userId);
 };
 
 module.exports = {

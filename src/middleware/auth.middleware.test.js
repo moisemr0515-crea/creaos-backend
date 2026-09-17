@@ -8,9 +8,16 @@ jest.mock('../config/env', () => ({ JWT_SECRET: 'secreto-de-prueba' }));
 // Mock explícito (no automock) — User es un Model de Mongoose real, dejar
 // que Jest lo automockee introspeccionando su prototipo es frágil.
 jest.mock('../modules/users/user.model', () => ({ findById: jest.fn() }));
+// Cache de authenticate() (17/sep/2026, diagnóstico de lentitud
+// percibida) — mockeado para poder probar cache HIT/MISS sin Redis real.
+jest.mock('./authCache', () => ({
+  obtenerUsuarioCacheado: jest.fn(),
+  guardarUsuarioCacheado: jest.fn(),
+}));
 
 const jwt = require('jsonwebtoken');
 const User = require('../modules/users/user.model');
+const { obtenerUsuarioCacheado, guardarUsuarioCacheado } = require('./authCache');
 const { authenticate, authenticateUnverified } = require('./auth.middleware');
 const { AUTH_SESSION_INVALID_CODE } = require('./error.middleware');
 
@@ -24,7 +31,12 @@ function usuarioMock(overrides = {}) {
 
 describe('auth.middleware', () => {
   beforeEach(() => {
-    jest.clearAllMocks();
+    // resetAllMocks() (no solo clearAllMocks()): los tests de cache de
+    // usuario (más abajo) configuran obtenerUsuarioCacheado con
+    // mockResolvedValue() — con clearAllMocks() esa configuración
+    // sobrevive entre tests (solo borra el historial de llamadas, no la
+    // implementación) y se filtra a tests posteriores que no la esperan.
+    jest.resetAllMocks();
   });
 
   describe('authenticate()', () => {
@@ -96,6 +108,51 @@ describe('auth.middleware', () => {
       expect(next).toHaveBeenCalledWith(); // sin argumentos = sin error
       expect(req.user).toBe(usuario);
       expect(req.businessId).toBe('b1');
+    });
+
+    // Cache de Redis (17/sep/2026, diagnóstico de lentitud percibida,
+    // docs/post-hardening-diagnostico/) — ver authCache.js.
+    describe('cache de usuario (authCache)', () => {
+      test('cache MISS: consulta Mongo (con populate de role) y guarda el resultado en cache', async () => {
+        obtenerUsuarioCacheado.mockResolvedValue(null);
+        jwt.verify.mockReturnValue({ sub: 'u1', businessId: 'b1' });
+        const usuario = usuarioMock();
+        User.findById.mockReturnValue({ populate: jest.fn().mockResolvedValue(usuario) });
+        const next = jest.fn();
+
+        await authenticate(mockReq('Bearer valido'), {}, next);
+
+        expect(obtenerUsuarioCacheado).toHaveBeenCalledWith('u1');
+        expect(User.findById).toHaveBeenCalledWith('u1');
+        expect(guardarUsuarioCacheado).toHaveBeenCalledWith('u1', usuario);
+        expect(next).toHaveBeenCalledWith();
+      });
+
+      test('cache HIT: NO consulta Mongo, usa directamente el usuario cacheado', async () => {
+        const usuarioCacheado = usuarioMock();
+        obtenerUsuarioCacheado.mockResolvedValue(usuarioCacheado);
+        jwt.verify.mockReturnValue({ sub: 'u1', businessId: 'b1' });
+        const next = jest.fn();
+        const req = mockReq('Bearer valido');
+
+        await authenticate(req, {}, next);
+
+        expect(User.findById).not.toHaveBeenCalled();
+        expect(guardarUsuarioCacheado).not.toHaveBeenCalled();
+        expect(req.user).toBe(usuarioCacheado);
+        expect(next).toHaveBeenCalledWith();
+      });
+
+      test('cache HIT con usuario inactivo (revocado hace poco, todavía dentro del TTL): 403 igual que sin cache', async () => {
+        obtenerUsuarioCacheado.mockResolvedValue(usuarioMock({ isActive: false }));
+        jwt.verify.mockReturnValue({ sub: 'u1', businessId: 'b1' });
+        const next = jest.fn();
+
+        await authenticate(mockReq('Bearer valido'), {}, next);
+
+        const errorPasado = next.mock.calls[0][0];
+        expect(errorPasado.statusCode).toBe(403);
+      });
     });
   });
 

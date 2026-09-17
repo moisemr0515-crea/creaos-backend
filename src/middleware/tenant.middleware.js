@@ -1,5 +1,6 @@
 const { AppError } = require('./error.middleware');
 const Business = require('../modules/businesses/business.model');
+const { obtenerNegocioCacheado, guardarNegocioCacheado } = require('./authCache');
 
 /**
  * Inyecta el businessId en el request y valida que el negocio exista y esté activo.
@@ -29,7 +30,13 @@ const injectTenant = async (req, res, next) => {
     // confirmado con grep exhaustivo (ningún handler downstream leía
     // req.business.plan/planStatus). Subscription.planName es la única
     // fuente real del plan de un negocio (ver Paso 1, use-plan.ts).
-    const negocio = await Business.findOne({ _id: businessId, isActive: true }).select('_id name');
+    // Cacheado 8s en Redis (ver authCache.js) — mismo motivo que el cache
+    // de usuario en auth.middleware.js: corre en toda request autenticada.
+    let negocio = await obtenerNegocioCacheado(businessId);
+    if (!negocio) {
+      negocio = await Business.findOne({ _id: businessId, isActive: true }).select('_id name');
+      if (negocio) await guardarNegocioCacheado(businessId, negocio);
+    }
 
     if (!negocio) {
       throw new AppError('Negocio no encontrado o inactivo', 403);
