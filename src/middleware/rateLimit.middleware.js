@@ -141,12 +141,23 @@ function debeOmitirRateLimitGeneral(req) {
 /**
  * Rate limit global para las rutas de negocio de la API (todo excepto
  * /api/v1/auth/*, ver debeOmitirRateLimitGeneral() arriba).
- * 100 requests por 15 minutos — por usuario autenticado si se puede
+ * 400 requests por 15 minutos — por usuario autenticado si se puede
  * identificar uno (ver claveRateLimitGeneral()), por IP si no.
+ *
+ * Subido de 100 a 400 el 17/sep/2026 (mismo incidente del día, medido en
+ * producción): un login + un rato corto navegando Misión→Leads→Pipeline→
+ * Stats agotaba el balde de 100 en 47 segundos (~90 requests) — uso
+ * normal, no abuso. `/api/v1/businesses/current` y
+ * `/api/v1/admin/notifications` concentraban buena parte de ese volumen
+ * (se piden en cada navegación de página en vez de cachearse una vez) —
+ * ver docs/post-hardening-diagnostico/ para ese hallazgo, anotado como
+ * mejora de arquitectura pendiente, no resuelto acá. 400 da margen real
+ * para una sesión completa de 15 minutos sin aflojar la protección: sigue
+ * siendo un límite duro, por usuario, que corta un abuso real.
  */
 const rateLimitGeneral = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutos
-  max: 100,
+  max: 400,
   standardHeaders: true,
   legacyHeaders: false,
   skip: debeOmitirRateLimitGeneral,

@@ -2423,3 +2423,35 @@ PARTE 2 se validó por lectura directa de código (el mismo patrón
 `try/catch/finally` que ya usa `loadMore()` en `leads.tsx`, líneas
 130-149, sin tests de render tampoco) más el paso de la suite completa
 (lógica pura) y de TypeScript.
+
+---
+
+## 79. ADENDA (17/sep/2026) — Bloque A todavía no cerraba del todo: balde de negocio insuficiente para uso normal
+
+Después de la adenda 78, se reprodujo en vivo (rate limit ya expirado
+desde cero) que Leads/Pipeline/Misión volvían a colgarse o mostrar error
+después de un rato corto de uso normal — no un caso extremo, ni abuso.
+
+**Medido en producción, con logs reales:** login → primer bloqueo de
+`rateLimitGeneral` en **47 segundos, ~90 requests**. Confirmado que
+`/auth/*` y `/users/me` (excluidos en la adenda 78) NO aparecen en
+ningún bloqueo — el balde que se agota es el de negocio
+(`/leads`, `/businesses/current`, `/admin/notifications`,
+`/pipeline/*`, `/missions/today`, etc.), que seguía en 100 req/15min.
+
+**Solución aplicada:** subir `rateLimitGeneral` de 100 a **400
+req/15min** (`rateLimit.middleware.js:149`) — un solo número, sin tocar
+`debeOmitirRateLimitGeneral()` ni ninguna otra lógica de baldes.
+
+**Mejora de arquitectura pendiente (NO aplicada hoy, misma categoría que
+las otras 2 ya documentadas — nixpacks `[phases.install]` en la adenda
+77, jsdom/Testing Library en la adenda 78):** del volumen medido,
+`GET /api/v1/businesses/current` (25 veces) y
+`GET /api/v1/admin/notifications` (18 veces) concentraban cerca de la
+mitad de todas las requests exitosas de un único usuario en ~18 minutos
+de uso — se piden de nuevo en cada navegación entre páginas en vez de
+cachearse una vez a nivel de layout/contexto compartido. Cachear esos
+dos (y cualquier otro dato de layout que no cambie entre Leads/Pipeline/
+Stats) reduciría el volumen real de requests en un ~45%, más allá de
+cuánto se suba el techo del rate limit — subir el techo es el parche que
+destraba hoy, no un reemplazo de esa mejora.

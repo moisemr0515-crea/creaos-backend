@@ -28,16 +28,18 @@ describe('rateLimitGeneral vs rateLimitAuthGeneral — baldes separados', () => 
     const token = jwt.sign({ sub: 'usuario-de-prueba-rate-limit' }, JWT_SECRET, { expiresIn: '15m' });
     const authHeader = `Bearer ${token}`;
 
-    // Simula ~15 "cargas de página" con 7 requests en paralelo cada una
+    // Simula ~21 "cargas de página" con 20 requests en paralelo cada una
     // (Leads + Pipeline + Stats + notificaciones + whatsapp/status, etc.)
-    // — 105 requests en total, por encima del máximo de rateLimitGeneral
-    // (100/15min). Pega a una ruta bajo /api/v1 que no requiere Mongo real:
-    // rateLimitGeneral corre ANTES de cualquier ruteo real (app.js), así
-    // que ni siquiera necesita existir para que el limiter actúe.
+    // — 420 requests en total, por encima del máximo de rateLimitGeneral
+    // (400/15min, subido de 100 el 17/sep/2026 — ver comentario en
+    // rateLimit.middleware.js). Pega a una ruta bajo /api/v1 que no
+    // requiere Mongo real: rateLimitGeneral corre ANTES de cualquier
+    // ruteo real (app.js), así que ni siquiera necesita existir para que
+    // el limiter actúe.
     const respuestas = [];
-    for (let pagina = 0; pagina < 15; pagina++) {
+    for (let pagina = 0; pagina < 21; pagina++) {
       const burst = await Promise.all(
-        Array.from({ length: 7 }, () =>
+        Array.from({ length: 20 }, () =>
           request(app).get('/api/v1/leads').set('Authorization', authHeader),
         ),
       );
@@ -65,5 +67,5 @@ describe('rateLimitGeneral vs rateLimitAuthGeneral — baldes separados', () => 
 
     expect(login.status).toBe(200);
     expect(authService.login).toHaveBeenCalled();
-  }, 30000);
+  }, 60000);
 });
