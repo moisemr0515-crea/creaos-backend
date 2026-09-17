@@ -2455,3 +2455,27 @@ dos (y cualquier otro dato de layout que no cambie entre Leads/Pipeline/
 Stats) reduciría el volumen real de requests en un ~45%, más allá de
 cuánto se suba el techo del rate limit — subir el techo es el parche que
 destraba hoy, no un reemplazo de esa mejora.
+
+---
+
+## 80. CIERRE DE SESIÓN (17/sep/2026) — Estado del Bloque A y próximo paso
+
+### Resumen de lo resuelto hoy, Bloque A completo
+
+| # | Qué se arregló | Dónde | Estado |
+|---|---|---|---|
+| 1 | Deploy roto de Railway (`npm ci --omit=dev` vs. cache mount de Nixpacks, EBUSY) | `creaos-backend`, `railway.toml`/`railway.worker.toml` (commit `acb678c`) | **Desplegado en producción, pendiente de validación en vivo extendida** |
+| 2 | Rate limiter de `/auth/*` separado del balde de negocio (`rateLimitAuthGeneral` + `debeOmitirRateLimitGeneral()`) | `creaos-backend` (commit `bfe9315` — nota: el primer commit de esta parte, `16dcd37`, ya traía la separación base; `bfe9315` sumó la exclusión de `/users/me`) | **Desplegado en producción, pendiente de validación en vivo extendida** |
+| 3 | `apiFetch` deja de adjuntar `Authorization` en `/auth/*` | `crea-os-ignite-main` (commit `6af5215`) | **Desplegado en producción, pendiente de validación en vivo extendida** |
+| 4 | `refreshUser()` ya no limpia la sesión ante un 429 transitorio (`esSesionInvalida()`) | `crea-os-ignite-main` (commit `a11d2cb`) | **Desplegado en producción, pendiente de validación en vivo extendida** |
+| 5 | `try/catch/finally` en Leads/Pipeline/Stats (spinner infinito) | `crea-os-ignite-main` (commit `6af5215`) | **Desplegado en producción, pendiente de validación en vivo extendida** |
+| 6 | Guard `if (!user) return` movido fuera de `load()` en `leads.tsx` (mismo patrón que `dashboard.tsx`) | `crea-os-ignite-main` (commit `73d288e`) | **Desplegado en producción, pendiente de validación en vivo extendida** |
+| 7 | `rateLimitGeneral` subido de 100 a 400 req/15min | `creaos-backend` (commit `48d535d`) | **Desplegado en producción, pendiente de validación en vivo extendida** |
+
+Todos verificados con `/health` en verde y deploy `SUCCESS` en Railway/Vercel al momento de cada merge, pero **ninguno tuvo todavía una sesión de uso normal, extendida y sin apuro, que los valide en conjunto** — las pruebas de hoy fueron todas reproducciones puntuales de cada bug específico, no una sesión completa de trabajo real.
+
+### Próximo paso (siguiente sesión)
+
+1. **Validar el Bloque A completo** con una sesión de uso normal de 10-15 minutos, navegando sin apuro entre Misión/Leads/Pipeline/Stats, con login/logout normal — sin el patrón de prueba-repetida-agresiva que generó varios de los hallazgos de hoy (que sigue siendo válido como prueba de estrés, pero no reemplaza una sesión de uso real).
+2. **Si valida bien:** pasar al **Bloque C** (mensajería IA/manual intermitente — Fallas 2 y 3 del diagnóstico original). La hipótesis pendiente de confirmar con datos reales: `channelResolver.resolve()` es fail-closed sin fallback al `WebhookConfig` legacy (ver Causa raíz 4 del diagnóstico original, sección previa a esta adenda) — si el `WhatsAppChannel` de un tenant no fue migrado, todo mensaje entrante se pierde en silencio. No se pudo verificar contra la base de datos real de producción en la sesión del 16/sep por restricción de red del sandbox — sigue pendiente esa verificación directa.
+3. Nada más para tocar de entrada — no hay trabajo a medio terminar ni PRs abiertos sin mergear.
