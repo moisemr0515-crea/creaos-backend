@@ -126,10 +126,20 @@ const businessSchema = new mongoose.Schema(
       trim: true,
       default: null,
     },
+    // Default corregido a 'PE' (19/sep/2026, Frente 2 — diagnóstico
+    // multipaís): 'MX' venía desde el primer commit de este modelo
+    // (2b4a11e, 28/jun/2026) sin ningún ajuste, y ningún formulario del
+    // frontend escribe este campo nunca — así que el valor real de TODO
+    // negocio hasta hoy era 100% artefacto de este default, nunca una
+    // elección de nadie (confirmado antes de correr la migración
+    // puntual que corrige los documentos ya existentes, ver
+    // scripts/migrate-business-country-pe.js). CREA OS es una empresa
+    // peruana (Myrel Company S.A.C.) — 'PE' es el default correcto real,
+    // no una preferencia arbitraria nueva.
     country: {
       type: String,
       trim: true,
-      default: 'MX',
+      default: 'PE',
     },
     currency: {
       type: String,
