@@ -89,16 +89,22 @@ router.put('/current',
     body('industry').optional().trim().isLength({ max: 100 }).withMessage('Industria muy larga'),
     // checkFalsy:true — mismo bug y mismo motivo que website (arriba):
     // saveAll() manda whatsappNumber:"" cuando el negocio todavía no
-    // conectó WhatsApp, y el regex tampoco matchea "" — sin esto, CUALQUIER
-    // negocio sin WhatsApp conectado tenía el PUT de "Guardar cambios"
-    // rechazado en bloque, sin importar qué otro campo intentara cambiar.
+    // conectó WhatsApp — sin esto, CUALQUIER negocio sin WhatsApp conectado
+    // tenía el PUT de "Guardar cambios" rechazado en bloque, sin importar
+    // qué otro campo intentara cambiar.
+    //
+    // Frente 2 (19/sep/2026): el .matches(E.164) que vivía acá se movió a
+    // Business.model.js#esWhatsappValido — mismo criterio que
+    // facebookUrl/instagramUrl/tiktokUrl (esUrlValida), que ya validan a
+    // nivel de schema, no de ruta. Acá solo queda la sanitización de
+    // formato (espacios/guiones/paréntesis), no la validación en sí — un
+    // valor mal formado ahora lo rechaza Business.findByIdAndUpdate()
+    // (runValidators:true) con un ValidationError de Mongoose, que
+    // error.middleware.js ya traduce a 400 con el mismo mensaje.
     body('whatsappNumber')
       .optional({ checkFalsy: true })
       .trim()
-      // isMobilePhone('any') rechaza números que combinan "+" con espacios (ej. "+51 987 654 321"),
-      // un formato común de inputs de teléfono internacional — se normaliza y valida con regex E.164 en su lugar.
-      .customSanitizer((valor) => (valor ? valor.replace(/[\s\-()]/g, '') : valor))
-      .matches(/^\+?[1-9]\d{7,14}$/).withMessage('Número de WhatsApp inválido. Usa formato internacional, ej. +51987654321'),
+      .customSanitizer((valor) => (valor ? valor.replace(/[\s\-()]/g, '') : valor)),
     body('productDescription').optional().trim().isLength({ max: 500 }).withMessage('Descripción de producto muy larga'),
     body('averageTicket').optional().isFloat({ min: 0 }).withMessage('Ticket promedio debe ser un número >= 0'),
     body('targetCustomer').optional().trim().isLength({ max: 300 }).withMessage('Descripción de cliente objetivo muy larga'),

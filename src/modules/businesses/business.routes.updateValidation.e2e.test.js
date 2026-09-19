@@ -73,14 +73,24 @@ describe('PUT /api/v1/businesses/current — website/whatsappNumber vacíos', ()
     expect(service.actualizarNegocio).not.toHaveBeenCalled();
   });
 
-  test('whatsappNumber inválido de verdad (no vacío, mal formado) SIGUE rechazando con 422', async () => {
+  // Frente 2 (19/sep/2026): la validación de FORMATO de whatsappNumber ya no
+  // vive en esta ruta (se movió a Business.model.js#esWhatsappValido, mismo
+  // criterio que facebookUrl/instagramUrl/tiktokUrl) — este test mockea
+  // business.service.js entero, así que no puede probar una validación que
+  // ahora corre DENTRO de actualizarNegocio() vía Mongoose. Ver
+  // business.service.whatsappValidation.test.js (Mongo real) para el
+  // reemplazo real de este caso: sanitiza espacios/guiones acá, pero un
+  // valor mal formado (ej. "abc") ya no lo rechaza esta ruta — lo rechaza el
+  // modelo, un nivel más abajo.
+  test('whatsappNumber con espacios/guiones llega sanitizado al servicio (customSanitizer, sin la validación de formato)', async () => {
+    service.actualizarNegocio.mockResolvedValue({ _id: 'business-1', whatsappNumber: '+51987654321' });
+
     const res = await request(app)
       .put('/api/v1/businesses/current')
-      .send({ whatsappNumber: 'abc' });
+      .send({ whatsappNumber: '+51 987-654-321' });
 
-    expect(res.status).toBe(422);
-    expect(res.body.errors).toEqual(expect.arrayContaining([expect.objectContaining({ campo: 'whatsappNumber' })]));
-    expect(service.actualizarNegocio).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(service.actualizarNegocio).toHaveBeenCalledWith('business-1', expect.objectContaining({ whatsappNumber: '+51987654321' }));
   });
 
   test('whatsappNumber con un valor real válido sigue llegando al servicio', async () => {

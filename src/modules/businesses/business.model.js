@@ -19,6 +19,21 @@ const esUrlValida = (valor) => {
   }
 };
 
+// Frente 2 (diagnóstico "desincronización de plan Starter"/multipaís,
+// 19/sep/2026): este regex vivía SOLO en business.routes.js (express-
+// validator), no acá — a diferencia de esUrlValida (arriba), que sí protege
+// a nivel de schema. Cualquier escritura de whatsappNumber que no pasara por
+// esa ruta puntual (un script, una migración, un endpoint admin futuro)
+// quedaba sin ninguna validación. Se mueve acá, mismo criterio que
+// esUrlValida — NO se aplica a Lead.phone/Business.phone/User.phone
+// (decisión de producto confirmada 19/sep: esos campos tienen datos reales
+// de producción en formato libre, forzar su schema ahora podría romper la
+// edición de leads viejos — whatsappNumber no tiene ese volumen histórico).
+const esWhatsappValido = (valor) => {
+  if (!valor) return true; // opcional — string vacío/null nunca es error de formato
+  return /^\+?[1-9]\d{7,14}$/.test(valor);
+};
+
 const businessSchema = new mongoose.Schema(
   {
     name: {
@@ -165,6 +180,7 @@ const businessSchema = new mongoose.Schema(
       type: String,
       trim: true,
       default: null,
+      validate: { validator: esWhatsappValido, message: 'whatsappNumber debe tener formato internacional válido (ej. +51987654321)' },
     },
     // Onboarding: qué vende el negocio
     productDescription: {
