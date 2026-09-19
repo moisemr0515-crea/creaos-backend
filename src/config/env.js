@@ -252,6 +252,13 @@ module.exports = {
   // App
   APP_URL: process.env.APP_URL || 'http://localhost:3001',
 
+  // Bundles OTA de la app Android (capacitor-updater) — en Railway esto
+  // debe apuntar al mount path de un Volume persistente (ver
+  // appUpdate.service.js): el filesystem normal de un servicio de Railway
+  // se pierde en cada redeploy. Default solo para dev local, donde no hace
+  // falta persistencia real entre reinicios.
+  APP_UPDATES_DIR: process.env.APP_UPDATES_DIR || './data/app-updates',
+
   // Firebase Admin SDK (FCM — push.service.js#sendToUser(), PR-B del plan de
   // empaquetado Android). Valores del service account JSON descargado de
   // Firebase Console → Project Settings → Service Accounts → Generate new

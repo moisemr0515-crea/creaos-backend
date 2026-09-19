@@ -23,6 +23,10 @@ Thumbs.db
 uploads/
 tmp/
 
+# Bundles OTA de dev local (capacitor-updater) — en producción vive en un
+# Railway Volume, nunca en el repo. Ver APP_UPDATES_DIR en config/env.js.
+data/app-updates/
+
 # Backups de solo lectura (scripts/backup-whatsapp-data.js) — contienen datos
 # personales de leads, nunca se commitean.
 backups/
