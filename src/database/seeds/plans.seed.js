@@ -20,14 +20,29 @@ const PLANS = [
     price_ars:   0,
     currency:    'USD',
     interval:    'month',
+    // Fase 3 del diagnóstico "desincronización de plan Starter" (19/sep/2026):
+    // reemplazo COMPLETO, no un parche de 1-2 líneas. Antes este array era
+    // copy de marketing genérico, DESACOPLADO de `limits` de abajo — por eso
+    // "WhatsApp integrado"/"IA básica asistida" podían aparecer en pantalla
+    // mientras `limits.whatsappEnabled`/`aiEnabled` seguían en `false` en
+    // producción (ver diagnóstico). A partir de este PR, `features` es la
+    // ÚNICA fuente que consume el frontend (plan.tsx ya no tiene su propio
+    // array local) — cada línea acá tiene que reflejar de verdad lo que
+    // `limits` habilita, en el mismo orden en que se muestra al usuario.
+    // "Embudo de ventas"/"Dashboard básico" quedan eliminados del todo (no
+    // se movieron a otro plan) — decisión de producto confirmada, no un
+    // olvido. "Seguimiento automático"/"Cierre asistido por IA" quedan
+    // EXCLUSIVOS de Closer/Dominator a propósito — ver sus bloques abajo.
     features:    [
-      '20 oportunidades activas',
-      '1 usuario',
-      'CRM básico',
-      'IA básica asistida',
-      'WhatsApp integrado',
-      'Pipeline visual',
-      'Soporte por email',
+      'Gestiona hasta 20 oportunidades de venta activas',
+      'CRM Inteligente',
+      'WhatsApp Business integrado',
+      'IA automática 24/7',
+      'Hasta 20 automatizaciones inteligentes',
+      'Dashboard de ventas',
+      'Estadísticas comerciales',
+      'Roles y permisos',
+      'Soporte por documentación y comunidad',
     ],
     limits: {
       // Track 2, segunda vuelta (sesión de sincronización /plan del
@@ -36,9 +51,15 @@ const PLANS = [
       // oportunidades de venta activas", nunca se baja, así que ningún
       // negocio Starter existente puede quedar sobre el límite por esto.
       leadsPerMonth:      20,
+      // aiEnabled/whatsappEnabled ya estaban en `true` acá desde cda4e16
+      // (13/sep/2026) — el bug real (ver diagnóstico) era que ese fix nunca
+      // se había vuelto a correr contra producción. automationsEnabled/
+      // maxActiveAutomations SÍ son un cambio de valor real de este PR (antes
+      // false/0): decisión de producto confirmada 19/sep — Starter pasa a
+      // tener automatizaciones, con el mismo tope (20) que sus leads/mes.
       aiEnabled:          true,
-      automationsEnabled: false,
-      maxActiveAutomations: 0,
+      automationsEnabled: true,
+      maxActiveAutomations: 20,
       whatsappEnabled:    true,
       multiUser:          false,
       maxUsers:           1,
@@ -53,13 +74,25 @@ const PLANS = [
     price_ars:   29000,
     currency:    'USD',
     interval:    'month',
+    // Fase 3 (19/sep/2026) — mismo criterio que 'starter' arriba: lista
+    // completa, única fuente real que consume el frontend. Simétrica a
+    // Starter salvo los topes numéricos y las 2 features exclusivas de
+    // Closer/Dominator (seguimiento automático, cierre asistido por IA) —
+    // "Webhooks Meta & TikTok" queda retirado del copy (no es un
+    // diferenciador de plan real, no tiene un `limits.*` propio que lo
+    // respalde) para no reintroducir la misma desincronización copy-vs-
+    // entitlement que originó este diagnóstico.
     features:    [
-      '300 oportunidades activas',
-      '1 usuario',
+      'Gestiona hasta 300 oportunidades de venta activas',
+      'CRM Inteligente',
+      'WhatsApp Business integrado',
       'IA automática 24/7',
-      'Hasta 100 automatizaciones activas',
-      'WhatsApp integrado',
-      'Webhooks Meta & TikTok',
+      'Hasta 100 automatizaciones inteligentes',
+      'Seguimiento automático',
+      'Cierre asistido por IA',
+      'Dashboard de ventas',
+      'Estadísticas comerciales',
+      'Roles y permisos',
       'Soporte prioritario',
     ],
     limits: {
@@ -91,15 +124,26 @@ const PLANS = [
     price_ars:   79000,
     currency:    'USD',
     interval:    'month',
+    // Fase 3 (19/sep/2026) — mismo criterio que 'closer' arriba. "Reportes
+    // avanzados"/"API personalizada"/"Soporte dedicado" quedan retirados del
+    // copy: la regla de producto confirmada 19/sep es que los 3 planes
+    // comparten las mismas funciones salvo límites numéricos + las 2
+    // features exclusivas de Closer/Dominator — no hay un tercer nivel de
+    // diferenciación cualitativa. `limits.advancedReports` sigue en `true`
+    // acá (no se tocó el entitlement, solo el copy que ya no lo anuncia
+    // como diferenciador de marketing).
     features:    [
-      '1000 oportunidades activas',
-      '1 usuario',
-      'IA avanzada',
-      'Hasta 400 automatizaciones activas',
-      'WhatsApp integrado',
-      'Reportes avanzados',
-      'API personalizada',
-      'Soporte dedicado',
+      'Gestiona hasta 1000 oportunidades de venta activas',
+      'CRM Inteligente',
+      'WhatsApp Business integrado',
+      'IA automática 24/7',
+      'Hasta 400 automatizaciones inteligentes',
+      'Seguimiento automático',
+      'Cierre asistido por IA',
+      'Dashboard de ventas',
+      'Estadísticas comerciales',
+      'Roles y permisos',
+      'Soporte prioritario',
     ],
     limits: {
       // Track 2 — ver comentario equivalente en 'closer' arriba: el copy
