@@ -416,13 +416,16 @@ const PERSONALITY_GUIDANCE = {
 };
 
 const buildSystemPrompt = (business, lead, leadQualification, activeProduct) => {
-  // Personalización del nombre del agente (12/sep/2026) — antes "Alex"
-  // estaba hardcodeado acá abajo, único lugar del repo donde aparecía.
-  // Mismo patrón condicional que averageTicket/website/redes sociales:
-  // se usa business.agentName solo si existe y no es una cadena vacía
-  // (un negocio viejo sin este campo seteado, o guardado como "" desde
-  // el frontend, cae al fallback histórico).
-  const nombreAgente = business.agentName && business.agentName.trim() ? business.agentName.trim() : 'Alex';
+  // B1.6 (auditoría Business Brain, 19/sep/2026) — "Alex" era un nombre de
+  // persona inventado cuando el dueño no configuró agentName: ningún
+  // negocio real se llama "Alex", y que la IA se presente con un nombre
+  // que el dueño nunca eligió rompe la confianza del lead (Codex, sección
+  // 6 del documento de auditoría). Sin agentName, el agente se identifica
+  // por su ROL (agente de ventas) + el nombre real del NEGOCIO — nunca un
+  // nombre de persona inventado.
+  const identidadAgente = business.agentName && business.agentName.trim()
+    ? `Eres ${business.agentName.trim()}, un agente de ventas profesional y empático de ${business.name}.`
+    : `Eres un agente de ventas profesional y empático de ${business.name}.`;
 
   const infoNegocio = [
     business.productDescription && `- Qué vende: ${business.productDescription}`,
@@ -471,7 +474,7 @@ const buildSystemPrompt = (business, lead, leadQualification, activeProduct) => 
     ? `\nCONTEXTO DE PRODUCTO EN ESTA CONVERSACIÓN:\n- Último producto identificado: "${activeProduct.name}" (búsqueda: "${activeProduct.lastSearchQuery}"). Si el lead sigue preguntando sobre "eso"/precio/stock sin nombrarlo de nuevo, asumí que se refiere a este.\n`
     : '';
 
-  return `Eres ${nombreAgente}, un agente de ventas profesional y empático de ${business.name}.
+  return `${identidadAgente}
 ${infoNegocio ? `\nINFORMACIÓN DEL NEGOCIO:\n${infoNegocio}\n` : ''}
 Tu objetivo es calificar al lead y guiarlo hacia una venta de manera natural y conversacional.
 ${bloqueInstruccionesDueno}${bloquePersonalidad}
