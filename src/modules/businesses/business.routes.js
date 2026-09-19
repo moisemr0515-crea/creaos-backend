@@ -75,12 +75,25 @@ router.put('/current',
     body('agentName').optional().trim().isLength({ max: 50 }).withMessage('Nombre del agente muy largo (máx 50 caracteres)'),
     body('email').optional().trim().isEmail().withMessage('Email inválido').normalizeEmail(),
     body('phone').optional().trim().isMobilePhone('any').withMessage('Teléfono inválido'),
-    body('website').optional().trim().isURL().withMessage('URL inválida'),
+    // checkFalsy:true (diagnóstico 19/sep/2026): sin esto, un "" (el valor
+    // que manda business.tsx#saveAll() cuando el negocio no tiene sitio
+    // web cargado, el caso normal) NO cuenta como "ausente" para
+    // .optional() — isURL() corría igual sobre "" y tiraba 422, así que
+    // TODO el PUT se rechazaba (validate.middleware.js corta antes del
+    // controller), no solo este campo. Mismo criterio que
+    // Business.model.js#esUrlValida (facebookUrl/instagramUrl/tiktokUrl),
+    // que ya trataba "" como válido.
+    body('website').optional({ checkFalsy: true }).trim().isURL().withMessage('URL inválida'),
     body('country').optional().trim().isLength({ min: 2, max: 3 }).withMessage('País inválido'),
     body('currency').optional().trim().isLength({ min: 3, max: 3 }).withMessage('Moneda inválida (ISO 4217)'),
     body('industry').optional().trim().isLength({ max: 100 }).withMessage('Industria muy larga'),
+    // checkFalsy:true — mismo bug y mismo motivo que website (arriba):
+    // saveAll() manda whatsappNumber:"" cuando el negocio todavía no
+    // conectó WhatsApp, y el regex tampoco matchea "" — sin esto, CUALQUIER
+    // negocio sin WhatsApp conectado tenía el PUT de "Guardar cambios"
+    // rechazado en bloque, sin importar qué otro campo intentara cambiar.
     body('whatsappNumber')
-      .optional()
+      .optional({ checkFalsy: true })
       .trim()
       // isMobilePhone('any') rechaza números que combinan "+" con espacios (ej. "+51 987 654 321"),
       // un formato común de inputs de teléfono internacional — se normaliza y valida con regex E.164 en su lugar.
