@@ -1,6 +1,9 @@
 const businessService = require('./business.service');
+const businessAssetAccess = require('./businessAssetAccess.service');
 const { respuestaExito } = require('../../utils/response');
 const { AppError } = require('../../middleware/error.middleware');
+
+const CAMPOS_ASSET_VALIDOS = ['logo', 'pdf', 'presentationVideo', 'brochure', 'photos'];
 
 /**
  * GET /api/v1/businesses/current
@@ -158,6 +161,39 @@ const uploadBrochure = async (req, res, next) => {
   }
 };
 
+/**
+ * GET /api/v1/businesses/current/assets/:campo/access
+ * P0 de seguridad (auditoría Business Brain, 19/sep/2026, Bloque 1) — en
+ * vez de que el frontend/IA lean la URL pública permanente guardada en el
+ * negocio, este endpoint genera un acceso firmado y con expiración real
+ * (businessAssetAccess.service.js), validando ownership vía
+ * req.businessId (nunca un businessId que mande el cliente — injectTenant
+ * ya lo resuelve server-side). `campo=photos` requiere `?index=N`.
+ * `proposito` default 'display' (TTL corto) — 'send' (TTL largo) es solo
+ * para el envío por WhatsApp (ai/tools/index.js#sendMedia()), invocado
+ * directo como función, nunca vía este endpoint HTTP.
+ */
+const getAssetAccess = async (req, res, next) => {
+  try {
+    const { campo } = req.params;
+    if (!CAMPOS_ASSET_VALIDOS.includes(campo)) {
+      throw new AppError(`Campo de asset inválido: "${campo}"`, 400);
+    }
+
+    const negocio = await businessService.obtenerNegocioActual(req.businessId);
+
+    const url = campo === 'photos'
+      ? businessAssetAccess.obtenerUrlDeAccesoFoto(negocio, Number(req.query.index) || 0, 'display')
+      : businessAssetAccess.obtenerUrlDeAcceso(negocio, campo, 'display');
+
+    if (!url) throw new AppError('Este negocio todavía no cargó ese archivo', 404);
+
+    return respuestaExito(res, { message: 'Acceso generado', data: { url } });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getNegocioActual,
   updateNegocioActual,
@@ -167,4 +203,5 @@ module.exports = {
   uploadPdf,
   uploadPresentationVideo,
   uploadBrochure,
+  getAssetAccess,
 };

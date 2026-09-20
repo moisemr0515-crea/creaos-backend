@@ -75,10 +75,38 @@ const businessSchema = new mongoose.Schema(
         message: 'Máximo 2 fotos de producto',
       },
     },
+    // P0 de seguridad (auditoría Business Brain, 19/sep/2026, Bloque 1) —
+    // logo/photos/pdfUrl/presentationVideoUrl/brochureUrl de arriba/abajo
+    // son URLs PÚBLICAS directas de Cloudinary (type:'upload'), accesibles
+    // por cualquiera sin pasar por la API — confirmado y reproducido en la
+    // Fase 1 del diagnóstico. Estos campos *Asset son la forma NUEVA
+    // (publicId/resourceType, sin URL) que consume
+    // businessAssetAccess.service.js para generar accesos firmados con
+    // expiración real — coexisten con los campos viejos a propósito
+    // (rollout en 3 pasos, ver docs/business-brain-audit/): Paso 1/2 los
+    // llenan en cada upload NUEVO sin tocar los campos viejos; Paso 3
+    // migra los documentos existentes (rename en Cloudinary a
+    // type:'authenticated', sin re-subir el archivo) y recién ahí los
+    // campos viejos quedan obsoletos. _id:false — son metadata interna,
+    // no documentos propios con su propio ciclo de vida.
+    logoAsset: {
+      publicId: { type: String, default: null },
+      resourceType: { type: String, default: null },
+      _id: false,
+    },
+    photoAssets: {
+      type: [{ publicId: String, resourceType: String, _id: false }],
+      default: [],
+    },
     // PDF informativo del negocio, usado para entrenar a la IA de ventas
     pdfUrl: {
       type: String,
       default: null,
+    },
+    pdfAsset: {
+      publicId: { type: String, default: null },
+      resourceType: { type: String, default: null },
+      _id: false,
     },
     pdfExtractedText: {
       type: String,
@@ -110,6 +138,11 @@ const businessSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    presentationVideoAsset: {
+      publicId: { type: String, default: null },
+      resourceType: { type: String, default: null },
+      _id: false,
+    },
     brochureUrl: {
       type: String,
       default: null,
@@ -120,6 +153,11 @@ const businessSchema = new mongoose.Schema(
     brochureFilename: {
       type: String,
       default: null,
+    },
+    brochureAsset: {
+      publicId: { type: String, default: null },
+      resourceType: { type: String, default: null },
+      _id: false,
     },
     industry: {
       type: String,

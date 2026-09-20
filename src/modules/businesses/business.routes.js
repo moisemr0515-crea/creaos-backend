@@ -117,6 +117,14 @@ router.put('/current',
   controller.updateNegocioActual
 );
 
+// GET /api/v1/businesses/current/assets/:campo/access
+// P0 de seguridad (Bloque 1, 19/sep/2026) — acceso firmado con expiración
+// real en vez de la URL pública permanente guardada en el negocio.
+router.get('/current/assets/:campo/access',
+  checkPermission('businesses:read'),
+  controller.getAssetAccess
+);
+
 // POST /api/v1/businesses/current/logo
 router.post('/current/logo',
   checkPermission('businesses:update'),

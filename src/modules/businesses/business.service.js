@@ -2,7 +2,7 @@ const OpenAI = require('openai');
 const { PDFParse } = require('pdf-parse');
 const Business = require('./business.model');
 const { AppError } = require('../../middleware/error.middleware');
-const { subirBuffer, eliminarPorUrl } = require('../../utils/cloudinary');
+const { cloudinary, subirBuffer, eliminarPorUrl } = require('../../utils/cloudinary');
 const logger = require('../../utils/logger');
 const { OPENAI_API_KEY, OPENAI_MODEL } = require('../../config/env');
 
@@ -138,6 +138,27 @@ const actualizarSettings = async (businessId, { timezone, language, notification
 };
 
 /**
+ * Borra el asset ANTERIOR de Cloudinary al reemplazarlo — P0 de seguridad
+ * (Bloque 1, 19/sep/2026): usa publicId/resourceType de la forma NUEVA si
+ * el documento ya los tiene (funciona incluso después del Paso 3, cuando
+ * el asset ya es type:'authenticated' y la URL vieja dejó de tener el
+ * formato /upload/ que extraerPublicId() espera); si no, cae a
+ * eliminarPorUrl() sobre la URL vieja (documento todavía sin migrar).
+ * Best-effort en ambos casos — no debe bloquear la respuesta.
+ */
+const eliminarAssetAnterior = async (assetAnterior, urlAnteriorLegacy) => {
+  if (assetAnterior?.publicId) {
+    try {
+      await cloudinary.uploader.destroy(assetAnterior.publicId, { resource_type: assetAnterior.resourceType });
+    } catch (error) {
+      logger.warn(`Error al borrar asset de Cloudinary (${assetAnterior.publicId}): ${error.message}`);
+    }
+    return;
+  }
+  await eliminarPorUrl(urlAnteriorLegacy, logger);
+};
+
+/**
  * Sube el logo del negocio a Cloudinary y actualiza el negocio.
  */
 const subirLogo = async (businessId, file) => {
@@ -152,12 +173,19 @@ const subirLogo = async (businessId, file) => {
 
   const negocio = await Business.findByIdAndUpdate(
     businessId,
-    { logo: resultado.secure_url },
+    {
+      logo: resultado.secure_url,
+      // P0 de seguridad (Bloque 1, 19/sep/2026) — dual-write mientras el
+      // Paso 3 de la migración no corrió: cada upload NUEVO ya deja la
+      // forma que consume businessAssetAccess.service.js, sin tocar el
+      // campo viejo (rollout en 3 pasos, ver docs/business-brain-audit/).
+      logoAsset: { publicId: resultado.public_id, resourceType: resultado.resource_type },
+    },
     { new: true, runValidators: true }
   ).populate('createdBy', 'name email');
 
   // Borrado best-effort del logo anterior — no debe bloquear la respuesta
-  await eliminarPorUrl(negocioAnterior.logo, logger);
+  await eliminarAssetAnterior(negocioAnterior.logoAsset, negocioAnterior.logo);
 
   return negocio;
 };
@@ -171,23 +199,28 @@ const subirFotos = async (businessId, files) => {
   const negocioAnterior = await Business.findById(businessId);
   if (!negocioAnterior) throw new AppError('Negocio no encontrado', 404);
 
-  const urls = await Promise.all(
+  const resultados = await Promise.all(
     files.map((file) =>
       subirBuffer(file.buffer, {
         folder: `creaos/businesses/${businessId}/photos`,
         resource_type: 'image',
-      }).then((resultado) => resultado.secure_url)
+      })
     )
   );
 
   const negocio = await Business.findByIdAndUpdate(
     businessId,
-    { photos: urls },
+    {
+      photos: resultados.map((r) => r.secure_url),
+      photoAssets: resultados.map((r) => ({ publicId: r.public_id, resourceType: r.resource_type })),
+    },
     { new: true, runValidators: true }
   ).populate('createdBy', 'name email');
 
   // Borrado best-effort de las fotos anteriores — no debe bloquear la respuesta
-  await Promise.all(negocioAnterior.photos.map((url) => eliminarPorUrl(url, logger)));
+  await Promise.all(
+    negocioAnterior.photos.map((urlVieja, i) => eliminarAssetAnterior(negocioAnterior.photoAssets?.[i], urlVieja))
+  );
 
   return negocio;
 };
@@ -247,6 +280,7 @@ const subirPdf = async (businessId, file) => {
     businessId,
     {
       pdfUrl: resultado.secure_url,
+      pdfAsset: { publicId: resultado.public_id, resourceType: resultado.resource_type },
       pdfExtractedText: extraccionExitosa ? textoLimpio.slice(0, MAX_PDF_TEXT_LENGTH) : null,
       pdfSummary: resumen,
       pdfUploadedAt: new Date(),
@@ -255,7 +289,7 @@ const subirPdf = async (businessId, file) => {
   ).populate('createdBy', 'name email');
 
   // Borrado best-effort del PDF anterior — no debe bloquear la respuesta
-  await eliminarPorUrl(negocioAnterior.pdfUrl, logger);
+  await eliminarAssetAnterior(negocioAnterior.pdfAsset, negocioAnterior.pdfUrl);
 
   return negocio;
 };
@@ -281,12 +315,15 @@ const subirVideoPresentacion = async (businessId, file) => {
 
   const negocio = await Business.findByIdAndUpdate(
     businessId,
-    { presentationVideoUrl: resultado.secure_url },
+    {
+      presentationVideoUrl: resultado.secure_url,
+      presentationVideoAsset: { publicId: resultado.public_id, resourceType: resultado.resource_type },
+    },
     { new: true, runValidators: true }
   ).populate('createdBy', 'name email');
 
   // Borrado best-effort del video anterior — no debe bloquear la respuesta
-  await eliminarPorUrl(negocioAnterior.presentationVideoUrl, logger);
+  await eliminarAssetAnterior(negocioAnterior.presentationVideoAsset, negocioAnterior.presentationVideoUrl);
 
   return negocio;
 };
@@ -316,12 +353,16 @@ const subirBrochure = async (businessId, file) => {
 
   const negocio = await Business.findByIdAndUpdate(
     businessId,
-    { brochureUrl: resultado.secure_url, brochureFilename: file.originalname },
+    {
+      brochureUrl: resultado.secure_url,
+      brochureFilename: file.originalname,
+      brochureAsset: { publicId: resultado.public_id, resourceType: resultado.resource_type },
+    },
     { new: true, runValidators: true }
   ).populate('createdBy', 'name email');
 
   // Borrado best-effort del brochure anterior — no debe bloquear la respuesta
-  await eliminarPorUrl(negocioAnterior.brochureUrl, logger);
+  await eliminarAssetAnterior(negocioAnterior.brochureAsset, negocioAnterior.brochureUrl);
 
   return negocio;
 };
