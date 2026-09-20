@@ -1,4 +1,5 @@
 const Product = require('./product.model');
+const Variant = require('./variant.model');
 const Business = require('../businesses/business.model');
 const { AppError } = require('../../middleware/error.middleware');
 const { subirBuffer, cloudinary } = require('../../utils/cloudinary');
@@ -150,6 +151,38 @@ const LIMITE_RESULTADOS_BUSQUEDA = 5;
  * score absoluto de confianza global; suficiente para V1 (§16: "no hace
  * falta un modelo ML propio").
  */
+// Bloque 4 (§61, 20/sep/2026) — resuelve las variantes ACTIVAS de un
+// producto en el shape chico que necesita la IA para elegir/mostrar sin
+// una segunda ronda de tools — usado tanto por buscarProductos() (acá
+// abajo) como por consultarStock()/consultarPrecio() cuando hace falta
+// pedirle al modelo que aclare CUÁL variante (needsVariantSelection).
+// `attributes` es un Map de Mongoose en el documento hidratado, pero
+// `.lean()` ya lo devuelve como objeto plano (no hace falta
+// Object.fromEntries acá — probarlo con datos reales de Mongo, no
+// solo en memoria, fue lo que reveló que un Map de Mongoose con .lean()
+// NO es iterable como Map.entries()).
+const resolverVariantesParaSeleccion = async (businessId, productId) => {
+  const variantes = await Variant.find({ business: businessId, product: productId, active: true }).lean();
+  return variantes.map((v) => ({
+    variantId: v._id,
+    sku: v.sku,
+    attributes: v.attributes || {},
+    price: v.price,
+    availableStock: v.physicalStock - v.reservedStock,
+  }));
+};
+
+/**
+ * Resuelve una variante puntual, scoped a negocio+producto+activa — mismo
+ * criterio de aislamiento que obtenerProductoActivo(): nunca confía en un
+ * variantId que no pertenezca a ESTE producto de ESTE negocio.
+ */
+const resolverVariante = async (businessId, productId, variantId) => {
+  const variante = await Variant.findOne({ _id: variantId, business: businessId, product: productId, active: true });
+  if (!variante) throw new AppError('Variante no encontrada', 404);
+  return variante;
+};
+
 const buscarProductos = async (businessId, texto) => {
   if (!texto || !texto.trim()) return [];
 
@@ -167,16 +200,28 @@ const buscarProductos = async (businessId, texto) => {
 
   const scoreMax = resultados[0].score;
 
-  return resultados.map((p) => ({
-    productId: p._id,
-    sku: p.sku,
-    name: p.name,
-    price: p.price,
-    currency: resolverMoneda(p, business),
-    trackInventory: p.trackInventory,
-    availableStock: p.physicalStock - p.reservedStock,
-    active: p.active,
-    matchScore: Math.round((p.score / scoreMax) * 100) / 100,
+  return Promise.all(resultados.map(async (p) => {
+    const item = {
+      productId: p._id,
+      sku: p.sku,
+      name: p.name,
+      price: p.price,
+      currency: resolverMoneda(p, business),
+      trackInventory: p.trackInventory,
+      availableStock: p.physicalStock - p.reservedStock,
+      active: p.active,
+      matchScore: Math.round((p.score / scoreMax) * 100) / 100,
+    };
+    // Bloque 4 (§61) — con variantes, el resultado trae de una sola vez
+    // cada combinación con su propio precio/stock (ej. "Rojo M: $50,
+    // disponible / Azul L: agotado"), sin una segunda ronda de tools —
+    // mismo criterio de "no meter todo el catálogo" (documento §19): son
+    // como mucho las variantes de ESTE producto puntual, no del catálogo entero.
+    if (p.hasVariants) {
+      item.hasVariants = true;
+      item.variants = await resolverVariantesParaSeleccion(businessId, p._id);
+    }
+    return item;
   }));
 };
 
@@ -185,45 +230,75 @@ const buscarProductos = async (businessId, texto) => {
  * `availability:'NOT_TRACKED'` en vez de cualquier número de stock — así
  * la IA nunca puede interpretar un servicio sin seguimiento de inventario
  * como "agotado" solo porque physicalStock quedó en su default (0).
+ *
+ * Bloque 4 (§61, 20/sep/2026) — variant-aware, UNA sola ramificación acá
+ * (Fase 2, punto 2: "una sola función de resolución, no duplicar la
+ * lógica"): si el producto tiene variantes y no vino `variantId`, devuelve
+ * `needsVariantSelection` (mismo patrón `needsClarification` que ya usa
+ * resolverConocimiento() del Bloque 3 — pedirle al modelo que aclare, no
+ * que adivine) en vez de un número ambiguo. `trackInventory` sigue siendo
+ * SOLO de Product (nunca por variante) — no tendría sentido real que unas
+ * variantes de un mismo producto se sigan y otras no.
  */
-const consultarStock = async (businessId, productId) => {
+const consultarStock = async (businessId, productId, variantId) => {
   const producto = await obtenerProductoActivo(businessId, productId);
 
   if (!producto.trackInventory) {
     return { productId: producto._id, trackInventory: false, availability: 'NOT_TRACKED' };
   }
 
-  const availableStock = producto.physicalStock - producto.reservedStock;
-  return {
+  if (producto.hasVariants && !variantId) {
+    return { productId: producto._id, needsVariantSelection: true, variants: await resolverVariantesParaSeleccion(businessId, producto._id) };
+  }
+
+  const fuente = producto.hasVariants ? await resolverVariante(businessId, producto._id, variantId) : producto;
+  const availableStock = fuente.physicalStock - fuente.reservedStock;
+
+  const resultado = {
     productId: producto._id,
     trackInventory: true,
-    physicalStock: producto.physicalStock,
-    reservedStock: producto.reservedStock,
+    physicalStock: fuente.physicalStock,
+    reservedStock: fuente.reservedStock,
     availableStock,
     inStock: availableStock > 0,
-    lowStock: availableStock > 0 && availableStock <= producto.minimumStock,
+    lowStock: availableStock > 0 && availableStock <= fuente.minimumStock,
   };
+  if (producto.hasVariants) resultado.variantId = fuente._id;
+  return resultado;
 };
 
 /**
  * get_price() — documento maestro §18. `priceAvailable:false` cuando el
  * producto no tiene precio cargado — "la IA debe preguntar/derivar, nunca
  * inventar" un precio que no existe.
+ *
+ * Bloque 4 (§61) — mismo criterio variant-aware que consultarStock().
+ * `Variant.price` null cae al `Product.price` padre (mismo patrón de
+ * fallback que ya usa resolverMoneda() con business.currency).
  */
-const consultarPrecio = async (businessId, productId) => {
+const consultarPrecio = async (businessId, productId, variantId) => {
   const producto = await obtenerProductoActivo(businessId, productId);
   const business = await Business.findById(businessId);
 
-  if (producto.price === null || producto.price === undefined) {
+  if (producto.hasVariants && !variantId) {
+    return { productId: producto._id, needsVariantSelection: true, variants: await resolverVariantesParaSeleccion(businessId, producto._id) };
+  }
+
+  const fuente = producto.hasVariants ? await resolverVariante(businessId, producto._id, variantId) : producto;
+  const precio = fuente.price ?? producto.price;
+
+  if (precio === null || precio === undefined) {
     return { productId: producto._id, priceAvailable: false };
   }
 
-  return {
+  const resultado = {
     productId: producto._id,
-    price: producto.price,
-    currency: resolverMoneda(producto, business),
+    price: precio,
+    currency: fuente.currency || resolverMoneda(producto, business),
     priceAvailable: true,
   };
+  if (producto.hasVariants) resultado.variantId = fuente._id;
+  return resultado;
 };
 
 /**
@@ -310,4 +385,9 @@ module.exports = {
   consultarPrecio,
   agregarFotoProducto,
   eliminarFotoProducto,
+  // Bloque 4 (§61, 20/sep/2026) — exportadas para que
+  // productInventory.service.js (crearVariante/reservarStock/etc.) las
+  // reuse sin duplicar la resolución de variante.
+  resolverVariante,
+  resolverVariantesParaSeleccion,
 };

@@ -49,6 +49,10 @@ const QUEUE_NAMES = {
   // PDF. Chunking+embeddings+cutover corren fuera del request HTTP de
   // upload (pueden tardar varios segundos en un PDF grande).
   INDEX_BUSINESS_DOCUMENT: 'index-business-document',
+  // Bloque 4 de la auditoría Business Brain (§59, 20/sep/2026) — reservas de
+  // stock. Mismo patrón que AUTOMATION_SWEEP: un job repetible que libera
+  // las reservas vencidas (ver stockReservationSweep.worker.js).
+  STOCK_RESERVATION_SWEEP: 'stock-reservation-sweep',
 };
 
 // Config compartida de reintentos — 3 intentos con backoff exponencial

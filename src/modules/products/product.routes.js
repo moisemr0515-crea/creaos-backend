@@ -86,4 +86,10 @@ router.post('/:id/photos',
 router.delete('/:id/photos/:mediaId', checkPermission('products:update'), controller.deleteProductPhoto);
 router.get('/:id/photos/:mediaId/access', checkPermission('products:read'), controller.getProductPhotoAccess);
 
+// Bloque 4 (§61, 20/sep/2026) — variantes de ESTE producto puntual.
+router.get('/:id/variants', checkPermission('products:read'), controller.listVariants);
+router.post('/:id/variants', checkPermission('products:update'), controller.createVariant);
+router.put('/:id/variants/:variantId', checkPermission('products:update'), controller.updateVariant);
+router.delete('/:id/variants/:variantId', checkPermission('products:update'), controller.deactivateVariant);
+
 module.exports = router;

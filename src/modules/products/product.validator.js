@@ -38,6 +38,12 @@ const productFields = {
   minimumStock: Joi.number().min(0),
   keywords: Joi.array().items(Joi.string().trim()),
   synonyms: Joi.array().items(Joi.string().trim()),
+  // Bloque 4 (§61, 20/sep/2026) — activar/desactivar variantes desde el
+  // form manual. Nunca se pone en true automáticamente por acá — eso lo
+  // hace productInventory.service.js#crearVariante() en la PRIMERA
+  // variante real que se crea; esto es solo para el caso "activo
+  // variantes antes de cargar la primera" desde el dashboard.
+  hasVariants: Joi.boolean(),
 };
 
 const createProductSchema = Joi.object({

@@ -28,6 +28,9 @@ const { startAutomationSweepWorker } = require('./src/modules/automations/worker
 const { startAutomationExecuteWorker } = require('./src/modules/automations/workers/automationExecute.worker');
 // Bloque 3 de la auditoría Business Brain (§45-50, 20/sep/2026) — RAG del PDF.
 const { startIndexBusinessDocumentWorker } = require('./src/modules/business-knowledge/workers/indexBusinessDocument.worker');
+// Bloque 4 de la auditoría Business Brain (§59, 20/sep/2026) — reservas de stock.
+const { scheduleStockReservationSweep } = require('./src/modules/products/queues/stockReservationSweep.queue');
+const { startStockReservationSweepWorker } = require('./src/modules/products/workers/stockReservationSweep.worker');
 
 // Puerto propio, distinto del de la API — Railway lo usa solo para su
 // healthcheck de este servicio, no queda expuesto públicamente salvo que se
@@ -40,6 +43,7 @@ let outboundWorker;
 let automationSweepWorker;
 let automationExecuteWorker;
 let indexBusinessDocumentWorker;
+let stockReservationSweepWorker;
 let httpServer;
 
 const iniciar = async () => {
@@ -52,11 +56,13 @@ const iniciar = async () => {
     automationSweepWorker = startAutomationSweepWorker();
     automationExecuteWorker = startAutomationExecuteWorker();
     indexBusinessDocumentWorker = startIndexBusinessDocumentWorker();
+    stockReservationSweepWorker = startStockReservationSweepWorker();
     await recoverPendingOutboundEvents();
     // Idempotente (upsertJobScheduler) — seguro de llamar en cada boot,
     // incluso con varias instancias de este worker arrancando a la vez
     // (rolling restart de Railway).
     await scheduleAutomationSweep();
+    await scheduleStockReservationSweep();
 
     httpServer = http.createServer(async (req, res) => {
       if (req.url === '/health/live') {
@@ -72,6 +78,7 @@ const iniciar = async () => {
             automationSweep: automationSweepWorker,
             automationExecute: automationExecuteWorker,
             indexBusinessDocument: indexBusinessDocumentWorker,
+            stockReservationSweep: stockReservationSweepWorker,
           } });
           res.writeHead(health.ok ? 200 : 503, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
@@ -99,7 +106,7 @@ const iniciar = async () => {
 ║  Entorno : ${process.env.NODE_ENV}
 ║  Colas   : ${QUEUE_NAMES.INBOUND}, ${QUEUE_NAMES.OUTBOUND}, ${QUEUE_NAMES.DEAD_LETTER},
 ║            ${QUEUE_NAMES.AUTOMATION_SWEEP}, ${QUEUE_NAMES.AUTOMATION_EXECUTE},
-║            ${QUEUE_NAMES.INDEX_BUSINESS_DOCUMENT}
+║            ${QUEUE_NAMES.INDEX_BUSINESS_DOCUMENT}, ${QUEUE_NAMES.STOCK_RESERVATION_SWEEP}
 ╚════════════════════════════════════════╝
       `);
     });
@@ -118,6 +125,7 @@ const apagar = async (señal) => {
     if (automationSweepWorker) await automationSweepWorker.close();
     if (automationExecuteWorker) await automationExecuteWorker.close();
     if (indexBusinessDocumentWorker) await indexBusinessDocumentWorker.close();
+    if (stockReservationSweepWorker) await stockReservationSweepWorker.close();
     await disconnectQueueConnection();
     await disconnectRedis();
     await disconnectMongoDB();

@@ -1,6 +1,8 @@
 const productService = require('./product.service');
 const productAssetAccess = require('./productAssetAccess.service');
+const productInventoryService = require('./productInventory.service');
 const { createProductSchema, updateProductSchema, listProductsSchema } = require('./product.validator');
+const { createVariantSchema, updateVariantSchema } = require('./variant.validator');
 const { validateBody, validateQuery } = require('../../shared/utils/validate');
 const { respuestaExito, buildMeta } = require('../../utils/response');
 const { AppError } = require('../../middleware/error.middleware');
@@ -121,6 +123,63 @@ const getProductPhotoAccess = async (req, res, next) => {
   }
 };
 
+/**
+ * POST /api/v1/products/:id/variants
+ * Bloque 4 (§61, 20/sep/2026) — crea una variante para ESTE producto.
+ * Marca hasVariants:true en el producto automáticamente en la primera
+ * variante real (ver productInventory.service.js#crearVariante()).
+ */
+const createVariant = async (req, res, next) => {
+  try {
+    const data = await validateBody(createVariantSchema, req.body);
+    const variante = await productInventoryService.crearVariante(req.businessId, req.params.id, data);
+    return respuestaExito(res, { statusCode: 201, message: 'Variante creada exitosamente', data: { variante } });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * GET /api/v1/products/:id/variants
+ * Sin filtro de active — vista de administración (mismo criterio que
+ * GET /api/v1/products/:id).
+ */
+const listVariants = async (req, res, next) => {
+  try {
+    const variantes = await productInventoryService.listarVariantes(req.businessId, req.params.id);
+    return respuestaExito(res, { message: 'Variantes obtenidas exitosamente', data: { variantes } });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * PUT /api/v1/products/:id/variants/:variantId
+ */
+const updateVariant = async (req, res, next) => {
+  try {
+    const data = await validateBody(updateVariantSchema, req.body);
+    const variante = await productInventoryService.actualizarVariante(req.businessId, req.params.id, req.params.variantId, data);
+    return respuestaExito(res, { message: 'Variante actualizada exitosamente', data: { variante } });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * DELETE /api/v1/products/:id/variants/:variantId
+ * NUNCA borra — desactiva (active:false), mismo criterio que
+ * deactivateProduct() de arriba.
+ */
+const deactivateVariant = async (req, res, next) => {
+  try {
+    const variante = await productInventoryService.desactivarVariante(req.businessId, req.params.id, req.params.variantId);
+    return respuestaExito(res, { message: 'Variante desactivada exitosamente', data: { variante } });
+  } catch (err) {
+    next(err);
+  }
+};
+
 module.exports = {
   createProduct,
   getProduct,
@@ -130,4 +189,8 @@ module.exports = {
   uploadProductPhoto,
   deleteProductPhoto,
   getProductPhotoAccess,
+  createVariant,
+  listVariants,
+  updateVariant,
+  deactivateVariant,
 };

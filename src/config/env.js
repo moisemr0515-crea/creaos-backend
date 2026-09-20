@@ -375,4 +375,20 @@ module.exports = {
   // el MISMO lead — sin esto, un lead que sigue cumpliendo la condición se
   // re-encolaría en cada ciclo del barrido. 24h por default.
   AUTOMATION_COOLDOWN_HOURS: parseInt(process.env.AUTOMATION_COOLDOWN_HOURS, 10) || 24,
+
+  // Bloque 4 de la auditoría Business Brain (§59, 20/sep/2026) — reservas de
+  // stock (StockReservation), mismo criterio que el barrido de
+  // automatizaciones de arriba: ambas con default, un valor inválido/ausente
+  // no debe impedir que el worker arranque.
+  //
+  // Cuánto tiempo queda "apartado" el stock de una reserva antes de vencer
+  // sola si nadie la confirma ni la libera. 30 minutos por default — alcanza
+  // para que un lead termine de decidir durante una conversación de WhatsApp
+  // sin bloquear stock real indefinidamente.
+  STOCK_RESERVATION_TTL_MINUTES: parseInt(process.env.STOCK_RESERVATION_TTL_MINUTES, 10) || 30,
+  // Cada cuánto corre el barrido que libera reservas vencidas — 5 minutos
+  // por default (más frecuente que el de automatizaciones: acá el costo de
+  // tardar en liberar es stock real bloqueado de más, no solo un mensaje
+  // demorado).
+  STOCK_RESERVATION_SWEEP_INTERVAL_MS: parseInt(process.env.STOCK_RESERVATION_SWEEP_INTERVAL_MS, 10) || 5 * 60 * 1000,
 };

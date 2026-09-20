@@ -49,6 +49,19 @@ const productSchema = new mongoose.Schema(
     currency: { type: String, trim: true, uppercase: true, default: null },
 
     trackInventory: { type: Boolean, default: true },
+
+    // Bloque 4 (§61, 20/sep/2026) — Inventario avanzado. Ampliación
+    // consciente de alcance respecto al documento maestro (§42, que
+    // listaba "variantes complejas" como V1.5) — ver variant.model.js.
+    // Cuando es true, physicalStock/reservedStock DE ESTE documento quedan
+    // inertes (no se borran, pero dejan de ser la fuente real) — todo el
+    // stock real vive en los Variant asociados. Cuando es false (el 100%
+    // de los productos existentes hoy, confirmado en la Fase 1 de este
+    // bloque — cero productos con variantes en producción), nada cambia:
+    // es el comportamiento exacto de siempre, sin ninguna migración de
+    // datos necesaria para arrancar.
+    hasVariants: { type: Boolean, default: false },
+
     physicalStock: { type: Number, min: 0, default: 0 },
     // Preparado para V1.5 (reservas reales) — V1 no tiene ningún flujo que
     // escriba este campo todavía (fuera de alcance, doc §3/§42), pero

@@ -6,6 +6,7 @@ const { getDeadLetterQueue } = require('../modules/channels/queues/deadLetter.qu
 const { getAutomationSweepQueue } = require('../modules/automations/queues/automationSweep.queue');
 const { getAutomationExecuteQueue } = require('../modules/automations/queues/automationExecute.queue');
 const { getIndexBusinessDocumentQueue } = require('../modules/business-knowledge/queues/indexBusinessDocument.queue');
+const { getStockReservationSweepQueue } = require('../modules/products/queues/stockReservationSweep.queue');
 
 const DEFAULT_QUEUE_PROVIDERS = {
   [QUEUE_NAMES.INBOUND]: getInboundQueue,
@@ -14,6 +15,7 @@ const DEFAULT_QUEUE_PROVIDERS = {
   [QUEUE_NAMES.AUTOMATION_SWEEP]: getAutomationSweepQueue,
   [QUEUE_NAMES.AUTOMATION_EXECUTE]: getAutomationExecuteQueue,
   [QUEUE_NAMES.INDEX_BUSINESS_DOCUMENT]: getIndexBusinessDocumentQueue,
+  [QUEUE_NAMES.STOCK_RESERVATION_SWEEP]: getStockReservationSweepQueue,
 };
 
 async function checkWorkerHealth({

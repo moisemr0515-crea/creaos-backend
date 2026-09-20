@@ -348,7 +348,13 @@ const checkStock = async (args, { conversation, business }) => {
     return { success: false, error: 'Falta el productId y no hay ningún producto identificado antes en esta conversación. Usa search_products primero.' };
   }
 
-  const stock = await productService.consultarStock(business._id, productId);
+  // Bloque 4 (§61, 20/sep/2026) — opcional: solo hace falta si
+  // search_products devolvió hasVariants:true para este producto (ver su
+  // description más abajo). Si el producto no tiene variantes, se ignora
+  // sin error (product.service.js#consultarStock() ni siquiera la mira).
+  const variantId = typeof args?.variantId === 'string' ? args.variantId.trim() || undefined : undefined;
+
+  const stock = await productService.consultarStock(business._id, productId, variantId);
   return { success: true, ...stock };
 };
 
@@ -364,7 +370,10 @@ const getPrice = async (args, { conversation, business }) => {
     return { success: false, error: 'Falta el productId y no hay ningún producto identificado antes en esta conversación. Usa search_products primero.' };
   }
 
-  const precio = await productService.consultarPrecio(business._id, productId);
+  // Bloque 4 (§61) — mismo criterio opcional que checkStock().
+  const variantId = typeof args?.variantId === 'string' ? args.variantId.trim() || undefined : undefined;
+
+  const precio = await productService.consultarPrecio(business._id, productId, variantId);
   return { success: true, ...precio };
 };
 
@@ -697,7 +706,10 @@ const TOOL_REGISTRY = [
       'podría ser un producto del catálogo (ej. "¿tienen moringa?", "¿tienen aceite de coco?") — nunca afirmes ' +
       'ni descartes la existencia de un producto sin llamar a esta tool primero. Devuelve como máximo 5 ' +
       'coincidencias con su productId — usalo después en check_stock/get_price para confirmar disponibilidad o ' +
-      'precio real antes de responder.',
+      'precio real antes de responder. Si un resultado trae hasVariants:true, viene con su propio array ' +
+      '"variants" (color/talla/etc., cada una con su variantId, precio y stock) — si el lead pidió algo genérico ' +
+      '("¿tienen la remera?"), preguntale cuál variante antes de pasar un variantId a check_stock/get_price; si ' +
+      'ya especificó una (ej. "la roja en M"), pasá directo el variantId que corresponda.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -721,7 +733,9 @@ const TOOL_REGISTRY = [
       'lead que un producto tiene o no tiene stock — nunca asumas ni inventes disponibilidad. Si la tool falla ' +
       'o no encuentra el producto, decilo de forma natural (ej. "no puedo confirmar el stock ahora mismo") en ' +
       'vez de afirmar un número. Si no tenés el productId a mano, podés omitirlo cuando el lead se refiere al ' +
-      'producto del que ya se venía hablando en esta conversación.',
+      'producto del que ya se venía hablando en esta conversación. Si el producto tiene variantes y no pasás ' +
+      'variantId, la tool te devuelve needsVariantSelection:true con la lista — preguntale al lead cuál antes de ' +
+      'reintentar con el variantId correcto, nunca asumas una al azar.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -730,6 +744,12 @@ const TOOL_REGISTRY = [
           description:
             'ID del producto (de un resultado previo de search_products en esta misma conversación). Opcional ' +
             'si ya hay un producto identificado antes en la conversación.',
+        },
+        variantId: {
+          type: 'string',
+          description:
+            'ID de la variante (de search_products, dentro de su array "variants"). Solo hace falta si el ' +
+            'producto tiene variantes (hasVariants:true) — para un producto sin variantes, omitilo.',
         },
       },
       additionalProperties: false,
@@ -744,7 +764,9 @@ const TOOL_REGISTRY = [
       'precio — nunca inventes, estimes ni redondees un precio que no te devolvió esta tool. Si la tool falla, ' +
       'no encuentra el producto, o el producto no tiene precio cargado, decilo de forma natural (ej. "dejame ' +
       'confirmar el precio y te aviso") en vez de afirmar un número. Si no tenés el productId a mano, podés ' +
-      'omitirlo cuando el lead se refiere al producto del que ya se venía hablando en esta conversación.',
+      'omitirlo cuando el lead se refiere al producto del que ya se venía hablando en esta conversación. Mismo ' +
+      'criterio de variantes que check_stock: si el producto las tiene y no pasás variantId, te llega ' +
+      'needsVariantSelection:true — preguntale cuál antes de afirmar un precio.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -753,6 +775,10 @@ const TOOL_REGISTRY = [
           description:
             'ID del producto (de un resultado previo de search_products en esta misma conversación). Opcional ' +
             'si ya hay un producto identificado antes en la conversación.',
+        },
+        variantId: {
+          type: 'string',
+          description: 'ID de la variante (de search_products). Solo hace falta si el producto tiene variantes (hasVariants:true).',
         },
       },
       additionalProperties: false,
