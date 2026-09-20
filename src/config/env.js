@@ -214,6 +214,13 @@ module.exports = {
   // que gpt-4o-mini deje de ser la opción vigente. Mismo motivo por el que
   // OPENAI_MODEL (arriba) ya es una env var y no algo hardcodeado.
   OPENAI_MODEL_CHEAP: process.env.OPENAI_MODEL_CHEAP || 'gpt-4o-mini',
+  // Bloque 3 de la auditoría Business Brain (§45-56, 20/sep/2026) — RAG del
+  // PDF + semántica de FAQ/Policy. text-embedding-3-small (1536 dims): el
+  // estándar de costo/calidad de OpenAI para retrieval, sin evidencia
+  // todavía de que este dominio (documentos de venta en español) necesite
+  // el modelo "large" — mismo criterio de "no sofisticar sin evidencia" que
+  // el resto del proyecto.
+  OPENAI_EMBEDDING_MODEL: process.env.OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small',
   // Apagado por default a propósito: con este flag en false,
   // generateReply() usa OPENAI_MODEL para absolutamente todo, byte a byte
   // igual que antes de PR39 — el ahorro de costo de model routing viene

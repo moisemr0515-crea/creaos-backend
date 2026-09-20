@@ -13,7 +13,11 @@ const Business = require('./business.model');
 require('../users/user.model'); // subirPdf() hace populate('createdBy', ...)
 
 jest.mock('../../utils/cloudinary', () => ({
-  subirBuffer: jest.fn().mockResolvedValue({ secure_url: 'https://cloudinary.test/negocio.pdf' }),
+  subirBuffer: jest.fn().mockResolvedValue({
+    secure_url: 'https://cloudinary.test/negocio.pdf',
+    public_id: 'creaos/businesses/x/pdf/abc',
+    resource_type: 'raw',
+  }),
   eliminarPorUrl: jest.fn().mockResolvedValue(undefined),
 }));
 
@@ -25,6 +29,15 @@ jest.mock('pdf-parse', () => ({
     destroy: mockDestroy,
   })),
 }));
+
+// Bloque 3 (§45-50, 20/sep/2026) — RAG del PDF, en paralelo al flujo de
+// pdfSummary de siempre (foco de este archivo, sin cambios). Se mockea la
+// COLA (nunca debe tocar el Redis real de .env durante un test) —
+// pdfIngestion.service.js corre real contra el Mongo local de este suite,
+// mismo criterio que el resto: solo se mockea lo que haría I/O externo de
+// verdad.
+jest.mock('../business-knowledge/queues/indexBusinessDocument.queue');
+const { enqueueIndexBusinessDocument } = require('../business-knowledge/queues/indexBusinessDocument.queue');
 
 const { subirPdf, openai } = require('./business.service');
 
@@ -101,5 +114,49 @@ describe('business.service#subirPdf() — guard de extracción vacía (BUG 3)', 
     expect(createSpy).toHaveBeenCalledTimes(1);
     expect(actualizado.pdfSummary).toBe('Resumen real generado por el modelo.');
     expect(actualizado.pdfExtractedText).toContain('CREA OS es un software SaaS');
+  });
+
+  // Bloque 3 (§45-50, 20/sep/2026) — RAG del PDF: subirPdf() encola la
+  // indexación EN PARALELO al flujo de resumen de arriba, sin reemplazarlo.
+  test('extracción exitosa: además del resumen de siempre, crea el BusinessDocument y encola su indexación con el texto CRUDO (no el limpio)', async () => {
+    const textoConSeparadorDePagina = '-- 1 of 1 --\nCREA OS es un software SaaS de ventas con Inteligencia Artificial y automatización comercial real para negocios.';
+    mockGetText.mockResolvedValue({ text: textoConSeparadorDePagina });
+    createSpy.mockResolvedValue({ choices: [{ message: { content: 'Resumen.' } }] });
+
+    await subirPdf(business._id, fileFalso);
+
+    const BusinessDocument = require('../business-knowledge/businessDocument.model');
+    const documento = await BusinessDocument.findOne({ business: business._id });
+    expect(documento).not.toBeNull();
+    expect(documento.status).toBe('uploaded');
+    expect(documento.sourceAsset).toEqual({ publicId: 'creaos/businesses/x/pdf/abc', resourceType: 'raw' });
+
+    expect(enqueueIndexBusinessDocument).toHaveBeenCalledWith({
+      documentId: documento._id,
+      textoCompleto: textoConSeparadorDePagina, // crudo, CON el separador de página
+    });
+  });
+
+  test('extracción fallida (texto vacío): NO crea BusinessDocument ni encola nada — no hay nada real que indexar', async () => {
+    mockGetText.mockResolvedValue({ text: '' });
+
+    await subirPdf(business._id, fileFalso);
+
+    const BusinessDocument = require('../business-knowledge/businessDocument.model');
+    expect(await BusinessDocument.countDocuments({ business: business._id })).toBe(0);
+    expect(enqueueIndexBusinessDocument).not.toHaveBeenCalled();
+  });
+
+  test('si falla la creación del BusinessDocument (ej. Mongo momentáneamente caído): subirPdf() NO rompe — el resumen/PDF ya se guardó igual', async () => {
+    const textoReal = 'CREA OS es un software SaaS de ventas con Inteligencia Artificial y automatización comercial.';
+    mockGetText.mockResolvedValue({ text: textoReal });
+    createSpy.mockResolvedValue({ choices: [{ message: { content: 'Resumen.' } }] });
+    enqueueIndexBusinessDocument.mockRejectedValueOnce(new Error('Redis caído'));
+
+    const actualizado = await subirPdf(business._id, fileFalso);
+
+    // El flujo principal (lo único que le importa al dueño del negocio) sigue intacto.
+    expect(actualizado.pdfSummary).toBe('Resumen.');
+    expect(actualizado.pdfUrl).toBe('https://cloudinary.test/negocio.pdf');
   });
 });

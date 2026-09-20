@@ -4,6 +4,11 @@ const Business = require('./business.model');
 const { AppError } = require('../../middleware/error.middleware');
 const { cloudinary, subirBuffer, eliminarPorUrl } = require('../../utils/cloudinary');
 const logger = require('../../utils/logger');
+// Bloque 3 de la auditoría Business Brain (§45-50, 20/sep/2026) — RAG del
+// PDF, en paralelo al pdfSummary/pdfExtractedText de siempre (ver
+// subirPdf() más abajo).
+const pdfIngestionService = require('../business-knowledge/pdfIngestion.service');
+const { enqueueIndexBusinessDocument } = require('../business-knowledge/queues/indexBusinessDocument.queue');
 const { OPENAI_API_KEY, OPENAI_MODEL } = require('../../config/env');
 
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
@@ -290,6 +295,26 @@ const subirPdf = async (businessId, file) => {
 
   // Borrado best-effort del PDF anterior — no debe bloquear la respuesta
   await eliminarAssetAnterior(negocioAnterior.pdfAsset, negocioAnterior.pdfUrl);
+
+  // Bloque 3 de la auditoría Business Brain (§45-50, 20/sep/2026) — RAG del
+  // PDF, en paralelo al flujo de arriba (pdfSummary/pdfExtractedText), sin
+  // reemplazarlo. Se pasa `texto` CRUDO (no `textoLimpio`) — el pipeline de
+  // chunking necesita los separadores de página que acá ya se limpiaron
+  // para poblar `page`. Mismo guard `extraccionExitosa`: un PDF escaneado
+  // no tiene nada real que indexar. Best-effort: si esto falla, el upload
+  // ya completó del lado del dueño (el PDF se subió, el resumen barato
+  // sigue funcionando) — un fallo acá no debe tumbar la respuesta.
+  if (extraccionExitosa) {
+    try {
+      const { documento } = await pdfIngestionService.iniciarNuevoDocumento(businessId, {
+        publicId: resultado.public_id,
+        resourceType: resultado.resource_type,
+      });
+      await enqueueIndexBusinessDocument({ documentId: documento._id, textoCompleto: texto });
+    } catch (error) {
+      logger.warn(`[subirPdf] No se pudo encolar la indexación RAG del PDF (business ${businessId}): ${error.message}`);
+    }
+  }
 
   return negocio;
 };

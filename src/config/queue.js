@@ -45,6 +45,10 @@ const QUEUE_NAMES = {
   // automations/workers/automationSweep.worker.js).
   AUTOMATION_SWEEP: 'automation-sweep',
   AUTOMATION_EXECUTE: 'automation-execute',
+  // Bloque 3 de la auditoría Business Brain (§45-50, 20/sep/2026) — RAG del
+  // PDF. Chunking+embeddings+cutover corren fuera del request HTTP de
+  // upload (pueden tardar varios segundos en un PDF grande).
+  INDEX_BUSINESS_DOCUMENT: 'index-business-document',
 };
 
 // Config compartida de reintentos — 3 intentos con backoff exponencial

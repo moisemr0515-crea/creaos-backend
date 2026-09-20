@@ -26,6 +26,8 @@ const { startOutboundWorker } = require('./src/modules/channels/workers/outbound
 const { scheduleAutomationSweep } = require('./src/modules/automations/queues/automationSweep.queue');
 const { startAutomationSweepWorker } = require('./src/modules/automations/workers/automationSweep.worker');
 const { startAutomationExecuteWorker } = require('./src/modules/automations/workers/automationExecute.worker');
+// Bloque 3 de la auditoría Business Brain (§45-50, 20/sep/2026) — RAG del PDF.
+const { startIndexBusinessDocumentWorker } = require('./src/modules/business-knowledge/workers/indexBusinessDocument.worker');
 
 // Puerto propio, distinto del de la API — Railway lo usa solo para su
 // healthcheck de este servicio, no queda expuesto públicamente salvo que se
@@ -37,6 +39,7 @@ let inboundWorker;
 let outboundWorker;
 let automationSweepWorker;
 let automationExecuteWorker;
+let indexBusinessDocumentWorker;
 let httpServer;
 
 const iniciar = async () => {
@@ -48,6 +51,7 @@ const iniciar = async () => {
     outboundWorker = startOutboundWorker();
     automationSweepWorker = startAutomationSweepWorker();
     automationExecuteWorker = startAutomationExecuteWorker();
+    indexBusinessDocumentWorker = startIndexBusinessDocumentWorker();
     await recoverPendingOutboundEvents();
     // Idempotente (upsertJobScheduler) — seguro de llamar en cada boot,
     // incluso con varias instancias de este worker arrancando a la vez
@@ -67,6 +71,7 @@ const iniciar = async () => {
             outbound: outboundWorker,
             automationSweep: automationSweepWorker,
             automationExecute: automationExecuteWorker,
+            indexBusinessDocument: indexBusinessDocumentWorker,
           } });
           res.writeHead(health.ok ? 200 : 503, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
@@ -93,7 +98,8 @@ const iniciar = async () => {
 ║  Puerto  : ${WORKER_PORT}
 ║  Entorno : ${process.env.NODE_ENV}
 ║  Colas   : ${QUEUE_NAMES.INBOUND}, ${QUEUE_NAMES.OUTBOUND}, ${QUEUE_NAMES.DEAD_LETTER},
-║            ${QUEUE_NAMES.AUTOMATION_SWEEP}, ${QUEUE_NAMES.AUTOMATION_EXECUTE}
+║            ${QUEUE_NAMES.AUTOMATION_SWEEP}, ${QUEUE_NAMES.AUTOMATION_EXECUTE},
+║            ${QUEUE_NAMES.INDEX_BUSINESS_DOCUMENT}
 ╚════════════════════════════════════════╝
       `);
     });
@@ -111,6 +117,7 @@ const apagar = async (señal) => {
     if (outboundWorker) await outboundWorker.close();
     if (automationSweepWorker) await automationSweepWorker.close();
     if (automationExecuteWorker) await automationExecuteWorker.close();
+    if (indexBusinessDocumentWorker) await indexBusinessDocumentWorker.close();
     await disconnectQueueConnection();
     await disconnectRedis();
     await disconnectMongoDB();
