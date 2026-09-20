@@ -15,6 +15,16 @@ const Conversation = require('../conversation.model');
 jest.mock('../../channels/channel.service');
 const channelService = require('../../channels/channel.service');
 
+// P0 de seguridad (auditoría Business Brain, 19/sep/2026, Bloque 1) —
+// sendMedia() ya no lee business.logo/presentationVideoUrl/brochureUrl
+// directo, pide un acceso firmado vía businessAssetAccess.service.js. Se
+// mockea acá porque su propia resolución (publicId/resourceType/TTL) ya
+// tiene su test dedicado (businessAssetAccess.service.test.js) — este
+// archivo se queda enfocado en su propio contrato: guards de WhatsApp,
+// armado del payload, manejo de errores.
+jest.mock('../../businesses/businessAssetAccess.service');
+const { obtenerUrlDeAcceso } = require('../../businesses/businessAssetAccess.service');
+
 const { executeToolCall } = require('./index');
 
 const MONGO_URI = 'mongodb://localhost:27017/creaos_test_ai_tools_sendmedia';
@@ -64,6 +74,17 @@ describe('ai/tools/index — send_media', () => {
 
     channelService.getChannelForConversation.mockResolvedValue({ _id: 'channel-real-id' });
     channelService.sendMedia.mockResolvedValue({ messages: [{ id: 'msg-real-1' }] });
+
+    // Mismo mapeo campo->URL que tenían los fixtures ANTES de este cambio
+    // (business.logo/presentationVideoUrl/brochureUrl) — el objetivo de
+    // este archivo es probar sendMedia(), no la resolución de
+    // businessAssetAccess.service.js (ver su propio test).
+    obtenerUrlDeAcceso.mockImplementation((biz, campo) => {
+      if (campo === 'logo') return biz.logo || null;
+      if (campo === 'presentationVideo') return biz.presentationVideoUrl || null;
+      if (campo === 'brochure') return biz.brochureUrl || null;
+      return null;
+    });
   });
 
   test('resource:"logo" — resuelve business.logo, arma type:"image", llama a channelService.sendMedia() con la URL real', async () => {
@@ -74,6 +95,12 @@ describe('ai/tools/index — send_media', () => {
       type: 'image',
     }, business._id);
     expect(result).toEqual({ success: true, message: 'Se envió logo al lead por WhatsApp.' });
+  });
+
+  test('pide el acceso con propósito "send" (TTL largo) — restricción real: Meta/Gupshup buscan el archivo de forma asíncrona, no al instante', async () => {
+    await executeToolCall(toolCall({ resource: 'logo' }), { conversation, business, lead });
+
+    expect(obtenerUrlDeAcceso).toHaveBeenCalledWith(expect.objectContaining({ _id: business._id }), 'logo', 'send');
   });
 
   test('resource:"presentation_video" — resuelve business.presentationVideoUrl, arma type:"video"', async () => {

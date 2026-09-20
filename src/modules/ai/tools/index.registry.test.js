@@ -18,10 +18,12 @@ const NOMBRES_ESPERADOS = [
   'search_business_knowledge',
   // send_media — auditoría de factibilidad (12/sep/2026), Paso 3.
   'send_media',
+  // send_product_photos — Bloque 2 de la auditoría Business Brain (§37-44, 20/sep/2026).
+  'send_product_photos',
 ];
 
 describe('ai/tools/index — Tool Registry formal (C.3, Etapa C3.2)', () => {
-  test('TOOL_REGISTRY declara exactamente las 7 tools reales, sin ninguna ficticia', () => {
+  test('TOOL_REGISTRY declara exactamente las 8 tools reales, sin ninguna ficticia', () => {
     expect(TOOL_REGISTRY.map((t) => t.name).sort()).toEqual([...NOMBRES_ESPERADOS].sort());
   });
 
@@ -58,7 +60,7 @@ describe('ai/tools/index — Tool Registry formal (C.3, Etapa C3.2)', () => {
     expect(Object.keys(TOOL_EXECUTORS).sort()).toEqual([...NOMBRES_ESPERADOS].sort());
   });
 
-  test('las 7 tools reales siguen siempre autorizadas en V1 — mismo comportamiento que antes de esta etapa', () => {
+  test('las 8 tools reales siguen siempre autorizadas en V1 — mismo comportamiento que antes de esta etapa', () => {
     const context = {};
     for (const tool of TOOL_REGISTRY) {
       expect(tool.authorization(context)).toBe(true);

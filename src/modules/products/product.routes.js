@@ -6,6 +6,7 @@ const { authenticate } = require('../../middleware/auth.middleware');
 const { injectTenant } = require('../../middleware/tenant.middleware');
 const { checkPermission } = require('../../middleware/rbac.middleware');
 const { AppError } = require('../../middleware/error.middleware');
+const { traducirErroresDeMulter } = require('../../middleware/uploadErrors.middleware');
 
 // CREA Product Intelligence™ V1.0 — Etapa 3/10. Solo el CRUD de gestión
 // manual (documento maestro §9) — los 3 endpoints conceptuales de
@@ -46,6 +47,21 @@ const uploadImportFile = multer({
   },
 });
 
+// Bloque 2 de la auditoría Business Brain (§37-39, 20/sep/2026) — mismo
+// multer (memoria, JPG/PNG/WEBP, 5MB) que uploadImagen de
+// business.routes.js; no se comparte el objeto tal cual entre módulos
+// (mismo criterio ya aplicado a uploadImportFile de arriba: config chica y
+// estable, no vale la pena una extracción cross-módulo para esto).
+const uploadProductPhoto = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
+  fileFilter: (_req, file, cb) => {
+    const mimeOk = ['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype);
+    if (mimeOk) cb(null, true);
+    else cb(new AppError('Tipo de imagen no permitido. Use JPG, PNG o WEBP', 400));
+  },
+});
+
 router.use(authenticate, injectTenant);
 
 router.get('/', checkPermission('products:read'), controller.listProducts);
@@ -60,5 +76,14 @@ router.post('/import/confirm', checkPermission('products:create'), uploadImportF
 router.get('/:id', checkPermission('products:read'), controller.getProduct);
 router.put('/:id', checkPermission('products:update'), controller.updateProduct);
 router.delete('/:id', checkPermission('products:delete'), controller.deactivateProduct);
+
+// Bloque 2 (§37-39) — fotos asociadas a ESTE producto puntual.
+router.post('/:id/photos',
+  checkPermission('products:update'),
+  traducirErroresDeMulter(uploadProductPhoto.single('photo'), { campoLegible: 'la foto', limiteLegible: '5MB' }),
+  controller.uploadProductPhoto
+);
+router.delete('/:id/photos/:mediaId', checkPermission('products:update'), controller.deleteProductPhoto);
+router.get('/:id/photos/:mediaId/access', checkPermission('products:read'), controller.getProductPhotoAccess);
 
 module.exports = router;

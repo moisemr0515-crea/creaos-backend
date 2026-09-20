@@ -1,6 +1,8 @@
 const Product = require('./product.model');
 const Business = require('../businesses/business.model');
 const { AppError } = require('../../middleware/error.middleware');
+const { subirBuffer, cloudinary } = require('../../utils/cloudinary');
+const logger = require('../../utils/logger');
 
 // CREA Product Intelligence™ V1.0 — Etapa 2/10 (modelo + service). Este
 // archivo cubre 2 audiencias distintas:
@@ -224,6 +226,78 @@ const consultarPrecio = async (businessId, productId) => {
   };
 };
 
+/**
+ * Bloque 2 de la auditoría Business Brain (§37-39, 20/sep/2026) — sube una
+ * foto NUEVA a Cloudinary y la agrega a Product.mediaAssets. Nace directo
+ * type:'authenticated' (nunca una URL pública): a diferencia de logo/photos
+ * de Business (Bloque 1), acá no hay un rollout en pasos que hacer — es
+ * 100% nuevo, sin datos viejos que convivan.
+ *
+ * isPrimary: se marca si se pide explícito, o si esta es la PRIMERA foto
+ * del producto — evita quedar con fotos cargadas pero ninguna marcada
+ * principal (productAssetAccess.service.js#resolverFotoPrincipal() ya cae
+ * a "la primera del array" en ese caso, pero dejarlo explícito acá es más
+ * claro que depender de ese fallback implícito). Marcar una foto nueva
+ * como principal desmarca cualquier otra — invariante del modelo (a lo
+ * sumo 1), reforzada acá y validada de nuevo por el pre-validate hook.
+ */
+const agregarFotoProducto = async (businessId, productId, file, { caption, isPrimary } = {}) => {
+  const producto = await obtenerProducto(businessId, productId);
+
+  const resultado = await subirBuffer(file.buffer, {
+    folder: `creaos/products/${businessId}/${productId}/photos`,
+    resource_type: 'image',
+    type: 'authenticated',
+  });
+
+  const marcarPrincipal = isPrimary === true || producto.mediaAssets.length === 0;
+  if (marcarPrincipal) {
+    producto.mediaAssets.forEach((m) => { m.isPrimary = false; });
+  }
+
+  producto.mediaAssets.push({
+    publicId: resultado.public_id,
+    resourceType: resultado.resource_type,
+    caption: caption || null,
+    isPrimary: marcarPrincipal,
+    order: producto.mediaAssets.length,
+  });
+
+  await producto.save();
+  return producto;
+};
+
+/**
+ * Borra una foto puntual (Cloudinary, best-effort, + Product.mediaAssets).
+ * Si la foto borrada era la principal y quedan otras, promueve la primera
+ * restante (por `order`) — mismo motivo que el auto-marcado de
+ * agregarFotoProducto(): nunca dejar fotos cargadas sin ninguna principal.
+ */
+const eliminarFotoProducto = async (businessId, productId, mediaId) => {
+  const producto = await obtenerProducto(businessId, productId);
+
+  const foto = producto.mediaAssets.id(mediaId);
+  if (!foto) throw new AppError('Foto no encontrada', 404);
+
+  const eraPrincipal = foto.isPrimary;
+
+  try {
+    await cloudinary.uploader.destroy(foto.publicId, { resource_type: foto.resourceType, type: 'authenticated' });
+  } catch (error) {
+    logger.warn(`Error al borrar foto de producto de Cloudinary (${foto.publicId}): ${error.message}`);
+  }
+
+  foto.deleteOne();
+
+  if (eraPrincipal && producto.mediaAssets.length > 0) {
+    const [primeraRestante] = [...producto.mediaAssets].sort((a, b) => (a.order || 0) - (b.order || 0));
+    primeraRestante.isPrimary = true;
+  }
+
+  await producto.save();
+  return producto;
+};
+
 module.exports = {
   crearProducto,
   obtenerProducto,
@@ -234,4 +308,6 @@ module.exports = {
   buscarProductos,
   consultarStock,
   consultarPrecio,
+  agregarFotoProducto,
+  eliminarFotoProducto,
 };

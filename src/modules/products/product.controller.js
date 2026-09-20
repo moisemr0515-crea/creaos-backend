@@ -1,7 +1,9 @@
 const productService = require('./product.service');
+const productAssetAccess = require('./productAssetAccess.service');
 const { createProductSchema, updateProductSchema, listProductsSchema } = require('./product.validator');
 const { validateBody, validateQuery } = require('../../shared/utils/validate');
 const { respuestaExito, buildMeta } = require('../../utils/response');
+const { AppError } = require('../../middleware/error.middleware');
 
 // CREA Product Intelligence™ V1.0 — Etapa 3/10. `req.businessId` viene
 // SIEMPRE de injectTenant (product.routes.js), nunca de req.body/req.query
@@ -67,10 +69,65 @@ const deactivateProduct = async (req, res, next) => {
   }
 };
 
+/**
+ * POST /api/v1/products/:id/photos
+ * Bloque 2 (§37-39, 20/sep/2026) — sube una foto nueva para ESTE producto
+ * puntual (a diferencia de POST /businesses/current/photos, genérico del
+ * negocio). `isPrimary`/`caption` opcionales en el body (multipart).
+ */
+const uploadProductPhoto = async (req, res, next) => {
+  try {
+    if (!req.file) throw new AppError('Se requiere un archivo de imagen', 400);
+
+    const isPrimary = req.body.isPrimary === 'true' || req.body.isPrimary === true;
+    const caption = typeof req.body.caption === 'string' ? req.body.caption.trim() || undefined : undefined;
+
+    const producto = await productService.agregarFotoProducto(req.businessId, req.params.id, req.file, { caption, isPrimary });
+    return respuestaExito(res, { statusCode: 201, message: 'Foto agregada exitosamente', data: { producto } });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * DELETE /api/v1/products/:id/photos/:mediaId
+ */
+const deleteProductPhoto = async (req, res, next) => {
+  try {
+    const producto = await productService.eliminarFotoProducto(req.businessId, req.params.id, req.params.mediaId);
+    return respuestaExito(res, { message: 'Foto eliminada exitosamente', data: { producto } });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * GET /api/v1/products/:id/photos/:mediaId/access
+ * Mismo rol que GET /businesses/current/assets/:campo/access (Bloque 1) —
+ * nunca se expone el publicId/URL directa, solo un acceso firmado con
+ * expiración real. `proposito` default 'display' — 'send' es solo para
+ * send_product_photos (ai/tools/index.js), invocado directo como función,
+ * nunca vía este endpoint HTTP.
+ */
+const getProductPhotoAccess = async (req, res, next) => {
+  try {
+    const producto = await productService.obtenerProducto(req.businessId, req.params.id);
+    const url = productAssetAccess.obtenerUrlDeAccesoFotoPorId(producto, req.params.mediaId, 'display');
+    if (!url) throw new AppError('Foto no encontrada', 404);
+
+    return respuestaExito(res, { message: 'Acceso generado', data: { url } });
+  } catch (err) {
+    next(err);
+  }
+};
+
 module.exports = {
   createProduct,
   getProduct,
   listProducts,
   updateProduct,
   deactivateProduct,
+  uploadProductPhoto,
+  deleteProductPhoto,
+  getProductPhotoAccess,
 };

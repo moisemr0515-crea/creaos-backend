@@ -61,6 +61,47 @@ const productSchema = new mongoose.Schema(
     synonyms: [{ type: String, trim: true, lowercase: true }],
 
     source: { type: String, enum: PRODUCT_SOURCES, default: 'manual' },
+
+    // Bloque 2 de la auditoría Business Brain (20/sep/2026, §37-39) —
+    // fotos asociadas a ESTE producto puntual, a diferencia de
+    // Business.photos (genérico del negocio, sin relación con ningún
+    // producto — decisión de producto confirmada: esos datos existentes
+    // quedan huérfanos, sin auto-migrar, ver docs/business-brain-audit/).
+    //
+    // Nace directo type:'authenticated' en Cloudinary (nunca una URL
+    // pública) — a diferencia de logoAsset/photoAssets de Business (Bloque
+    // 1), acá no hace falta un rollout de 3 pasos: no hay datos viejos en
+    // este campo que migrar, es 100% nuevo.
+    //
+    // CON _id (default de Mongoose, sin _id:false) — a diferencia de los
+    // *Asset de Business (que son 1 solo campo por negocio, nunca
+    // necesitan direccionarse individualmente), acá un producto puede
+    // tener varias fotos y la UI necesita poder borrar/reordenar UNA
+    // puntual por su propio id.
+    mediaAssets: {
+      type: [
+        {
+          publicId: { type: String, required: true },
+          resourceType: { type: String, required: true },
+          caption: { type: String, trim: true, maxlength: 300, default: null },
+          // A lo sumo UNA en true por producto (pre-validate hook abajo) —
+          // es el criterio determinístico que usa send_product_photos()
+          // (ai/tools/index.js) para elegir "la" foto cuando el lead pide
+          // una sin más contexto, sin inventar un criterio implícito
+          // (ej. "la primera del array").
+          isPrimary: { type: Boolean, default: false },
+          // Orden de galería en el dashboard — independiente de isPrimary
+          // (una foto puede ser la principal sin ser la primera en orden
+          // de visualización).
+          order: { type: Number, default: 0 },
+        },
+      ],
+      default: [],
+      validate: {
+        validator: (arr) => arr.length <= 8,
+        message: 'Máximo 8 fotos por producto',
+      },
+    },
   },
   { timestamps: true }
 );
@@ -100,6 +141,17 @@ productSchema.pre('validate', function (next) {
   if (this.reservedStock > this.physicalStock) {
     this.invalidate('reservedStock', 'El stock reservado no puede ser mayor al stock físico');
   }
+
+  // Invariante de Bloque 2 (§37-39): a lo sumo una foto principal por
+  // producto — mismo criterio que reservedStock de arriba (se valida acá,
+  // en el esquema mismo, no solo en el service, para que cualquier camino
+  // de escritura futuro — import masivo, script, etc. — quede cubierto sin
+  // depender de que cada uno reimplemente la regla).
+  const principales = (this.mediaAssets || []).filter((m) => m.isPrimary).length;
+  if (principales > 1) {
+    this.invalidate('mediaAssets', 'Un producto no puede tener más de una foto marcada como principal');
+  }
+
   next();
 });
 

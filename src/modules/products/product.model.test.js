@@ -91,4 +91,62 @@ describe('Product (modelo)', () => {
     await expect(Product.create({ business: business._id, name: 'Sin SKU' })).rejects.toThrow();
     await expect(Product.create({ business: business._id, sku: 'SIN-NOMBRE' })).rejects.toThrow();
   });
+
+  // Bloque 2 de la auditoría Business Brain (20/sep/2026, §37-39).
+  test('mediaAssets por default es un array vacío', async () => {
+    const producto = await Product.create({ business: business._id, sku: 'MOR-001', name: 'Moringa' });
+    expect(producto.mediaAssets).toEqual([]);
+  });
+
+  test('mediaAssets: no puede haber más de una foto marcada como isPrimary:true', async () => {
+    const producto = new Product({
+      business: business._id,
+      sku: 'MOR-001',
+      name: 'Moringa',
+      mediaAssets: [
+        { publicId: 'creaos/products/x/a', resourceType: 'image', isPrimary: true },
+        { publicId: 'creaos/products/x/b', resourceType: 'image', isPrimary: true },
+      ],
+    });
+
+    await expect(producto.validate()).rejects.toThrow(/no puede tener más de una foto marcada como principal/);
+  });
+
+  test('mediaAssets: 1 sola isPrimary:true es válido, el resto puede quedar en false', async () => {
+    const producto = await Product.create({
+      business: business._id,
+      sku: 'MOR-001',
+      name: 'Moringa',
+      mediaAssets: [
+        { publicId: 'creaos/products/x/a', resourceType: 'image', isPrimary: true },
+        { publicId: 'creaos/products/x/b', resourceType: 'image', isPrimary: false },
+      ],
+    });
+
+    expect(producto.mediaAssets).toHaveLength(2);
+    expect(producto.mediaAssets[0].isPrimary).toBe(true);
+    expect(producto.mediaAssets[1].isPrimary).toBe(false);
+  });
+
+  test('mediaAssets: cada foto tiene su propio _id (a diferencia de los *Asset de Business) — hace falta para poder borrar/reordenar una puntual', async () => {
+    const producto = await Product.create({
+      business: business._id,
+      sku: 'MOR-001',
+      name: 'Moringa',
+      mediaAssets: [{ publicId: 'creaos/products/x/a', resourceType: 'image' }],
+    });
+
+    expect(producto.mediaAssets[0]._id).toBeDefined();
+  });
+
+  test('mediaAssets: máximo 8 fotos por producto', async () => {
+    const producto = new Product({
+      business: business._id,
+      sku: 'MOR-001',
+      name: 'Moringa',
+      mediaAssets: Array.from({ length: 9 }, (_, i) => ({ publicId: `creaos/products/x/${i}`, resourceType: 'image' })),
+    });
+
+    await expect(producto.validate()).rejects.toThrow(/Máximo 8 fotos/);
+  });
 });

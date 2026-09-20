@@ -23,6 +23,17 @@ const knowledgeRetrievalService = require('../../business-knowledge/knowledgeRet
 // tal cual, sin duplicar la resolución de canal/credenciales ni el
 // enrutamiento Legacy/Partner (Paso 1).
 const channelService = require('../../channels/channel.service');
+// P0 de seguridad (auditoría Business Brain, 19/sep/2026, Bloque 1) —
+// sendMedia() (más abajo) ya NO lee business.logo/presentationVideoUrl/
+// brochureUrl directo (URL pública permanente) — pide un acceso firmado
+// con propósito 'send' (TTL largo, ver businessAssetAccess.service.js:
+// Meta/Gupshup buscan el archivo de forma asíncrona, no al instante).
+const { obtenerUrlDeAcceso } = require('../../businesses/businessAssetAccess.service');
+// Bloque 2 de la auditoría Business Brain (§37-44, 20/sep/2026) — mismo
+// mecanismo de acceso firmado que businessAssetAccess.service.js de
+// arriba, pero para fotos de Product.mediaAssets (ver send_product_photos()
+// más abajo).
+const productAssetAccess = require('../../products/productAssetAccess.service');
 
 /**
  * Registro de tools reales que el modelo puede invocar durante
@@ -421,13 +432,18 @@ const searchBusinessKnowledge = async (args, { conversation, business }) => {
  * negocio todavía no cargó ese archivo — nunca un string vacío/roto.
  */
 const RECURSOS_MEDIA_ENVIABLES = {
-  logo: (business) => (business.logo ? { url: business.logo, type: 'image' } : null),
-  presentation_video: (business) =>
-    business.presentationVideoUrl ? { url: business.presentationVideoUrl, type: 'video' } : null,
-  brochure: (business) =>
-    business.brochureUrl
-      ? { url: business.brochureUrl, type: 'document', filename: business.brochureFilename || undefined }
-      : null,
+  logo: (business) => {
+    const url = obtenerUrlDeAcceso(business, 'logo', 'send');
+    return url ? { url, type: 'image' } : null;
+  },
+  presentation_video: (business) => {
+    const url = obtenerUrlDeAcceso(business, 'presentationVideo', 'send');
+    return url ? { url, type: 'video' } : null;
+  },
+  brochure: (business) => {
+    const url = obtenerUrlDeAcceso(business, 'brochure', 'send');
+    return url ? { url, type: 'document', filename: business.brochureFilename || undefined } : null;
+  },
 };
 
 const NOMBRES_LEGIBLES_RECURSO = {
@@ -437,21 +453,56 @@ const NOMBRES_LEGIBLES_RECURSO = {
 };
 
 /**
+ * Chequeos compartidos por send_media() y send_product_photos() (Bloque 2,
+ * §37-44, 20/sep/2026) — antes vivían solo dentro de send_media(), se
+ * extraen acá sin cambiar el criterio: conversación por WhatsApp, lead con
+ * teléfono, ventana de 24h abierta (la media es mensaje de sesión, no de
+ * plantilla — Meta la trata igual que texto libre), canal activo resuelto.
+ * Mismos 4 chequeos que ai.service.js#sendMediaMessage() (envío manual de
+ * un agente humano, mismo canal de transporte).
+ */
+const validarPuedeEnviarMedia = async (conversation, lead, business) => {
+  if (conversation.channel !== 'whatsapp') {
+    return { error: 'El envío de archivos solo está disponible en conversaciones por WhatsApp.' };
+  }
+  if (!lead?.phone) {
+    return { error: 'El lead no tiene un número de teléfono registrado.' };
+  }
+  if (!conversation.getWindowState().windowOpen) {
+    return { error: 'La ventana de 24h de WhatsApp está cerrada — no se puede enviar el archivo en este momento.' };
+  }
+
+  const channel = await channelService.getChannelForConversation(conversation, business._id);
+  if (!channel) {
+    return { error: 'No hay un canal de WhatsApp activo para este negocio.' };
+  }
+
+  return { channel };
+};
+
+// Anti-spam determinístico (§41, capa 2 de 3 — ver docs/business-brain-audit/):
+// "no repetir el mismo archivo seguido" no depende del buen juicio del
+// modelo, se chequea en código. Ventana acotada a los últimos 6 mensajes
+// (no toda la conversación entera) — un lead que vuelve a pedir el MISMO
+// archivo horas/días después, en una conversación larga, sigue pudiendo
+// recibirlo; lo que se evita es el reenvío inmediato dentro del mismo
+// intercambio. Compara por `mediaKey` (identificador ESTABLE de qué se
+// envió, ej. 'business:logo'/'product:<id>'), nunca por `mediaUrl` — esa
+// URL es firmada y distinta en cada llamada (mismo asset, string distinto
+// por el expires_at), así que jamás coincidiría dos veces aunque el modelo
+// pidiera el mismo archivo dos turnos seguidos.
+const VENTANA_ANTI_SPAM = 6;
+const yaEnviadoRecientemente = (conversation, mediaKey) =>
+  conversation.messages
+    .slice(-VENTANA_ANTI_SPAM)
+    .some((m) => m.mediaKey === mediaKey);
+
+/**
  * send_media() — Paso 3/3 de la auditoría de factibilidad de send_media
  * (12/sep/2026). Reusa channelService.sendMedia() tal cual (Paso 1: ya
  * enruta Legacy/Partner por outboundApi; Paso 2: presentationVideoUrl/
  * brochureUrl/brochureFilename ya existen en Business) — esta tool es
  * solo el pegamento entre "qué pidió el modelo" y "qué URL real corresponde".
- *
- * Mismos chequeos que ai.service.js#sendMediaMessage() (envío manual de un
- * agente humano, mismo canal de transporte): conversación por WhatsApp,
- * lead con teléfono, ventana de 24h abierta (la media es mensaje de
- * sesión, no de plantilla — Meta la trata igual que texto libre), canal
- * activo resuelto. Sin try/catch propio para esos 4 chequeos — son
- * validaciones esperables, se devuelven como `{success:false, error}`
- * para que el modelo pueda explicarle al lead por qué no pudo enviar el
- * archivo, en vez de que executeToolCall() las trate como una excepción
- * inesperada.
  *
  * Registra el envío como un mensaje `assistant` propio (mismo shape que
  * sendMediaMessage(), pero `sentBy:'ai'` en vez de `'agent'` — lo mandó el
@@ -478,22 +529,17 @@ const sendMedia = async (args, { conversation, business, lead }) => {
     };
   }
 
-  if (conversation.channel !== 'whatsapp') {
-    return { success: false, error: 'El envío de archivos solo está disponible en conversaciones por WhatsApp.' };
-  }
-  if (!lead?.phone) {
-    return { success: false, error: 'El lead no tiene un número de teléfono registrado.' };
-  }
-  if (!conversation.getWindowState().windowOpen) {
-    return { success: false, error: 'La ventana de 24h de WhatsApp está cerrada — no se puede enviar el archivo en este momento.' };
+  const mediaKey = `business:${resource}`;
+  if (yaEnviadoRecientemente(conversation, mediaKey)) {
+    return { success: false, error: `Ya se envió ${NOMBRES_LEGIBLES_RECURSO[resource]} recientemente en esta conversación — no lo repitas salvo que el lead lo pida de nuevo explícitamente.` };
   }
 
-  const channel = await channelService.getChannelForConversation(conversation, business._id);
-  if (!channel) {
-    return { success: false, error: 'No hay un canal de WhatsApp activo para este negocio.' };
+  const validacion = await validarPuedeEnviarMedia(conversation, lead, business);
+  if (validacion.error) {
+    return { success: false, error: validacion.error };
   }
 
-  await channelService.sendMedia(channel._id, lead.phone, media, business._id);
+  await channelService.sendMedia(validacion.channel._id, lead.phone, media, business._id);
 
   const placeholder = media.type === 'image' ? '[Imagen]' : media.type === 'video' ? '[Video]' : '[Documento]';
   conversation.messages.push({
@@ -504,9 +550,72 @@ const sendMedia = async (args, { conversation, business, lead }) => {
     whatsappStatus: 'sent',
     mediaUrl: media.url,
     mediaType: media.type,
+    mediaKey,
   });
 
   return { success: true, message: `Se envió ${NOMBRES_LEGIBLES_RECURSO[resource]} al lead por WhatsApp.` };
+};
+
+/**
+ * send_product_photos() — Bloque 2 de la auditoría Business Brain (§37-44,
+ * 20/sep/2026). Separada de send_media() a propósito: la resolución acá es
+ * por PRODUCTO (mismo mecanismo que check_stock/get_price — resolverProductId()
+ * + productService.obtenerProductoActivo(), scoped por business._id real,
+ * nunca uno que venga de args), no por un enum cerrado de recursos del
+ * negocio.
+ *
+ * Envía SIEMPRE una sola foto — la principal (isPrimary, o la primera si
+ * ninguna está marcada, ver productAssetAccess.service.js). Nunca todas de
+ * una: es tanto la decisión de diseño más simple para V1 como la
+ * implementación estructural de "no mandar muchas fotos" (§41, capa 1 de
+ * 3) — estructuralmente imposible que esta tool spamee, no depende de que
+ * el modelo se autolimite.
+ *
+ * Fallback (§43): nunca inventa ni sustituye la foto de OTRO producto o de
+ * otro tenant — la resolución por productId exacto + business._id real lo
+ * hace imposible por construcción, no solo por instrucción de prompt (ver
+ * el mismo comentario en check_stock/get_price).
+ */
+const sendProductPhotos = async (args, { conversation, business, lead }) => {
+  const productId = resolverProductId(args, conversation);
+  if (!productId) {
+    return { success: false, error: 'Falta el productId y no hay ningún producto identificado antes en esta conversación. Usa search_products primero.' };
+  }
+
+  const producto = await productService.obtenerProductoActivo(business._id, productId);
+
+  const foto = productAssetAccess.resolverFotoPrincipal(producto);
+  if (!foto) {
+    return { success: false, error: `El producto "${producto.name}" todavía no tiene ninguna foto cargada.` };
+  }
+
+  const mediaKey = `product:${producto._id}`;
+  if (yaEnviadoRecientemente(conversation, mediaKey)) {
+    return { success: false, error: `Ya se envió una foto de "${producto.name}" recientemente en esta conversación — no la repitas salvo que el lead lo pida de nuevo explícitamente.` };
+  }
+
+  const validacion = await validarPuedeEnviarMedia(conversation, lead, business);
+  if (validacion.error) {
+    return { success: false, error: validacion.error };
+  }
+
+  const url = productAssetAccess.obtenerUrlDeAccesoFotoPrincipal(producto, 'send');
+  const media = { url, type: 'image', caption: foto.caption || undefined };
+
+  await channelService.sendMedia(validacion.channel._id, lead.phone, media, business._id);
+
+  conversation.messages.push({
+    role: 'assistant',
+    content: foto.caption || '[Imagen]',
+    timestamp: new Date(),
+    sentBy: 'ai',
+    whatsappStatus: 'sent',
+    mediaUrl: url,
+    mediaType: 'image',
+    mediaKey,
+  });
+
+  return { success: true, message: `Se envió una foto de "${producto.name}" al lead por WhatsApp.` };
 };
 
 // Autorización V1 — ver el comentario largo de arriba: siempre `true`
@@ -682,7 +791,8 @@ const TOOL_REGISTRY = [
       '"pásame el catálogo en PDF") — NUNCA de forma proactiva ni para "acompañar" una respuesta que el lead no ' +
       'pidió, cada archivo pesa varios MB y consume la ventana de sesión igual que un mensaje de texto. Si el ' +
       'negocio no cargó ese archivo todavía, la tool te lo va a decir — en ese caso indicáselo al lead de forma ' +
-      'natural en vez de insistir o inventar que sí se envió.',
+      'natural en vez de insistir o inventar que sí se envió. NO uses esta tool para la foto de un producto ' +
+      'específico — para eso existe send_product_photos.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -699,6 +809,31 @@ const TOOL_REGISTRY = [
     },
     authorization: siempreAutorizada,
     execute: sendMedia,
+  },
+  {
+    name: 'send_product_photos',
+    description:
+      'Envía por WhatsApp la foto principal de UN producto específico de este negocio. Úsala SOLO cuando el lead ' +
+      'pide ver un producto puntual (ej. "¿tienen foto de la moringa?", "mándame una imagen del producto") — ' +
+      'NUNCA de forma proactiva. Necesitás el producto identificado: si no lo identificaste todavía en esta ' +
+      'conversación, llamá a search_products primero. NUNCA la uses para el logo, video de presentación o ' +
+      'brochure del negocio (para eso existe send_media), y si el producto no tiene ninguna foto cargada, decilo ' +
+      'con naturalidad (ej. "en este momento no tengo una foto cargada de ese producto") — nunca inventes ni uses ' +
+      'la foto de otro producto.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        productId: {
+          type: 'string',
+          description:
+            'ID del producto (de un resultado previo de search_products en esta misma conversación). Opcional ' +
+            'si ya hay un producto identificado antes en la conversación.',
+        },
+      },
+      additionalProperties: false,
+    },
+    authorization: siempreAutorizada,
+    execute: sendProductPhotos,
   },
 ];
 

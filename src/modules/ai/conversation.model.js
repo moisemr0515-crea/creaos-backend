@@ -85,6 +85,15 @@ const messageSchema = new mongoose.Schema(
     // primer camino real que envía brochures (PDF) por WhatsApp.
     mediaUrl:  { type: String, default: null },
     mediaType: { type: String, enum: ['image', 'video', 'document', null], default: null },
+    // Bloque 2 de la auditoría Business Brain (§41, 20/sep/2026) —
+    // identificador ESTABLE de qué se envió (ej. 'business:logo',
+    // 'product:<productId>'), a diferencia de mediaUrl: send_media/
+    // send_product_photos generan una URL firmada NUEVA en cada llamada
+    // (mismo asset, string distinto por el expires_at), así que mediaUrl
+    // nunca sirve para detectar "ya se mandó este archivo antes" — mediaKey
+    // sí, es lo que usa la regla anti-spam de "no repetir el mismo archivo
+    // seguido" (ai/tools/index.js#yaEnviadoRecientemente()).
+    mediaKey: { type: String, default: null },
   },
   { _id: false }
 );

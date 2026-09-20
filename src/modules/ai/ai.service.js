@@ -343,6 +343,27 @@ CÓMO INTERPRETAR EL RESULTADO (nunca lo ignores):
 - Preferí customerFacingText sobre statement cuando venga presente — statement es el texto operativo interno, customerFacingText ya está redactado para el cliente.
 - Si la búsqueda no devuelve ninguna policy ni FAQ relevante, decilo con honestidad ("no tengo esa información ahora mismo, dejame confirmarlo con el equipo") en vez de inventar una política — podés usar escalate_to_human si el lead necesita una respuesta segura ya mismo.`;
 
+// Bloque 2 de la auditoría Business Brain (§40/§41, 20/sep/2026) — "motor
+// de selección" del documento maestro, implementado 100% como texto de
+// prompt/tool descriptions (sin clasificador nuevo, confirmado en la Fase 1
+// que el tool-calling nativo ya alcanza): mapea las 6 categorías del §40 a
+// las tools reales, y consolida ACÁ las 2 reglas anti-spam de §41 que son
+// puro juicio de intención (no tienen ninguna señal determinística que
+// codificar — a diferencia de "no repetir el mismo archivo", que si se
+// aplica en código, ver yaEnviadoRecientemente() en ai/tools/index.js).
+// Va después de BUSINESS_KNOWLEDGE_GUIDANCE porque comparte el mismo
+// "vecindario" temático (catálogo/conocimiento/archivos del negocio) que
+// las 2 guidances de arriba.
+const MEDIA_GUIDANCE = `ARCHIVOS Y MEDIA QUE PODÉS ENVIAR (send_media / send_product_photos):
+- ¿Piden el catálogo o si tienen tal producto? → search_products.
+- ¿Piden ver/una foto de UN producto puntual? → send_product_photos.
+- ¿Piden el folleto/catálogo en PDF? → send_media(resource:"brochure").
+- ¿Piden un video de presentación? → send_media(resource:"presentation_video").
+- ¿Piden el logo del negocio? → send_media(resource:"logo").
+- Cualquier otra pregunta general → respondé vos directo, o search_business_knowledge si es sobre una política/regla.
+
+REGLAS (nunca las rompas): nunca envíes un archivo de forma proactiva ni para "acompañar" una respuesta que el lead no pidió explícitamente — cada archivo consume la ventana de sesión igual que un mensaje de texto. Nunca envíes el logo o el video "porque sí" en medio de una conversación de precio/stock — el lead tiene que haberlo pedido. Si el lead solo pregunta precio o disponibilidad, respondé eso (get_price/check_stock) y no aproveches para mandar ningún archivo extra.`;
+
 /**
  * Construye el bloque de MANEJO DE OBJECIONES + COMPROMISO PROGRESIVO —
  * dinámico (PR37) cuando hay suficiente leadQualification real, con
@@ -499,6 +520,8 @@ ${METHODOLOGY_10D_GUIDANCE}
 ${PRODUCT_INTELLIGENCE_GUIDANCE}
 
 ${BUSINESS_KNOWLEDGE_GUIDANCE}
+
+${MEDIA_GUIDANCE}
 
 ${buildObjectionMicroClosingGuidance(leadQualification)}`;
 };
@@ -815,7 +838,9 @@ const generateReply = async (conversationId, business, lead) => {
 // el turno usó alguna, el outcome es 'action'. escalate_to_human también
 // tiene un efecto real pero tiene su propio outcome ('handoff', más
 // específico y más urgente) y se chequea primero.
-const ACTION_TOOL_NAMES = new Set(['update_lead_stage', 'send_media']);
+// send_product_photos (Bloque 2, 20/sep/2026) — mismo efecto real que
+// send_media (manda un archivo por WhatsApp), mismo outcome.
+const ACTION_TOOL_NAMES = new Set(['update_lead_stage', 'send_media', 'send_product_photos']);
 
 /**
  * Deriva el `outcome` del AgentRunResult (spec §5.1: answer/clarify/
