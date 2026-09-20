@@ -91,6 +91,15 @@ const leadSchema = new mongoose.Schema(
     // que usa actualValue con fallback a potentialValue para leads viejos
     // que se cerraron antes de que este campo existiera).
     actualValue: { type: Number, min: 0 },
+    // Bloque 4 de la auditoría Business Brain (§59-60, 20/sep/2026) — guarda
+    // de idempotencia de POST /leads/:id/close-sale (lead.service.js#cerrarVenta).
+    // null = todavía no se cerró vía ESE endpoint nuevo — un lead movido a
+    // 'won' por el flujo viejo (PUT genérico + PUT stage, o por
+    // update_lead_stage de la IA) sigue sin este campo, a propósito: no hay
+    // ningún dato de qué productos se vendieron que migrar retroactivamente
+    // para esos leads. Ver el comentario de cerrarVenta() para el filtro
+    // atómico que usa este campo.
+    saleClosedAt: { type: Date, default: null },
     currency: { type: String, default: 'USD', uppercase: true },
     closeProbability: { type: Number, min: 0, max: 100, default: 0 },
     assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

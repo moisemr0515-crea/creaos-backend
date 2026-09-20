@@ -4,6 +4,7 @@ const {
   updateLeadSchema,
   addNoteSchema,
   changeStageSchema,
+  closeSaleSchema,
   assignLeadSchema,
   listLeadsSchema,
   bulkActionSchema,
@@ -93,6 +94,20 @@ const changeStage = async (req, res, next) => {
   }
 };
 
+// Bloque 4 de la auditoría Business Brain (§59-60, 20/sep/2026) — cierre de
+// venta con productos, transaccional e idempotente (ver
+// lead.service.js#cerrarVenta). Reemplaza el flujo previo del frontend de
+// 2 llamadas separadas (PUT genérico + PUT /stage).
+const closeSale = async (req, res, next) => {
+  try {
+    const data = await validateBody(closeSaleSchema, req.body);
+    const lead = await leadService.cerrarVenta(req.businessId, req.params.id, actor(req), data);
+    return respuestaExito(res, { message: 'Venta cerrada exitosamente', data: { lead } });
+  } catch (err) {
+    next(err);
+  }
+};
+
 const assignLead = async (req, res, next) => {
   try {
     const { assignedTo } = await validateBody(assignLeadSchema, req.body);
@@ -121,6 +136,7 @@ module.exports = {
   deleteLead,
   addNote,
   changeStage,
+  closeSale,
   assignLead,
   bulkAction,
 };

@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Lead = require('./lead.model');
 const Conversation = require('../ai/conversation.model');
 const Pipeline = require('../pipeline/pipeline.model');
@@ -7,6 +8,7 @@ const Role = require('../roles/role.model');
 const Notification = require('../admin/notification.model');
 const notificationService = require('../admin/notification.service');
 const subscriptionService = require('../subscriptions/subscription.service');
+const productInventoryService = require('../products/productInventory.service');
 const { AppError } = require('../../middleware/error.middleware');
 const { triggerAutomations } = require('../automations/automation.engine');
 const { normalizeToE164 } = require('../../utils/phone');
@@ -319,6 +321,118 @@ const cambiarEtapa = async (businessId, leadId, actor, stage, reason, { triggerA
   return lead;
 };
 
+/**
+ * Cierre de venta con productos — Bloque 4 de la auditoría Business Brain
+ * (§59-60, 20/sep/2026), ampliación consciente de alcance respecto al
+ * documento maestro original (§42, V1.5). Reemplaza el flujo previo de
+ * "Cerrar venta" del frontend (PUT genérico con actualValue + PUT /stage,
+ * 2 llamadas HTTP separadas, sin ningún productId) por UNA sola operación
+ * atómica: monto + etapa 'ganado' + el descuento real de stock de los
+ * productos vendidos.
+ *
+ * `items` es OPCIONAL — un negocio que vende servicios sin stock, o que
+ * simplemente no quiere detallar productos, puede cerrar con `items: []` y
+ * el comportamiento es idéntico al flujo viejo (solo monto + etapa). Cada
+ * item es `{productId, variantId?, quantity, reservationId?}`:
+ * `reservationId` cuando el lead ya tenía stock apartado de antes (ver
+ * productInventory.service.js#reservarStock) → se confirma esa reserva
+ * puntual; sin `reservationId`, se descuenta directo (nunca hubo nada
+ * apartado que liberar).
+ *
+ * IDEMPOTENTE vía `Lead.saleClosedAt`: el `findOneAndUpdate` de abajo exige
+ * `saleClosedAt: null` en su propio filtro — un segundo llamado (doble
+ * click, reintento de red) nunca vuelve a descontar stock ni a pisar el
+ * monto ya guardado, devuelve el lead ya cerrado tal cual quedó la primera
+ * vez.
+ *
+ * TRANSACCIONAL de punta a punta (Lead + cada item de stock), mismo
+ * fallback EXACTO que productInventory.service.js#conSesionTransaccional()
+ * (standalone Mongo en dev/test cae a operaciones secuenciales) — las
+ * funciones de stock reciben la MISMA `session` de acá (nunca abren la
+ * suya propia: Mongo no soporta transacciones anidadas en sesiones
+ * distintas).
+ */
+const cerrarVenta = async (businessId, leadId, actor, { actualValue, items = [] } = {}) => {
+  const leadActual = await Lead.findOne({ _id: leadId, business: businessId, isDeleted: false });
+  if (!leadActual) throw new AppError('Lead no encontrado', 404);
+
+  // Chequeo temprano (fuera de la transacción) — evita el trabajo si ya
+  // está cerrado. El filtro atómico de abajo, DENTRO de la transacción, es
+  // la guarda real contra una carrera entre 2 requests casi simultáneas.
+  if (leadActual.saleClosedAt) return leadActual;
+
+  const pipeline = await obtenerPipelineEfectivo(businessId, leadActual.pipeline);
+  const stageGanado = pipeline.stages.find((s) => s.isWon);
+  if (!stageGanado) {
+    throw new AppError("Este negocio no tiene una etapa 'ganado' configurada en su Pipeline", 400);
+  }
+
+  const ejecutar = async (session) => {
+    const opts = session ? { session } : {};
+
+    const cerrado = await Lead.findOneAndUpdate(
+      { _id: leadId, business: businessId, saleClosedAt: null },
+      {
+        $set: {
+          actualValue,
+          pipelineStage: stageGanado.key,
+          stageChangedAt: new Date(),
+          closeProbability: stageGanado.defaultProbability,
+          saleClosedAt: new Date(),
+          lastContactedAt: new Date(),
+        },
+        $push: {
+          activity: {
+            type: 'stage_changed',
+            description: `Venta cerrada por ${actor.name}`,
+            performedBy: actor._id,
+            performedByName: actor.name,
+            meta: { from: leadActual.pipelineStage, to: stageGanado.key, actualValue },
+          },
+        },
+      },
+      { new: true, ...opts }
+    );
+
+    if (!cerrado) {
+      // Otro request ganó la carrera entre la lectura de arriba y este
+      // punto — mismo criterio idempotente: devolver el estado ya cerrado,
+      // nunca un error ni un segundo descuento de stock.
+      return Lead.findOne({ _id: leadId, business: businessId }, null, opts);
+    }
+
+    for (const item of items) {
+      if (item.reservationId) {
+        await productInventoryService.confirmarReserva(businessId, item.reservationId, opts);
+      } else {
+        await productInventoryService.descontarStockDirecto(businessId, item, opts);
+      }
+    }
+
+    return cerrado;
+  };
+
+  const session = await mongoose.startSession();
+  try {
+    let resultado;
+    await session.withTransaction(async () => {
+      resultado = await ejecutar(session);
+    });
+    return resultado;
+  } catch (txError) {
+    if (
+      txError.message?.includes('replica set') ||
+      txError.message?.includes('Transaction numbers') ||
+      txError.codeName === 'IllegalOperation'
+    ) {
+      return ejecutar(null);
+    }
+    throw txError;
+  } finally {
+    await session.endSession();
+  }
+};
+
 const asignarLead = async (businessId, leadId, actor, assignedToId) => {
   const lead = await Lead.findOne({ _id: leadId, business: businessId, isDeleted: false });
   if (!lead) throw new AppError('Lead no encontrado', 404);
@@ -528,6 +642,7 @@ module.exports = {
   eliminarLead,
   agregarNota,
   cambiarEtapa,
+  cerrarVenta,
   asignarLead,
   accionMasiva,
   resolveNotificationRecipients,

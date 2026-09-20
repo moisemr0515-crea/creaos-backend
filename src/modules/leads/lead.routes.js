@@ -30,6 +30,8 @@ router.delete('/:id', checkPermission('leads:delete'), controller.deleteLead);
 
 router.post('/:id/notes', checkPermission('leads:update'), controller.addNote);
 router.put('/:id/stage', checkPermission('leads:update'), controller.changeStage);
+// Bloque 4 (§59-60, 20/sep/2026) — cierre de venta con productos.
+router.post('/:id/close-sale', checkPermission('leads:update'), controller.closeSale);
 router.put('/:id/assign', checkPermission('leads:update'), controller.assignLead);
 
 module.exports = router;

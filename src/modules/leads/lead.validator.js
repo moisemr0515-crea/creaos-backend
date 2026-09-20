@@ -70,6 +70,24 @@ const assignLeadSchema = Joi.object({
   assignedTo: objectId.required(),
 });
 
+// Bloque 4 de la auditoría Business Brain (§59-60, 20/sep/2026) —
+// POST /leads/:id/close-sale. `items` es OPCIONAL (min(0) por default de
+// Joi.array): un negocio sin productos trackeados puede cerrar solo con
+// `actualValue`, mismo comportamiento que el flujo viejo. `reservationId`
+// es opcional por item — sin él, el service descuenta directo (ver
+// lead.service.js#cerrarVenta).
+const closeSaleItemSchema = Joi.object({
+  productId:     objectId.required(),
+  variantId:     objectId.optional(),
+  quantity:      Joi.number().integer().min(1).required(),
+  reservationId: objectId.optional(),
+});
+
+const closeSaleSchema = Joi.object({
+  actualValue: Joi.number().min(0).required(),
+  items:       Joi.array().items(closeSaleItemSchema).default([]),
+});
+
 const listLeadsSchema = Joi.object({
   page:    Joi.number().integer().min(1).default(1),
   limit:   Joi.number().integer().min(1).max(100).default(20),
@@ -137,6 +155,7 @@ module.exports = {
   updateLeadSchema,
   addNoteSchema,
   changeStageSchema,
+  closeSaleSchema,
   assignLeadSchema,
   listLeadsSchema,
   bulkActionSchema,
