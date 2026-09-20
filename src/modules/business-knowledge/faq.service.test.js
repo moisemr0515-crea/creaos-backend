@@ -7,6 +7,11 @@ const Product = require('../products/product.model');
 const WhatsAppChannel = require('../channels/whatsappChannel.model');
 const Policy = require('./policy.model');
 const FAQ = require('./faq.model');
+
+// Bloque 3 (§53, 20/sep/2026) — mismo motivo que policy.service.test.js.
+jest.mock('../../utils/embeddings', () => ({ generarEmbedding: jest.fn().mockResolvedValue([0.1, 0.2, 0.3]) }));
+const { generarEmbedding } = require('../../utils/embeddings');
+
 const {
   crearFAQ,
   obtenerFAQ,
@@ -161,6 +166,46 @@ describe('faq.service', () => {
       const faq = await crearFAQ(business._id, actor, datosValidos());
       const actualizada = await actualizarFAQ(business._id, faq._id, actor, { tags: ['nuevo'] });
       expect(actualizada.version).toBe(1);
+    });
+
+    // Bloque 3 (§53, 20/sep/2026) — retrieval semántico, capa adicional.
+    describe('embedding', () => {
+      test('crearFAQ() genera el embedding con el texto real (question/answer)', async () => {
+        const faq = await crearFAQ(business._id, actor, datosValidos());
+
+        expect(faq.embedding).toEqual([0.1, 0.2, 0.3]);
+        expect(generarEmbedding).toHaveBeenCalledWith(expect.stringContaining('¿Aceptan Yape?'));
+        expect(generarEmbedding).toHaveBeenCalledWith(expect.stringContaining('Sí, aceptamos Yape y Plin.'));
+      });
+
+      test('actualizarFAQ() REGENERA el embedding cuando cambia contenido relevante (answer)', async () => {
+        const faq = await crearFAQ(business._id, actor, datosValidos());
+        generarEmbedding.mockClear();
+        generarEmbedding.mockResolvedValueOnce([0.7, 0.7, 0.7]);
+
+        const actualizada = await actualizarFAQ(business._id, faq._id, actor, { answer: 'Respuesta nueva' });
+
+        expect(generarEmbedding).toHaveBeenCalledWith(expect.stringContaining('Respuesta nueva'));
+        expect(actualizada.embedding).toEqual([0.7, 0.7, 0.7]);
+      });
+
+      test('actualizarFAQ() NO regenera el embedding en un cambio puramente de metadata (tags)', async () => {
+        const faq = await crearFAQ(business._id, actor, datosValidos());
+        generarEmbedding.mockClear();
+
+        await actualizarFAQ(business._id, faq._id, actor, { tags: ['nuevo'] });
+
+        expect(generarEmbedding).not.toHaveBeenCalled();
+      });
+
+      test('si OpenAI falla al crear: la FAQ se guarda igual, embedding queda null (fail-soft)', async () => {
+        generarEmbedding.mockRejectedValueOnce(new Error('OpenAI caído'));
+
+        const faq = await crearFAQ(business._id, actor, datosValidos());
+
+        expect(faq.embedding).toBeNull();
+        expect(faq.answer).toBe('Sí, aceptamos Yape y Plin.');
+      });
     });
 
     test('recalcula normalizedQuestion al cambiar question', async () => {

@@ -332,8 +332,8 @@ REGLA ANTI-ALUCINACIÓN (nunca la rompas): nunca afirmes que un producto existe,
 // sección separada. Mismo criterio de "SIEMPRE presente, nunca condicionado
 // a que el negocio ya tenga políticas cargadas" que PRODUCT_INTELLIGENCE_GUIDANCE:
 // si search_business_knowledge no encuentra nada, ESE es el resultado real.
-const BUSINESS_KNOWLEDGE_GUIDANCE = `POLÍTICAS Y PREGUNTAS FRECUENTES (search_business_knowledge):
-Este negocio puede tener políticas (garantías, cambios, devoluciones, pagos, reservas, cancelaciones, etc.) y preguntas frecuentes autorizadas. Consulta search_business_knowledge SIEMPRE que el lead pregunte por una regla, condición, plazo, requisito, o algo que podría estar cubierto por una política o FAQ del negocio — nunca respondas ese tipo de pregunta de memoria ni inventando una regla que esta herramienta no confirmó.
+const BUSINESS_KNOWLEDGE_GUIDANCE = `POLÍTICAS, PREGUNTAS FRECUENTES Y DOCUMENTO DEL NEGOCIO (search_business_knowledge):
+Este negocio puede tener políticas (garantías, cambios, devoluciones, pagos, reservas, cancelaciones, etc.), preguntas frecuentes autorizadas, y un documento/PDF con información general (qué vende, diferenciadores, condiciones). Consulta search_business_knowledge SIEMPRE que el lead pregunte por una regla, condición, plazo, requisito, algo que podría estar cubierto por una política o FAQ, o información general del negocio — nunca respondas ese tipo de pregunta de memoria ni inventando algo que esta herramienta no confirmó.
 
 CÓMO INTERPRETAR EL RESULTADO (nunca lo ignores):
 - Si needsClarification:true, el tema varía según el producto y no está claro a cuál se refiere el lead — preguntale cuál antes de responder, no elijas una política al azar ni asumas que la más general aplica.
@@ -341,7 +341,8 @@ CÓMO INTERPRETAR EL RESULTADO (nunca lo ignores):
 - Si una policy tiene responseMode:"handoff", no intentes resolver el tema vos — usa escalate_to_human con el handoffReason que te llegó.
 - Si una policy tiene responseMode:"deny_action", comunicá con claridad que eso no está permitido, sin ofrecer alternativas que no hayas confirmado.
 - Preferí customerFacingText sobre statement cuando venga presente — statement es el texto operativo interno, customerFacingText ya está redactado para el cliente.
-- Si la búsqueda no devuelve ninguna policy ni FAQ relevante, decilo con honestidad ("no tengo esa información ahora mismo, dejame confirmarlo con el equipo") en vez de inventar una política — podés usar escalate_to_human si el lead necesita una respuesta segura ya mismo.`;
+- documentChunks son fragmentos del PDF del negocio — úsalos SOLO para información general/descriptiva (qué vende, diferenciadores, condiciones generales). NUNCA para precio o stock de un producto puntual, aunque el fragmento lo mencione — para eso siempre get_price/check_stock, que reflejan el dato real y actual del catálogo.
+- Si la búsqueda no devuelve ninguna policy, FAQ, ni fragmento de documento relevante, decilo con honestidad ("no tengo esa información ahora mismo, dejame confirmarlo con el equipo") en vez de inventar algo — podés usar escalate_to_human si el lead necesita una respuesta segura ya mismo.`;
 
 // Bloque 2 de la auditoría Business Brain (§40/§41, 20/sep/2026) — "motor
 // de selección" del documento maestro, implementado 100% como texto de

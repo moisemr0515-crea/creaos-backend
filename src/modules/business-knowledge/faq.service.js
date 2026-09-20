@@ -3,9 +3,27 @@ const Policy = require('./policy.model');
 const Product = require('../products/product.model');
 const WhatsAppChannel = require('../channels/whatsappChannel.model');
 const { AppError } = require('../../middleware/error.middleware');
+const { generarEmbedding } = require('../../utils/embeddings');
+const logger = require('../../utils/logger');
 
 // CREA SALES AI™ — C.2 Business Brain: Policies + FAQ V1. Etapa 3/11. Ver
 // policy.service.js para las convenciones compartidas (no se repiten acá).
+
+// Bloque 3 de la auditoría Business Brain (§53, 20/sep/2026) — mismo
+// criterio exacto que policy.service.js#textoParaEmbedding(): los mismos
+// campos que ya indexa el $text de faq.model.js (question/aliases/
+// keywords/answer), fail-soft si OpenAI falla.
+const textoParaEmbedding = (faq) =>
+  [faq.question, ...(faq.aliases || []), ...(faq.keywords || []), faq.answer].filter(Boolean).join('\n');
+
+const generarEmbeddingSiPosible = async (faq) => {
+  try {
+    return await generarEmbedding(textoParaEmbedding(faq));
+  } catch (error) {
+    logger.warn(`[faq.service] No se pudo generar el embedding de la FAQ ${faq._id || '(nueva)'}: ${error.message}`);
+    return null;
+  }
+};
 
 /**
  * Documento §7.1: "linked policies deben pertenecer al tenant" — mismo
@@ -46,6 +64,7 @@ const crearFAQ = async (businessId, actor, data) => {
     createdBy: actor?._id ?? null,
     updatedBy: actor?._id ?? null,
   });
+  faq.embedding = await generarEmbeddingSiPosible(faq);
 
   await faq.save();
   return faq;
@@ -89,7 +108,10 @@ const actualizarFAQ = async (businessId, faqId, actor, data) => {
 
   Object.assign(faq, data);
   faq.updatedBy = actor?._id ?? null;
-  if (huboContenidoRelevante) faq.version += 1;
+  if (huboContenidoRelevante) {
+    faq.version += 1;
+    faq.embedding = await generarEmbeddingSiPosible(faq);
+  }
 
   await faq.save();
   return faq;

@@ -13,6 +13,10 @@ const Product = require('../products/product.model');
 const Policy = require('../business-knowledge/policy.model');
 const FAQ = require('../business-knowledge/faq.model');
 const Conversation = require('./conversation.model');
+
+// Bloque 3 (§53, 20/sep/2026) — mismo motivo que agentScenarios.test.js.
+jest.mock('../../utils/embeddings', () => ({ generarEmbedding: jest.fn().mockResolvedValue(null) }));
+
 const aiService = require('./ai.service');
 
 const MONGO_URI = 'mongodb://localhost:27017/creaos_test_ai_service_run_agent';

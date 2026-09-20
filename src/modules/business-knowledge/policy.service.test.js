@@ -8,6 +8,14 @@ const Business = require('../businesses/business.model');
 const Product = require('../products/product.model');
 const WhatsAppChannel = require('../channels/whatsappChannel.model');
 const Policy = require('./policy.model');
+
+// Bloque 3 (§53, 20/sep/2026) — crearPolicy/actualizarPolicy ahora piden
+// un embedding real a OpenAI (fail-soft si falla) — se mockea acá para no
+// pegarle a la red en cada test; su propia generación tiene test dedicado
+// más abajo.
+jest.mock('../../utils/embeddings', () => ({ generarEmbedding: jest.fn().mockResolvedValue([0.1, 0.2, 0.3]) }));
+const { generarEmbedding } = require('../../utils/embeddings');
+
 const {
   crearPolicy,
   obtenerPolicy,
@@ -159,6 +167,46 @@ describe('policy.service', () => {
       const policy = await crearPolicy(business._id, actor, datosValidos());
       const actualizada = await actualizarPolicy(business._id, policy._id, actor, { tags: ['nuevo-tag'] });
       expect(actualizada.version).toBe(1);
+    });
+
+    // Bloque 3 (§53, 20/sep/2026) — retrieval semántico, capa adicional.
+    describe('embedding', () => {
+      test('crearPolicy() genera el embedding con el texto real (title/statement)', async () => {
+        const policy = await crearPolicy(business._id, actor, datosValidos());
+
+        expect(policy.embedding).toEqual([0.1, 0.2, 0.3]);
+        expect(generarEmbedding).toHaveBeenCalledWith(expect.stringContaining('Cambios de productos estándar'));
+        expect(generarEmbedding).toHaveBeenCalledWith(expect.stringContaining('Se aceptan cambios hasta 7 días'));
+      });
+
+      test('actualizarPolicy() REGENERA el embedding cuando cambia contenido relevante (statement)', async () => {
+        const policy = await crearPolicy(business._id, actor, datosValidos());
+        generarEmbedding.mockClear();
+        generarEmbedding.mockResolvedValueOnce([0.9, 0.9, 0.9]);
+
+        const actualizada = await actualizarPolicy(business._id, policy._id, actor, { statement: 'Texto totalmente nuevo' });
+
+        expect(generarEmbedding).toHaveBeenCalledWith(expect.stringContaining('Texto totalmente nuevo'));
+        expect(actualizada.embedding).toEqual([0.9, 0.9, 0.9]);
+      });
+
+      test('actualizarPolicy() NO regenera el embedding en un cambio puramente de metadata (tags)', async () => {
+        const policy = await crearPolicy(business._id, actor, datosValidos());
+        generarEmbedding.mockClear();
+
+        await actualizarPolicy(business._id, policy._id, actor, { tags: ['nuevo-tag'] });
+
+        expect(generarEmbedding).not.toHaveBeenCalled();
+      });
+
+      test('si OpenAI falla al crear: la Policy se guarda igual, embedding queda null (fail-soft)', async () => {
+        generarEmbedding.mockRejectedValueOnce(new Error('OpenAI caído'));
+
+        const policy = await crearPolicy(business._id, actor, datosValidos());
+
+        expect(policy.embedding).toBeNull();
+        expect(policy.statement).toBe('Se aceptan cambios hasta 7 días después de la compra.'); // se guardó igual
+      });
     });
 
     test('valida code duplicado al cambiarlo', async () => {

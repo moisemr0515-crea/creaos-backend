@@ -133,6 +133,16 @@ const policySchema = new mongoose.Schema(
     // reordenar `tags` probablemente no).
     version: { type: Number, default: 1, min: 1 },
 
+    // Bloque 3 de la auditoría Business Brain (§53, 20/sep/2026) —
+    // retrieval semántico, capa ADICIONAL sobre el matching textual
+    // existente ($text más abajo), nunca en su reemplazo. Se genera en
+    // policy.service.js (mismo criterio que pdfSummary en
+    // business.service.js: la llamada a la API externa vive en el
+    // service, nunca en un hook del modelo) — null si todavía no se
+    // generó o si la llamada a OpenAI falló (fail-soft, la Policy sigue
+    // siendo encontrable por texto igual).
+    embedding: { type: [Number], default: null },
+
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   },

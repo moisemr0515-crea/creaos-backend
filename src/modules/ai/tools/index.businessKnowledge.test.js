@@ -10,6 +10,17 @@ const WhatsAppChannel = require('../../channels/whatsappChannel.model');
 const Policy = require('../../business-knowledge/policy.model');
 const FAQ = require('../../business-knowledge/faq.model');
 const Conversation = require('../conversation.model');
+
+// Bloque 3 (§45-51/§53, 20/sep/2026) — resolverConocimiento() ahora pide
+// embeddings reales (query + chunks del PDF/semántica de Policy/FAQ). Se
+// mockea acá para no pegarle a OpenAI en cada test — el retrieval
+// semántico en sí (buscarSemantico(), buscarChunksDocumento()) ya tiene su
+// propio test dedicado (knowledgeRetrieval.service.test.js) con un
+// $vectorSearch real no disponible en Mongo local de todas formas (se
+// prueba con mocks ahí). Este archivo se queda enfocado en su contrato
+// real: qué le llega al modelo a través de la tool.
+jest.mock('../../../utils/embeddings', () => ({ generarEmbedding: jest.fn().mockResolvedValue(null) }));
+
 const { executeToolCall } = require('./index');
 
 const MONGO_URI = 'mongodb://localhost:27017/creaos_test_ai_tools_business_knowledge';
@@ -187,6 +198,7 @@ describe('ai/tools/index — search_business_knowledge (CREA SALES AI™ C.2)', 
       success: true,
       policies: [],
       faqs: [],
+      documentChunks: [],
       conflictDetected: false,
       needsClarification: false,
     });

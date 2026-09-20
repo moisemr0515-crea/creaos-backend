@@ -1,6 +1,9 @@
 const mongoose = require('mongoose');
 const Policy = require('./policy.model');
 const FAQ = require('./faq.model');
+const BusinessDocumentChunk = require('./businessDocumentChunk.model');
+const { generarEmbedding } = require('../../utils/embeddings');
+const { descartarClaimsDePrecioStockDesactualizados } = require('./priceStockGuard.service');
 const logger = require('../../utils/logger');
 
 // CREA SALES AI™ — C.2 Business Brain: Policies + FAQ V1. Etapa 3/11
@@ -42,6 +45,66 @@ const construirFiltroElegible = (businessId) => {
 // meter un catálogo entero en el contexto de la IA, documento §19).
 const LIMITE_CANDIDATOS = 20;
 
+// Bloque 3 de la auditoría Business Brain (§51/§53, 20/sep/2026) —
+// retrieval semántico, capa ADICIONAL sobre el $text existente arriba,
+// nunca en su reemplazo (fase 2, punto 4, aprobado). numCandidates:
+// sobre-muestreo recomendado por Atlas antes de recortar — no es el
+// límite final de resultados. UMBRAL_SIMILITUD: piso de similitud coseno
+// por debajo del cual un candidato NO se considera un match real (Atlas
+// siempre devuelve los K vecinos más cercanos, sean relevantes o no) —
+// valor de arranque, ajustable empíricamente una vez que haya tráfico
+// real (Fase 2, punto 3).
+const NUM_CANDIDATOS_VECTOR = 100;
+const UMBRAL_SIMILITUD_SEMANTICA = 0.75;
+// K de chunks del PDF por búsqueda — mismo criterio que LIMITE_CANDIDATOS
+// de arriba, deliberadamente chico (Fase 2, punto 3).
+const K_CHUNKS_DOCUMENTO = 5;
+
+/**
+ * Corre $vectorSearch sobre `Model` con el filtro estructural YA resuelto
+ * (`filtro`, sin `$text` — Atlas no combina ambos en la misma etapa) y le
+ * aplica el piso de similitud. Devuelve [] sin lanzar si `queryEmbedding`
+ * es null (ej. generarEmbedding() falló más arriba) — el caller sigue
+ * teniendo los resultados de texto igual, nunca se cae el retrieval
+ * entero por esto.
+ */
+const buscarSemantico = async (Model, indexName, filtro, queryEmbedding) => {
+  if (!queryEmbedding) return [];
+
+  try {
+    const resultados = await Model.aggregate([
+      {
+        $vectorSearch: {
+          index: indexName,
+          path: 'embedding',
+          queryVector: queryEmbedding,
+          numCandidates: NUM_CANDIDATOS_VECTOR,
+          limit: LIMITE_CANDIDATOS,
+          filter: filtro,
+        },
+      },
+      { $addFields: { score: { $meta: 'vectorSearchScore' } } },
+    ]);
+    return resultados.filter((r) => r.score >= UMBRAL_SIMILITUD_SEMANTICA);
+  } catch (error) {
+    // Fail-soft: si el índice todavía no terminó de construirse en Atlas
+    // (status PENDING) o cualquier otro problema transitorio, el
+    // retrieval sigue funcionando solo con texto — nunca se cae la
+    // respuesta entera por esto.
+    logger.warn(`[knowledgeRetrieval] $vectorSearch falló sobre ${Model.collection.name} (se continúa solo con texto): ${error.message}`);
+    return [];
+  }
+};
+
+/** Une candidatos de texto + semántico por `_id`, sin duplicar. */
+const combinarCandidatos = (deTexto, deSemantico) => {
+  const porId = new Map(deTexto.map((doc) => [String(doc._id), doc]));
+  for (const doc of deSemantico) {
+    if (!porId.has(String(doc._id))) porId.set(String(doc._id), doc);
+  }
+  return [...porId.values()];
+};
+
 /**
  * Busca Policies y FAQs elegibles para un negocio — hard filters de
  * tenant+status+vigencia SIEMPRE aplicados; `texto`/`productIds`/
@@ -73,24 +136,80 @@ const buscarConocimiento = async (businessId, texto, { productIds = [], channelI
     ...(channelId ? [{ 'scope.channelIds': channelId }] : []),
   ];
 
-  const queryPolicy = { ...filtroElegible, $or: scopeOrPolicy };
-  const queryFAQ = { ...filtroElegible, $or: scopeOrFAQ };
+  // Filtro ESTRUCTURAL puro (tenant+status+vigencia+scope), SIN $text —
+  // este es el que se le pasa a $vectorSearch (Bloque 3, §53): Atlas no
+  // combina $text y $vectorSearch en la misma etapa, así que la búsqueda
+  // semántica corre como una consulta aparte con este mismo filtro, nunca
+  // uno más permisivo.
+  const queryEstructuralPolicy = { ...filtroElegible, $or: scopeOrPolicy };
+  const queryEstructuralFAQ = { ...filtroElegible, $or: scopeOrFAQ };
 
   const hayTexto = Boolean(texto && texto.trim());
-  if (hayTexto) {
-    queryPolicy.$text = { $search: texto };
-    queryFAQ.$text = { $search: texto };
+
+  const queryTextoPolicy = hayTexto ? { ...queryEstructuralPolicy, $text: { $search: texto } } : null;
+  const queryTextoFAQ = hayTexto ? { ...queryEstructuralFAQ, $text: { $search: texto } } : null;
+
+  const proyeccionTexto = { score: { $meta: 'textScore' } };
+
+  // Sin texto: mismo comportamiento de siempre (Etapa 3), sin búsqueda
+  // semántica (no hay ninguna query que embeber) — orden por priority.
+  if (!hayTexto) {
+    const [policies, faqs] = await Promise.all([
+      Policy.find(queryEstructuralPolicy).sort({ priority: -1 }).limit(LIMITE_CANDIDATOS).lean(),
+      FAQ.find(queryEstructuralFAQ).sort({ priority: -1 }).limit(LIMITE_CANDIDATOS).lean(),
+    ]);
+    return { policies, faqs };
   }
 
-  const proyeccion = hayTexto ? { score: { $meta: 'textScore' } } : {};
-  const orden = hayTexto ? { score: { $meta: 'textScore' } } : { priority: -1 };
-
-  const [policies, faqs] = await Promise.all([
-    Policy.find(queryPolicy, proyeccion).sort(orden).limit(LIMITE_CANDIDATOS).lean(),
-    FAQ.find(queryFAQ, proyeccion).sort(orden).limit(LIMITE_CANDIDATOS).lean(),
+  // Con texto: corre $text y $vectorSearch en paralelo, se combinan sin
+  // duplicar. Un fallo generando el embedding de la query (OpenAI caído)
+  // no tumba nada — buscarSemantico() ya devuelve [] en ese caso, el
+  // resultado final queda igual al de antes de este bloque (solo texto).
+  const [queryEmbedding, policiesTexto, faqsTexto] = await Promise.all([
+    generarEmbedding(texto).catch((error) => {
+      logger.warn(`[knowledgeRetrieval] No se pudo generar el embedding de la query (se continúa solo con texto): ${error.message}`);
+      return null;
+    }),
+    Policy.find(queryTextoPolicy, proyeccionTexto).sort({ score: { $meta: 'textScore' } }).limit(LIMITE_CANDIDATOS).lean(),
+    FAQ.find(queryTextoFAQ, proyeccionTexto).sort({ score: { $meta: 'textScore' } }).limit(LIMITE_CANDIDATOS).lean(),
   ]);
 
-  return { policies, faqs };
+  const [policiesSemantico, faqsSemantico] = await Promise.all([
+    buscarSemantico(Policy, 'policy_vector_index', queryEstructuralPolicy, queryEmbedding),
+    buscarSemantico(FAQ, 'faq_vector_index', queryEstructuralFAQ, queryEmbedding),
+  ]);
+
+  return {
+    policies: combinarCandidatos(policiesTexto, policiesSemantico),
+    faqs: combinarCandidatos(faqsTexto, faqsSemantico),
+  };
+};
+
+/**
+ * Bloque 3 (§45-51, 20/sep/2026) — top-K chunks del PDF del negocio, vía
+ * $vectorSearch (nunca $text: los chunks no tienen índice de texto, la
+ * ingesta los pensó para retrieval semántico desde el día uno). Filtro
+ * estructural: SOLO el chunk activo de ESTE negocio (`active` es el único
+ * campo que decide si un chunk participa, ver businessDocumentChunk.model.js)
+ * — nunca un $lookup a BusinessDocument.
+ */
+const buscarChunksDocumento = async (businessId, texto) => {
+  if (!texto || !texto.trim()) return [];
+
+  const queryEmbedding = await generarEmbedding(texto).catch((error) => {
+    logger.warn(`[knowledgeRetrieval] No se pudo generar el embedding de la query para chunks del PDF: ${error.message}`);
+    return null;
+  });
+  if (!queryEmbedding) return [];
+
+  const resultados = await buscarSemantico(
+    BusinessDocumentChunk,
+    'chunk_vector_index',
+    { business: businessId, active: true },
+    queryEmbedding
+  );
+
+  return resultados.slice(0, K_CHUNKS_DOCUMENTO);
 };
 
 // ---------------------------------------------------------------------
@@ -230,7 +349,19 @@ const detectarConflictoConFAQIndependiente = (policyGanadora, faqsRankeadas) => 
  */
 const resolverConocimiento = async (businessId, texto, contexto = {}) => {
   const traceId = `kb_${new mongoose.Types.ObjectId().toHexString()}`;
-  const { policies, faqs } = await buscarConocimiento(businessId, texto, contexto);
+  const [{ policies, faqs }, documentChunksCrudos] = await Promise.all([
+    buscarConocimiento(businessId, texto, contexto),
+    // Bloque 3 (§45-51, 20/sep/2026) — RAG del PDF, mismo punto único de
+    // resolución que Policy/FAQ.
+    buscarChunksDocumento(businessId, texto),
+  ]);
+
+  // Fase 2, punto 5 (§52/§54, 20/sep/2026) — barrera de código, no de
+  // prompt: un chunk del PDF que menciona precio/stock de un producto que
+  // SÍ existe en el catálogo estructurado se descarta acá, ANTES de que
+  // el resultado llegue a la tool/al modelo. Nunca al revés (Policy/FAQ
+  // no pasan por este filtro, ver priceStockGuard.service.js).
+  const documentChunks = await descartarClaimsDePrecioStockDesactualizados(documentChunksCrudos, businessId);
 
   const policiesRankeadas = rankearPolicies(policies);
   const faqsRankeadas = rankearFAQs(faqs, policiesRankeadas);
@@ -254,6 +385,11 @@ const resolverConocimiento = async (businessId, texto, contexto = {}) => {
   return {
     policies: policiesRankeadas,
     faqs: faqsRankeadas,
+    // Orden por similitud (ya viene ordenado de buscarSemantico/Atlas) —
+    // sin precedencia propia todavía, a diferencia de policies/faqs (acá
+    // no hay un concepto de "prioridad" declarada por el dueño del
+    // negocio, solo relevancia semántica).
+    documentChunks: documentChunks.map((c) => ({ text: c.text, page: c.page, score: c.score })),
     conflictDetected,
     needsClarification,
     traceId,
@@ -262,5 +398,6 @@ const resolverConocimiento = async (businessId, texto, contexto = {}) => {
 
 module.exports = {
   buscarConocimiento,
+  buscarChunksDocumento,
   resolverConocimiento,
 };

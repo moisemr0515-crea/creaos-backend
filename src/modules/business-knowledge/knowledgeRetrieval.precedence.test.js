@@ -7,6 +7,10 @@ const Business = require('../businesses/business.model');
 const Product = require('../products/product.model');
 const Policy = require('./policy.model');
 const FAQ = require('./faq.model');
+
+// Bloque 3 (§53, 20/sep/2026) — mismo motivo que knowledgeRetrieval.service.test.js.
+jest.mock('../../utils/embeddings', () => ({ generarEmbedding: jest.fn().mockResolvedValue(null) }));
+
 const { resolverConocimiento } = require('./knowledgeRetrieval.service');
 
 const MONGO_URI = 'mongodb://localhost:27017/creaos_test_knowledge_precedence';

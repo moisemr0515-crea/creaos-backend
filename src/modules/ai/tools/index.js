@@ -418,6 +418,11 @@ const searchBusinessKnowledge = async (args, { conversation, business }) => {
       answer: f.answer,
       category: f.category,
     })),
+    // Bloque 3 de la auditoría Business Brain (§45-51/§53, 20/sep/2026) —
+    // RAG del PDF, mismo punto único de resolución que policies/faqs de
+    // arriba. `page` viaja para que el modelo pueda citar "según la
+    // página X del documento" si hace falta — best-effort, puede ser null.
+    documentChunks: resultado.documentChunks.map((c) => ({ text: c.text, page: c.page })),
     conflictDetected: resultado.conflictDetected,
     needsClarification: resultado.needsClarification,
   };
@@ -758,10 +763,12 @@ const TOOL_REGISTRY = [
   {
     name: 'search_business_knowledge',
     description:
-      'Busca políticas (garantías, cambios, devoluciones, pagos, reservas, cancelaciones, etc.) y preguntas ' +
-      'frecuentes AUTORIZADAS de este negocio. Úsala SIEMPRE que el lead pregunte por una regla, condición, ' +
-      'plazo, requisito, o algo que podría estar cubierto por una política o FAQ del negocio — nunca respondas ' +
-      'ese tipo de pregunta de memoria ni inventando una regla que esta herramienta no confirmó.',
+      'Busca políticas (garantías, cambios, devoluciones, pagos, reservas, cancelaciones, etc.), preguntas ' +
+      'frecuentes AUTORIZADAS, y contenido del documento/PDF que este negocio cargó. Úsala SIEMPRE que el lead ' +
+      'pregunte por una regla, condición, plazo, requisito, algo que podría estar cubierto por una política o ' +
+      'FAQ del negocio, o cualquier información general del negocio que no sea precio/stock de un producto (para ' +
+      'eso usá get_price/check_stock, nunca lo que diga el documento) — nunca respondas ese tipo de pregunta de ' +
+      'memoria ni inventando algo que esta herramienta no confirmó.',
     inputSchema: {
       type: 'object',
       properties: {

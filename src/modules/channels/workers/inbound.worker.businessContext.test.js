@@ -33,6 +33,12 @@ const InboundEvent = require('../inboundEvent.model');
 const WhatsAppChannel = require('../whatsappChannel.model');
 const Pipeline = require('../../pipeline/pipeline.model');
 const Product = require('../../products/product.model');
+
+// Bloque 3 (§53, 20/sep/2026) — search_business_knowledge ahora pide un
+// embedding real de la query (retrieval semántico) — se mockea para no
+// pegarle a OpenAI en este suite.
+jest.mock('../../../utils/embeddings', () => ({ generarEmbedding: jest.fn().mockResolvedValue(null) }));
+
 const aiService = require('../../ai/ai.service');
 const subscriptionService = require('../../subscriptions/subscription.service');
 const { processInboundJob } = require('./inbound.worker');

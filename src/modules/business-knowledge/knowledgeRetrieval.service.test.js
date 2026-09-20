@@ -11,6 +11,15 @@ const Product = require('../products/product.model');
 const WhatsAppChannel = require('../channels/whatsappChannel.model');
 const Policy = require('./policy.model');
 const FAQ = require('./faq.model');
+
+// Bloque 3 (§53, 20/sep/2026) — buscarConocimiento() con `texto` ahora
+// pide un embedding de la query para la mitad semántica del retrieval.
+// Se mockea a null acá (Mongo local no soporta $vectorSearch de todas
+// formas, ver comentario del archivo de arriba) — este suite se queda
+// enfocado en su contrato de siempre: los hard filters textuales. El
+// retrieval semántico en sí tiene su propio test dedicado.
+jest.mock('../../utils/embeddings', () => ({ generarEmbedding: jest.fn().mockResolvedValue(null) }));
+
 const { buscarConocimiento } = require('./knowledgeRetrieval.service');
 
 const MONGO_URI = 'mongodb://localhost:27017/creaos_test_knowledge_retrieval';

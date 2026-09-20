@@ -137,6 +137,12 @@ const faqSchema = new mongoose.Schema(
 
     version: { type: Number, default: 1, min: 1 },
 
+    // Bloque 3 de la auditoría Business Brain (§53, 20/sep/2026) — mismo
+    // criterio exacto que Policy.embedding (ver policy.model.js): capa
+    // adicional sobre el matching textual, generada en faq.service.js,
+    // fail-soft (null si falló o no se generó todavía).
+    embedding: { type: [Number], default: null },
+
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   },

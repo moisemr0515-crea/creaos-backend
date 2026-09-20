@@ -2,6 +2,29 @@ const Policy = require('./policy.model');
 const Product = require('../products/product.model');
 const WhatsAppChannel = require('../channels/whatsappChannel.model');
 const { AppError } = require('../../middleware/error.middleware');
+const { generarEmbedding } = require('../../utils/embeddings');
+const logger = require('../../utils/logger');
+
+// Bloque 3 de la auditoría Business Brain (§53, 20/sep/2026) — mismos
+// campos que ya indexa el $text de policy.model.js (title/description/
+// statement/customerFacingText/tags), concatenados para el embedding.
+// Fail-soft a propósito (mismo criterio que generarResumenPdf() en
+// business.service.js): si OpenAI falla, la Policy se guarda igual con
+// embedding:null — sigue siendo encontrable por texto, solo pierde el
+// matching semántico hasta el próximo edit exitoso.
+const textoParaEmbedding = (policy) =>
+  [policy.title, policy.description, policy.statement, policy.customerFacingText, ...(policy.tags || [])]
+    .filter(Boolean)
+    .join('\n');
+
+const generarEmbeddingSiPosible = async (policy) => {
+  try {
+    return await generarEmbedding(textoParaEmbedding(policy));
+  } catch (error) {
+    logger.warn(`[policy.service] No se pudo generar el embedding de la Policy ${policy._id || '(nueva)'}: ${error.message}`);
+    return null;
+  }
+};
 
 // CREA SALES AI™ — C.2 Business Brain: Policies + FAQ V1. Etapa 3/11
 // (CRUD con hard filters de tenant — el retrieval para la IA, con
@@ -55,6 +78,7 @@ const crearPolicy = async (businessId, actor, data) => {
     createdBy: actor?._id ?? null,
     updatedBy: actor?._id ?? null,
   });
+  policy.embedding = await generarEmbeddingSiPosible(policy);
 
   await policy.save();
   return policy;
@@ -116,7 +140,13 @@ const actualizarPolicy = async (businessId, policyId, actor, data) => {
 
   Object.assign(policy, data);
   policy.updatedBy = actor?._id ?? null;
-  if (huboContenidoRelevante) policy.version += 1;
+  if (huboContenidoRelevante) {
+    policy.version += 1;
+    // Mismo criterio que el incremento de version: solo se regenera el
+    // embedding cuando cambió contenido real (title/statement/etc.), no
+    // en un edit puramente administrativo (ej. solo `priority`).
+    policy.embedding = await generarEmbeddingSiPosible(policy);
+  }
 
   await policy.save();
   return policy;

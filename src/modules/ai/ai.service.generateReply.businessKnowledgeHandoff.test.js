@@ -18,6 +18,13 @@ const Business = require('../businesses/business.model');
 const Lead = require('../leads/lead.model');
 const Policy = require('../business-knowledge/policy.model');
 const Conversation = require('./conversation.model');
+
+// Bloque 3 (§53, 20/sep/2026) — search_business_knowledge ahora pide un
+// embedding real de la query (retrieval semántico) — se mockea para no
+// pegarle a OpenAI en este suite (foco: el loop de tool-calling end-to-end,
+// no el retrieval semántico en sí, que tiene su propio test dedicado).
+jest.mock('../../utils/embeddings', () => ({ generarEmbedding: jest.fn().mockResolvedValue(null) }));
+
 const aiService = require('./ai.service');
 
 const MONGO_URI = 'mongodb://localhost:27017/creaos_test_ai_service_business_knowledge_handoff';
@@ -154,6 +161,7 @@ describe('ai.service#generateReply() — CREA SALES AI™ C.2 (fallback + handof
       success: true,
       policies: [],
       faqs: [],
+      documentChunks: [],
       conflictDetected: false,
       needsClarification: false,
     });
