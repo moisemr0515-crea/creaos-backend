@@ -2,6 +2,8 @@ const OpenAI = require('openai');
 const { OPENAI_API_KEY, OPENAI_MODEL, OPENAI_MODEL_CHEAP, AI_MODEL_ROUTING_ENABLED, AI_MAX_TOKENS, AI_TEMPERATURE } = require('../../config/env');
 const Conversation = require('./conversation.model');
 const Lead = require('../leads/lead.model');
+const Business = require('../businesses/business.model');
+const WhatsAppChannel = require('../channels/whatsappChannel.model');
 const { AppError } = require('../../middleware/error.middleware');
 const channelService = require('../channels/channel.service');
 // Se requiere el módulo completo (no se destructura subirBuffer acá) para
@@ -675,9 +677,62 @@ const registrarFuentesDeConocimiento = (nombreTool, result, knowledgeSources) =>
   }
 };
 
+/**
+ * Defensa en profundidad para el runtime de IA. Los callers actuales ya
+ * resuelven `business` del lado servidor, pero generateReply() no debe confiar
+ * únicamente en esa transitividad: antes de construir el prompt o habilitar
+ * tools verifica que todos los documentos persistidos pertenecen al mismo
+ * negocio.
+ *
+ * Compatibilidad histórica:
+ * - Conversation.tenantId sigue siendo opcional; si falta, `business` (campo
+ *   requerido desde siempre) continúa siendo la fuente de verdad.
+ * - Conversation.whatsappChannel también sigue siendo opcional. Solo se
+ *   valida cuando existe; no se fuerza una reasignación para conversaciones
+ *   antiguas o de canales no WhatsApp.
+ */
+const validarContextoTenantDeGenerateReply = async ({ conversation, business, lead }) => {
+  const expectedBusinessId = business?._id;
+  const failTenantScope = (reason) => {
+    logger.error('[ai.service] generateReply bloqueado por inconsistencia de tenant', {
+      reason,
+      conversationId: conversation?._id ? String(conversation._id) : undefined,
+    });
+    throw new AppError('Inconsistencia interna de aislamiento de tenant', 500);
+  };
+
+  if (!expectedBusinessId) failTenantScope('missing_expected_business');
+  if (String(conversation.business) !== String(expectedBusinessId)) {
+    failTenantScope('conversation_business_mismatch');
+  }
+  if (conversation.tenantId && String(conversation.tenantId) !== String(expectedBusinessId)) {
+    failTenantScope('conversation_tenant_mismatch');
+  }
+  if (!lead?._id || String(conversation.lead) !== String(lead._id)) {
+    failTenantScope('conversation_lead_mismatch');
+  }
+
+  const [businessExists, leadExists, channelExists] = await Promise.all([
+    Business.exists({ _id: expectedBusinessId, isActive: true }),
+    Lead.exists({ _id: lead._id, business: expectedBusinessId, isDeleted: false }),
+    conversation.whatsappChannel
+      ? WhatsAppChannel.exists({
+        _id: conversation.whatsappChannel,
+        tenantId: expectedBusinessId,
+        businessId: expectedBusinessId,
+      })
+      : Promise.resolve(true),
+  ]);
+
+  if (!businessExists) failTenantScope('business_not_active_or_missing');
+  if (!leadExists) failTenantScope('lead_business_mismatch');
+  if (!channelExists) failTenantScope('whatsapp_channel_business_mismatch');
+};
+
 const generateReply = async (conversationId, business, lead) => {
   const conversation = await Conversation.findById(conversationId);
   if (!conversation) throw new AppError('Conversación no encontrada', 404);
+  await validarContextoTenantDeGenerateReply({ conversation, business, lead });
   const initialMessageCount = conversation.messages.length;
 
   // PR37 del blueprint de Fase 2 — pasa la calificación real ya persistida
