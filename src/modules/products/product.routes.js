@@ -7,6 +7,7 @@ const { injectTenant } = require('../../middleware/tenant.middleware');
 const { checkPermission } = require('../../middleware/rbac.middleware');
 const { AppError } = require('../../middleware/error.middleware');
 const { traducirErroresDeMulter } = require('../../middleware/uploadErrors.middleware');
+const { validarContenidoArchivo } = require('../../middleware/fileContentValidation.middleware');
 
 // CREA Product Intelligence™ V1.0 — Etapa 3/10. Solo el CRUD de gestión
 // manual (documento maestro §9) — los 3 endpoints conceptuales de
@@ -70,8 +71,8 @@ router.post('/', checkPermission('products:create'), controller.createProduct);
 // Preview requiere solo lectura (no persiste nada); confirmar sí requiere
 // permiso de creación, igual que un alta manual — documento §10.2: "NO
 // importar automáticamente sin confirmación".
-router.post('/import/preview', checkPermission('products:read'), uploadImportFile.single('file'), importController.previewImport);
-router.post('/import/confirm', checkPermission('products:create'), uploadImportFile.single('file'), importController.confirmImport);
+router.post('/import/preview', checkPermission('products:read'), uploadImportFile.single('file'), validarContenidoArchivo(['csv', 'xlsx', 'xls']), importController.previewImport);
+router.post('/import/confirm', checkPermission('products:create'), uploadImportFile.single('file'), validarContenidoArchivo(['csv', 'xlsx', 'xls']), importController.confirmImport);
 
 router.get('/:id', checkPermission('products:read'), controller.getProduct);
 router.put('/:id', checkPermission('products:update'), controller.updateProduct);
@@ -81,6 +82,7 @@ router.delete('/:id', checkPermission('products:delete'), controller.deactivateP
 router.post('/:id/photos',
   checkPermission('products:update'),
   traducirErroresDeMulter(uploadProductPhoto.single('photo'), { campoLegible: 'la foto', limiteLegible: '5MB' }),
+  validarContenidoArchivo(['jpeg', 'png', 'webp']),
   controller.uploadProductPhoto
 );
 router.delete('/:id/photos/:mediaId', checkPermission('products:update'), controller.deleteProductPhoto);

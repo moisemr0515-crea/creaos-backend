@@ -5,6 +5,7 @@ const { authenticate } = require('../../middleware/auth.middleware');
 const { injectTenant } = require('../../middleware/tenant.middleware');
 const { checkPermission } = require('../../middleware/rbac.middleware');
 const { AppError } = require('../../middleware/error.middleware');
+const { validarContenidoArchivo } = require('../../middleware/fileContentValidation.middleware');
 
 const router = Router();
 
@@ -31,7 +32,7 @@ const upload = multer({
 
 router.use(authenticate, injectTenant);
 
-router.post('/', checkPermission('leads:create'), upload.single('file'), controller.uploadImport);
+router.post('/', checkPermission('leads:create'), upload.single('file'), validarContenidoArchivo(['csv', 'xlsx', 'xls']), controller.uploadImport);
 router.get('/', checkPermission('leads:read'), controller.listImports);
 router.get('/:id', checkPermission('leads:read'), controller.getImport);
 

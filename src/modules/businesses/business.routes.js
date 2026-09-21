@@ -8,6 +8,7 @@ const { checkPermission } = require('../../middleware/rbac.middleware');
 const { validate } = require('../../middleware/validate.middleware');
 const { AppError } = require('../../middleware/error.middleware');
 const { traducirErroresDeMulter } = require('../../middleware/uploadErrors.middleware');
+const { validarContenidoArchivo } = require('../../middleware/fileContentValidation.middleware');
 const { requireCapability } = require('../../middleware/entitlement.middleware');
 
 const router = Router();
@@ -129,6 +130,7 @@ router.get('/current/assets/:campo/access',
 router.post('/current/logo',
   checkPermission('businesses:update'),
   traducirErroresDeMulter(uploadImagen.single('logo'), { campoLegible: 'el logo', limiteLegible: '5MB' }),
+  validarContenidoArchivo(['jpeg', 'png', 'webp']),
   controller.uploadLogo
 );
 
@@ -136,6 +138,7 @@ router.post('/current/logo',
 router.post('/current/photos',
   checkPermission('businesses:update'),
   traducirErroresDeMulter(uploadImagen.array('photos', 2), { campoLegible: 'las fotos de producto', limiteLegible: '5MB' }),
+  validarContenidoArchivo(['jpeg', 'png', 'webp']),
   controller.uploadPhotos
 );
 
@@ -143,6 +146,7 @@ router.post('/current/photos',
 router.post('/current/pdf',
   checkPermission('businesses:update'),
   traducirErroresDeMulter(uploadPdf.single('pdf'), { campoLegible: 'el PDF informativo', limiteLegible: '10MB' }),
+  validarContenidoArchivo(['pdf']),
   controller.uploadPdf
 );
 
@@ -150,6 +154,7 @@ router.post('/current/pdf',
 router.post('/current/presentation-video',
   checkPermission('businesses:update'),
   traducirErroresDeMulter(uploadVideoPresentacion.single('video'), { campoLegible: 'video de presentación', limiteLegible: '16MB' }),
+  validarContenidoArchivo(['mp4', '3gp']),
   controller.uploadPresentationVideo
 );
 
@@ -157,6 +162,7 @@ router.post('/current/presentation-video',
 router.post('/current/brochure',
   checkPermission('businesses:update'),
   traducirErroresDeMulter(uploadBrochure.single('brochure'), { campoLegible: 'el brochure', limiteLegible: '100MB' }),
+  validarContenidoArchivo(['pdf']),
   controller.uploadBrochure
 );
 
