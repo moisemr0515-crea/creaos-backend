@@ -17,6 +17,7 @@ jest.mock('../../utils/cloudinary', () => ({
     secure_url: 'https://cloudinary.test/negocio.pdf',
     public_id: 'creaos/businesses/x/pdf/abc',
     resource_type: 'raw',
+    type: 'authenticated',
   }),
   eliminarPorUrl: jest.fn().mockResolvedValue(undefined),
 }));
@@ -38,6 +39,7 @@ jest.mock('pdf-parse', () => ({
 // verdad.
 jest.mock('../business-knowledge/queues/indexBusinessDocument.queue');
 const { enqueueIndexBusinessDocument } = require('../business-knowledge/queues/indexBusinessDocument.queue');
+const { subirBuffer } = require('../../utils/cloudinary');
 
 const { subirPdf, openai } = require('./business.service');
 
@@ -63,7 +65,7 @@ describe('business.service#subirPdf() — guard de extracción vacía (BUG 3)', 
     createSpy = jest.spyOn(openai.chat.completions, 'create');
   });
 
-  const fileFalso = { buffer: Buffer.from('contenido-pdf-falso') };
+  const fileFalso = { buffer: Buffer.from('contenido-pdf-falso'), originalname: 'negocio.pdf', mimetype: 'application/pdf', size: 19 };
 
   test('extracción vacía (PDF escaneado/de imágenes): NO llama a OpenAI, NO guarda pdfSummary/pdfExtractedText, sí guarda pdfUrl', async () => {
     mockGetText.mockResolvedValue({ text: '' });
@@ -73,7 +75,12 @@ describe('business.service#subirPdf() — guard de extracción vacía (BUG 3)', 
     expect(createSpy).not.toHaveBeenCalled();
     expect(actualizado.pdfSummary).toBeNull();
     expect(actualizado.pdfExtractedText).toBeNull();
-    expect(actualizado.pdfUrl).toBe('https://cloudinary.test/negocio.pdf');
+    expect(actualizado.pdfUrl).toBe('cloudinary-authenticated://creaos/businesses/x/pdf/abc');
+    expect(subirBuffer).toHaveBeenCalledWith(fileFalso.buffer, expect.objectContaining({ type: 'authenticated' }));
+    expect(actualizado.pdfAsset).toEqual(expect.objectContaining({
+      deliveryType: 'authenticated', businessId: business._id, mimeType: 'application/pdf',
+      originalName: 'negocio.pdf', size: 19, status: 'active',
+    }));
     expect(actualizado.pdfUploadedAt).toBeInstanceOf(Date);
 
     const releido = await Business.findById(business._id);
@@ -157,6 +164,6 @@ describe('business.service#subirPdf() — guard de extracción vacía (BUG 3)', 
 
     // El flujo principal (lo único que le importa al dueño del negocio) sigue intacto.
     expect(actualizado.pdfSummary).toBe('Resumen.');
-    expect(actualizado.pdfUrl).toBe('https://cloudinary.test/negocio.pdf');
+    expect(actualizado.pdfUrl).toBe('cloudinary-authenticated://creaos/businesses/x/pdf/abc');
   });
 });

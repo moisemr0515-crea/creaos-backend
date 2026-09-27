@@ -34,6 +34,26 @@ const esWhatsappValido = (valor) => {
   return /^\+?[1-9]\d{7,14}$/.test(valor);
 };
 
+const businessAssetSchema = new mongoose.Schema(
+  {
+    publicId: { type: String, required: true },
+    resourceType: { type: String, required: true, enum: ['image', 'video', 'raw'] },
+    deliveryType: { type: String, required: true, enum: ['authenticated'] },
+    businessId: { type: mongoose.Schema.Types.ObjectId, required: true },
+    format: { type: String, default: null },
+    mimeType: { type: String, default: null },
+    originalName: { type: String, default: null },
+    size: { type: Number, min: 0, default: null },
+    status: { type: String, enum: ['active'], default: 'active' },
+    legacyPublicId: { type: String, default: null },
+    legacyResourceType: { type: String, default: null },
+    legacyRetiredAt: { type: Date, default: null },
+    createdAt: { type: Date, required: true },
+    updatedAt: { type: Date, required: true },
+  },
+  { _id: false }
+);
+
 const businessSchema = new mongoose.Schema(
   {
     name: {
@@ -76,26 +96,14 @@ const businessSchema = new mongoose.Schema(
       },
     },
     // P0 de seguridad (auditoría Business Brain, 19/sep/2026, Bloque 1) —
-    // logo/photos/pdfUrl/presentationVideoUrl/brochureUrl de arriba/abajo
-    // son URLs PÚBLICAS directas de Cloudinary (type:'upload'), accesibles
-    // por cualquiera sin pasar por la API — confirmado y reproducido en la
-    // Fase 1 del diagnóstico. Estos campos *Asset son la forma NUEVA
-    // (publicId/resourceType, sin URL) que consume
-    // businessAssetAccess.service.js para generar accesos firmados con
-    // expiración real — coexisten con los campos viejos a propósito
-    // (rollout en 3 pasos, ver docs/business-brain-audit/): Paso 1/2 los
-    // llenan en cada upload NUEVO sin tocar los campos viejos; Paso 3
-    // migra los documentos existentes (rename en Cloudinary a
-    // type:'authenticated', sin re-subir el archivo) y recién ahí los
-    // campos viejos quedan obsoletos. _id:false — son metadata interna,
-    // no documentos propios con su propio ciclo de vida.
-    logoAsset: {
-      publicId: { type: String, default: null },
-      resourceType: { type: String, default: null },
-      _id: false,
-    },
+    // Los campos URL legacy pueden contener antiguos assets type:'upload'.
+    // Todo upload nuevo nace type:'authenticated' y estos campos *Asset
+    // conservan la metadata verificable que usa businessAssetAccess para
+    // validar tenant y emitir accesos temporales. La migración one-off
+    // recrea los legacy como authenticated antes de retirar el origen.
+    logoAsset: { type: businessAssetSchema, default: undefined },
     photoAssets: {
-      type: [{ publicId: String, resourceType: String, _id: false }],
+      type: [businessAssetSchema],
       default: [],
     },
     // PDF informativo del negocio, usado para entrenar a la IA de ventas
@@ -103,11 +111,7 @@ const businessSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
-    pdfAsset: {
-      publicId: { type: String, default: null },
-      resourceType: { type: String, default: null },
-      _id: false,
-    },
+    pdfAsset: { type: businessAssetSchema, default: undefined },
     pdfExtractedText: {
       type: String,
       maxlength: 5000,
@@ -138,11 +142,7 @@ const businessSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
-    presentationVideoAsset: {
-      publicId: { type: String, default: null },
-      resourceType: { type: String, default: null },
-      _id: false,
-    },
+    presentationVideoAsset: { type: businessAssetSchema, default: undefined },
     brochureUrl: {
       type: String,
       default: null,
@@ -154,11 +154,7 @@ const businessSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
-    brochureAsset: {
-      publicId: { type: String, default: null },
-      resourceType: { type: String, default: null },
-      _id: false,
-    },
+    brochureAsset: { type: businessAssetSchema, default: undefined },
     industry: {
       type: String,
       trim: true,
@@ -346,6 +342,25 @@ businessSchema.pre('save', async function (next) {
 
   this.slug = slug;
   next();
+});
+
+// Los documentos legacy pueden conservar URLs /upload/ hasta que se ejecute
+// la migración explícita. Nunca se exponen por la API mientras sigan siendo
+// públicas; los assets nuevos usan un locator /authenticated/ u opaco y el
+// cliente obtiene la URL utilizable desde el endpoint tenant-scoped.
+businessSchema.set('toJSON', {
+  transform: (_doc, ret) => {
+    const esPublicaLegacy = (valor) => typeof valor === 'string' && /\/(image|video|raw)\/upload\//.test(valor);
+    ['logo', 'pdfUrl', 'presentationVideoUrl', 'brochureUrl'].forEach((campo) => {
+      if (esPublicaLegacy(ret[campo])) ret[campo] = `cloudinary-legacy-private://pending-migration/${campo}`;
+    });
+    if (Array.isArray(ret.photos)) {
+      ret.photos = ret.photos.map((url, index) => (
+        esPublicaLegacy(url) ? `cloudinary-legacy-private://pending-migration/photo-${index}` : url
+      ));
+    }
+    return ret;
+  },
 });
 
 const Business = mongoose.model('Business', businessSchema);

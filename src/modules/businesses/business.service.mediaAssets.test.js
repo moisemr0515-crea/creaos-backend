@@ -37,27 +37,31 @@ describe('business.service#subirVideoPresentacion()', () => {
     business = await Business.create({ name: 'CREA OS' });
   });
 
-  const videoFalso = { buffer: Buffer.from('contenido-video-falso'), originalname: 'presentacion.mp4' };
+  const videoFalso = { buffer: Buffer.from('contenido-video-falso'), originalname: 'presentacion.mp4', mimetype: 'video/mp4', size: 21 };
 
   test('sube a Cloudinary con resource_type:"video" y guarda presentationVideoUrl', async () => {
-    subirBuffer.mockResolvedValue({ secure_url: 'https://cloudinary.test/presentacion.mp4' });
+    subirBuffer.mockResolvedValue({ secure_url: 'https://cloudinary.test/video/authenticated/presentacion.mp4', public_id: 'video/presentacion', resource_type: 'video', format: 'mp4', type: 'authenticated' });
 
     const actualizado = await subirVideoPresentacion(business._id, videoFalso);
 
     expect(subirBuffer).toHaveBeenCalledWith(
       videoFalso.buffer,
-      expect.objectContaining({ resource_type: 'video', folder: expect.stringContaining(String(business._id)) }),
+      expect.objectContaining({ resource_type: 'video', type: 'authenticated', folder: expect.stringContaining(String(business._id)) }),
     );
-    expect(actualizado.presentationVideoUrl).toBe('https://cloudinary.test/presentacion.mp4');
+    expect(actualizado.presentationVideoUrl).toBe('https://cloudinary.test/video/authenticated/presentacion.mp4');
+    expect(actualizado.presentationVideoAsset).toEqual(expect.objectContaining({
+      publicId: 'video/presentacion', deliveryType: 'authenticated', businessId: business._id,
+      mimeType: 'video/mp4', originalName: 'presentacion.mp4', size: 21,
+    }));
 
     // Query independiente — no confiar solo en lo que devuelve la propia llamada.
     const releido = await Business.findById(business._id);
-    expect(releido.presentationVideoUrl).toBe('https://cloudinary.test/presentacion.mp4');
+    expect(releido.presentationVideoUrl).toBe('https://cloudinary.test/video/authenticated/presentacion.mp4');
   });
 
   test('no toca pdfUrl/pdfExtractedText/pdfSummary — son un concepto distinto', async () => {
     await Business.findByIdAndUpdate(business._id, { pdfUrl: 'https://cloudinary.test/viejo.pdf', pdfSummary: 'Resumen real' });
-    subirBuffer.mockResolvedValue({ secure_url: 'https://cloudinary.test/presentacion.mp4' });
+    subirBuffer.mockResolvedValue({ secure_url: 'https://cloudinary.test/video/authenticated/presentacion.mp4', public_id: 'video/presentacion', resource_type: 'video', type: 'authenticated' });
 
     const actualizado = await subirVideoPresentacion(business._id, videoFalso);
 
@@ -67,7 +71,7 @@ describe('business.service#subirVideoPresentacion()', () => {
 
   test('subir un video nuevo borra el anterior en Cloudinary (best-effort)', async () => {
     await Business.findByIdAndUpdate(business._id, { presentationVideoUrl: 'https://cloudinary.test/viejo.mp4' });
-    subirBuffer.mockResolvedValue({ secure_url: 'https://cloudinary.test/nuevo.mp4' });
+    subirBuffer.mockResolvedValue({ secure_url: 'https://cloudinary.test/video/authenticated/nuevo.mp4', public_id: 'video/nuevo', resource_type: 'video', type: 'authenticated' });
 
     await subirVideoPresentacion(business._id, videoFalso);
 
@@ -100,26 +104,30 @@ describe('business.service#subirBrochure()', () => {
     business = await Business.create({ name: 'CREA OS' });
   });
 
-  const brochureFalso = { buffer: Buffer.from('contenido-pdf-falso'), originalname: 'brochure-creaos.pdf' };
+  const brochureFalso = { buffer: Buffer.from('contenido-pdf-falso'), originalname: 'brochure-creaos.pdf', mimetype: 'application/pdf', size: 19 };
 
   test('sube a Cloudinary con resource_type:"raw" y guarda brochureUrl + brochureFilename (para el type:"document" de Gupshup)', async () => {
-    subirBuffer.mockResolvedValue({ secure_url: 'https://cloudinary.test/brochure.pdf' });
+    subirBuffer.mockResolvedValue({ secure_url: 'https://cloudinary.test/raw/authenticated/brochure.pdf', public_id: 'brochure/doc', resource_type: 'raw', format: 'pdf', type: 'authenticated' });
 
     const actualizado = await subirBrochure(business._id, brochureFalso);
 
     expect(subirBuffer).toHaveBeenCalledWith(
       brochureFalso.buffer,
-      expect.objectContaining({ resource_type: 'raw', format: 'pdf' }),
+      expect.objectContaining({ resource_type: 'raw', type: 'authenticated', format: 'pdf' }),
     );
-    expect(actualizado.brochureUrl).toBe('https://cloudinary.test/brochure.pdf');
+    expect(actualizado.brochureUrl).toBe('https://cloudinary.test/raw/authenticated/brochure.pdf');
     expect(actualizado.brochureFilename).toBe('brochure-creaos.pdf');
+    expect(actualizado.brochureAsset).toEqual(expect.objectContaining({
+      publicId: 'brochure/doc', deliveryType: 'authenticated', businessId: business._id,
+      mimeType: 'application/pdf', originalName: 'brochure-creaos.pdf', size: 19,
+    }));
 
     const releido = await Business.findById(business._id);
     expect(releido.brochureFilename).toBe('brochure-creaos.pdf');
   });
 
   test('NO extrae texto ni genera resumen — es un archivo para reenviar, no para leer (a diferencia de subirPdf())', async () => {
-    subirBuffer.mockResolvedValue({ secure_url: 'https://cloudinary.test/brochure.pdf' });
+    subirBuffer.mockResolvedValue({ secure_url: 'https://cloudinary.test/raw/authenticated/brochure.pdf', public_id: 'brochure/doc', resource_type: 'raw', type: 'authenticated' });
 
     const actualizado = await subirBrochure(business._id, brochureFalso);
 
@@ -129,7 +137,7 @@ describe('business.service#subirBrochure()', () => {
 
   test('subir un brochure nuevo borra el anterior en Cloudinary (best-effort)', async () => {
     await Business.findByIdAndUpdate(business._id, { brochureUrl: 'https://cloudinary.test/viejo.pdf' });
-    subirBuffer.mockResolvedValue({ secure_url: 'https://cloudinary.test/nuevo.pdf' });
+    subirBuffer.mockResolvedValue({ secure_url: 'https://cloudinary.test/raw/authenticated/nuevo.pdf', public_id: 'brochure/nuevo', resource_type: 'raw', type: 'authenticated' });
 
     await subirBrochure(business._id, brochureFalso);
 

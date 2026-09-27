@@ -13,14 +13,37 @@ const {
   DURACION_SEGUNDOS,
 } = require('./businessAssetAccess.service');
 
+const assetPrivado = (businessId = '1', overrides = {}) => ({
+  publicId: 'creaos/businesses/1/logo/abc',
+  resourceType: 'image',
+  deliveryType: 'authenticated',
+  businessId,
+  status: 'active',
+  ...overrides,
+});
+
 describe('businessAssetAccess.service — resolverAsset() / resolverFoto()', () => {
   test('documento YA migrado (tiene logoAsset): usa la forma nueva, tipoEntrega authenticated', () => {
-    const business = { logoAsset: { publicId: 'creaos/businesses/1/logo/abc', resourceType: 'image' } };
+    const business = { _id: '1', logoAsset: assetPrivado() };
     expect(resolverAsset(business, 'logo')).toEqual({
       publicId: 'creaos/businesses/1/logo/abc',
       resourceType: 'image',
       tipoEntrega: 'authenticated',
     });
+  });
+
+  test('metadata sin deliveryType/businessId (dual-write legacy defectuoso) no se trata como authenticated', () => {
+    const business = {
+      _id: '1',
+      logo: 'https://res.cloudinary.com/aoptlpqk/image/upload/v1/creaos/businesses/1/logo/abc.png',
+      logoAsset: { publicId: 'creaos/businesses/1/logo/abc', resourceType: 'image' },
+    };
+    expect(resolverAsset(business, 'logo')).toBeNull();
+  });
+
+  test('metadata authenticated de otro tenant se bloquea aun si llega al service', () => {
+    const business = { _id: 'tenant-a', logoAsset: assetPrivado('tenant-b') };
+    expect(() => resolverAsset(business, 'logo')).toThrow('El asset no pertenece a este negocio');
   });
 
   test('documento SIN migrar (solo tiene la URL vieja): cae al fallback, tipoEntrega upload', () => {
@@ -40,7 +63,7 @@ describe('businessAssetAccess.service — resolverAsset() / resolverFoto()', () 
   });
 
   test('resolverFoto(): usa photoAssets[index] si existe', () => {
-    const business = { photoAssets: [{ publicId: 'creaos/businesses/1/photos/a', resourceType: 'image' }] };
+    const business = { _id: '1', photoAssets: [assetPrivado('1', { publicId: 'creaos/businesses/1/photos/a' })] };
     expect(resolverFoto(business, 0)).toEqual({
       publicId: 'creaos/businesses/1/photos/a',
       resourceType: 'image',
@@ -64,11 +87,9 @@ describe('businessAssetAccess.service — resolverAsset() / resolverFoto()', () 
 });
 
 describe('businessAssetAccess.service — generarUrlDeAcceso()', () => {
-  test('tipoEntrega "upload" (todavía no migrado): devuelve la URL pública tal cual, sin firmar', () => {
+  test('tipoEntrega "upload" (todavía no migrado): falla cerrado y nunca reconstruye la URL pública', () => {
     const url = generarUrlDeAcceso({ publicId: 'creaos/x/y', resourceType: 'image', tipoEntrega: 'upload' });
-    expect(url).toContain('/image/upload/');
-    expect(url).toContain('creaos/x/y');
-    expect(url).not.toContain('expires_at');
+    expect(url).toBeNull();
   });
 
   test('tipoEntrega "authenticated": genera una URL firmada con expires_at real (no una constante)', () => {
@@ -99,17 +120,28 @@ describe('businessAssetAccess.service — generarUrlDeAcceso()', () => {
     const url = generarUrlDeAcceso({ publicId: 'creaos/x/doc.pdf', resourceType: 'raw', tipoEntrega: 'authenticated' });
     expect(url).toContain('format=pdf');
   });
+
+  test('respeta el format real persistido y una URL expirada no se reutiliza', () => {
+    const datos = { publicId: 'creaos/x/logo', resourceType: 'image', tipoEntrega: 'authenticated', format: 'webp' };
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-26T10:00:00Z'));
+    const primera = generarUrlDeAcceso(datos, 'display');
+    jest.setSystemTime(new Date('2026-09-26T10:16:00Z'));
+    const segunda = generarUrlDeAcceso(datos, 'display');
+    jest.useRealTimers();
+    expect(primera).toContain('format=webp');
+    expect(segunda).not.toBe(primera);
+  });
 });
 
 describe('businessAssetAccess.service — obtenerUrlDeAcceso() / obtenerUrlDeAccesoFoto() (integración de las 2 piezas)', () => {
-  test('negocio sin migrar, con URL vieja de brochure: devuelve una URL pública usable', () => {
+  test('negocio sin migrar, con URL vieja de brochure: falla cerrado hasta que sea migrado', () => {
     const business = { brochureUrl: 'https://res.cloudinary.com/aoptlpqk/raw/upload/v1/creaos/businesses/1/brochure/x.pdf' };
     const url = obtenerUrlDeAcceso(business, 'brochure');
-    expect(url).toContain('/raw/upload/');
+    expect(url).toBeNull();
   });
 
   test('negocio migrado, con brochureAsset: devuelve una URL firmada authenticated', () => {
-    const business = { brochureAsset: { publicId: 'creaos/businesses/1/brochure/x.pdf', resourceType: 'raw' } };
+    const business = { _id: '1', brochureAsset: assetPrivado('1', { publicId: 'creaos/businesses/1/brochure/x.pdf', resourceType: 'raw', format: 'pdf' }) };
     const url = obtenerUrlDeAcceso(business, 'brochure', 'send');
     expect(url).toContain('type=authenticated');
     expect(url).toContain('expires_at');
@@ -120,7 +152,7 @@ describe('businessAssetAccess.service — obtenerUrlDeAcceso() / obtenerUrlDeAcc
   });
 
   test('obtenerUrlDeAccesoFoto() con negocio migrado', () => {
-    const business = { photoAssets: [{ publicId: 'creaos/businesses/1/photos/a', resourceType: 'image' }] };
+    const business = { _id: '1', photoAssets: [assetPrivado('1', { publicId: 'creaos/businesses/1/photos/a' })] };
     const url = obtenerUrlDeAccesoFoto(business, 0);
     expect(url).toContain('type=authenticated');
   });

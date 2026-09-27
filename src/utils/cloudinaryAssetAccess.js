@@ -33,21 +33,18 @@ const EXTENSION_POR_TIPO = { image: 'jpg', video: 'mp4', raw: 'pdf' };
 
 /**
  * Genera la URL de acceso real para un asset ya resuelto. Firmada y con
- * expiración real si es type:'authenticated'; la URL pública tal cual si
- * todavía está en type:'upload' (P0 Bloque 1: mientras un documento de
- * negocio no pasó por el Paso 3 de la migración; los assets de producto de
- * Bloque 2 nacen directo `authenticated`, así que este caso nunca aplica
- * para ellos).
+ * expiración real si es type:'authenticated'. Cualquier otro delivery
+ * falla cerrado: nunca reconstruye ni entrega una URL pública permanente.
  */
 const generarUrlDeAcceso = (datos, proposito = 'display') => {
   if (!datos) return null;
   if (datos.tipoEntrega !== 'authenticated') {
-    return cloudinary.url(datos.publicId, { resource_type: datos.resourceType, secure: true });
+    return null;
   }
   const duracion = DURACION_SEGUNDOS[proposito] ?? DURACION_SEGUNDOS.display;
   return cloudinary.utils.private_download_url(
     datos.publicId,
-    EXTENSION_POR_TIPO[datos.resourceType] || 'jpg',
+    datos.format || EXTENSION_POR_TIPO[datos.resourceType] || 'jpg',
     {
       resource_type: datos.resourceType,
       type: 'authenticated',

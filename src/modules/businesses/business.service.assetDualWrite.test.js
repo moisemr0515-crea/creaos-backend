@@ -38,40 +38,73 @@ describe('business.service — dual-write de campos *Asset (subirLogo)', () => {
     business = await Business.create({ name: 'CREA OS' });
   });
 
-  const logoFalso = { buffer: Buffer.from('logo-falso') };
+  const logoFalso = { buffer: Buffer.from('logo-falso'), originalname: 'logo.png', mimetype: 'image/png', size: 10 };
 
   test('subir un logo nuevo puebla logoAsset con publicId/resourceType, sin tocar el campo logo viejo', async () => {
     subirBuffer.mockResolvedValue({
       secure_url: 'https://cloudinary.test/logo.png',
       public_id: 'creaos/businesses/x/logo/abc',
       resource_type: 'image',
+      type: 'authenticated',
     });
 
     const actualizado = await subirLogo(business._id, logoFalso);
 
-    expect(actualizado.logo).toBe('https://cloudinary.test/logo.png');
+    expect(actualizado.logo).toBe('cloudinary-authenticated://creaos/businesses/x/logo/abc');
+    expect(subirBuffer).toHaveBeenCalledWith(logoFalso.buffer, expect.objectContaining({ type: 'authenticated' }));
     expect(actualizado.logoAsset).toEqual(
-      expect.objectContaining({ publicId: 'creaos/businesses/x/logo/abc', resourceType: 'image' }),
+      expect.objectContaining({
+        publicId: 'creaos/businesses/x/logo/abc',
+        resourceType: 'image',
+        deliveryType: 'authenticated',
+        businessId: business._id,
+        mimeType: 'image/png',
+        originalName: 'logo.png',
+        size: 10,
+        status: 'active',
+        createdAt: expect.any(Date),
+        updatedAt: expect.any(Date),
+      }),
     );
 
     const releido = await Business.findById(business._id);
     expect(releido.logoAsset.publicId).toBe('creaos/businesses/x/logo/abc');
   });
 
+  test('si Cloudinary no confirma type:authenticated, no persiste metadata falsa', async () => {
+    subirBuffer.mockResolvedValue({
+      secure_url: 'https://res.cloudinary.com/demo/image/upload/v1/logo.png',
+      public_id: 'logo-publico',
+      resource_type: 'image',
+      type: 'upload',
+    });
+
+    await expect(subirLogo(business._id, logoFalso)).rejects.toThrow('Cloudinary no confirmó delivery authenticated');
+    const releido = await Business.findById(business._id);
+    expect(releido.logoAsset).toBeUndefined();
+    expect(releido.logo).toBeNull();
+  });
+
   test('reemplazar un logo que YA tiene logoAsset (documento migrado): borra por publicId/resourceType, NO por eliminarPorUrl()', async () => {
     await Business.findByIdAndUpdate(business._id, {
       logo: 'https://cloudinary.test/viejo.png',
-      logoAsset: { publicId: 'creaos/businesses/x/logo/viejo', resourceType: 'image' },
+      logoAsset: {
+        publicId: 'creaos/businesses/x/logo/viejo', resourceType: 'image', deliveryType: 'authenticated',
+        businessId: business._id, status: 'active', createdAt: new Date(), updatedAt: new Date(),
+      },
     });
     subirBuffer.mockResolvedValue({
       secure_url: 'https://cloudinary.test/nuevo.png',
       public_id: 'creaos/businesses/x/logo/nuevo',
       resource_type: 'image',
+      type: 'authenticated',
     });
 
     await subirLogo(business._id, logoFalso);
 
-    expect(cloudinary.uploader.destroy).toHaveBeenCalledWith('creaos/businesses/x/logo/viejo', { resource_type: 'image' });
+    expect(cloudinary.uploader.destroy).toHaveBeenCalledWith('creaos/businesses/x/logo/viejo', {
+      resource_type: 'image', type: 'authenticated', invalidate: true,
+    });
     expect(eliminarPorUrl).not.toHaveBeenCalled();
   });
 
@@ -81,12 +114,31 @@ describe('business.service — dual-write de campos *Asset (subirLogo)', () => {
       secure_url: 'https://cloudinary.test/nuevo.png',
       public_id: 'creaos/businesses/x/logo/nuevo',
       resource_type: 'image',
+      type: 'authenticated',
     });
 
     await subirLogo(business._id, logoFalso);
 
     expect(eliminarPorUrl).toHaveBeenCalledWith('https://cloudinary.test/viejo-legacy.png', expect.anything());
     expect(cloudinary.uploader.destroy).not.toHaveBeenCalled();
+  });
+
+  test('un documento legacy nunca expone una URL /upload/ pública al serializarse para la API', async () => {
+    const legacy = await Business.findByIdAndUpdate(
+      business._id,
+      {
+        logo: 'https://res.cloudinary.com/demo/image/upload/v1/legacy/logo.png',
+        photos: ['https://res.cloudinary.com/demo/image/upload/v1/legacy/photo.jpg'],
+        pdfUrl: 'https://res.cloudinary.com/demo/raw/upload/v1/legacy/doc.pdf',
+      },
+      { new: true }
+    );
+
+    const json = legacy.toJSON();
+    expect(json.logo).toBe('cloudinary-legacy-private://pending-migration/logo');
+    expect(json.photos).toEqual(['cloudinary-legacy-private://pending-migration/photo-0']);
+    expect(json.pdfUrl).toBe('cloudinary-legacy-private://pending-migration/pdfUrl');
+    expect(JSON.stringify(json)).not.toContain('/upload/');
   });
 });
 
@@ -110,37 +162,46 @@ describe('business.service — dual-write de campos *Asset (subirFotos)', () => 
 
   test('subir 2 fotos puebla photoAssets en el mismo orden que photos', async () => {
     subirBuffer
-      .mockResolvedValueOnce({ secure_url: 'https://cloudinary.test/a.jpg', public_id: 'creaos/x/photos/a', resource_type: 'image' })
-      .mockResolvedValueOnce({ secure_url: 'https://cloudinary.test/b.jpg', public_id: 'creaos/x/photos/b', resource_type: 'image' });
+      .mockResolvedValueOnce({ secure_url: 'https://cloudinary.test/a.jpg', public_id: 'creaos/x/photos/a', resource_type: 'image', type: 'authenticated' })
+      .mockResolvedValueOnce({ secure_url: 'https://cloudinary.test/b.jpg', public_id: 'creaos/x/photos/b', resource_type: 'image', type: 'authenticated' });
 
     const actualizado = await subirFotos(business._id, [
-      { buffer: Buffer.from('a') },
-      { buffer: Buffer.from('b') },
+      { buffer: Buffer.from('a'), originalname: 'a.jpg', mimetype: 'image/jpeg', size: 1 },
+      { buffer: Buffer.from('b'), originalname: 'b.jpg', mimetype: 'image/jpeg', size: 1 },
     ]);
 
-    expect(actualizado.photos).toEqual(['https://cloudinary.test/a.jpg', 'https://cloudinary.test/b.jpg']);
+    expect(actualizado.photos).toEqual([
+      'cloudinary-authenticated://creaos/x/photos/a',
+      'cloudinary-authenticated://creaos/x/photos/b',
+    ]);
+    expect(subirBuffer).toHaveBeenCalledWith(expect.any(Buffer), expect.objectContaining({ type: 'authenticated' }));
     expect(actualizado.photoAssets).toEqual([
-      expect.objectContaining({ publicId: 'creaos/x/photos/a', resourceType: 'image' }),
-      expect.objectContaining({ publicId: 'creaos/x/photos/b', resourceType: 'image' }),
+      expect.objectContaining({ publicId: 'creaos/x/photos/a', resourceType: 'image', deliveryType: 'authenticated', businessId: business._id }),
+      expect.objectContaining({ publicId: 'creaos/x/photos/b', resourceType: 'image', deliveryType: 'authenticated', businessId: business._id }),
     ]);
   });
 
   test('reemplazar fotos ya migradas (con photoAssets): borra cada una por publicId, no por URL', async () => {
     await Business.findByIdAndUpdate(business._id, {
       photos: ['https://cloudinary.test/vieja.jpg'],
-      photoAssets: [{ publicId: 'creaos/x/photos/vieja', resourceType: 'image' }],
+      photoAssets: [{
+        publicId: 'creaos/x/photos/vieja', resourceType: 'image', deliveryType: 'authenticated',
+        businessId: business._id, status: 'active', createdAt: new Date(), updatedAt: new Date(),
+      }],
     });
-    subirBuffer.mockResolvedValue({ secure_url: 'https://cloudinary.test/nueva.jpg', public_id: 'creaos/x/photos/nueva', resource_type: 'image' });
+    subirBuffer.mockResolvedValue({ secure_url: 'https://cloudinary.test/nueva.jpg', public_id: 'creaos/x/photos/nueva', resource_type: 'image', type: 'authenticated' });
 
     await subirFotos(business._id, [{ buffer: Buffer.from('nueva') }]);
 
-    expect(cloudinary.uploader.destroy).toHaveBeenCalledWith('creaos/x/photos/vieja', { resource_type: 'image' });
+    expect(cloudinary.uploader.destroy).toHaveBeenCalledWith('creaos/x/photos/vieja', {
+      resource_type: 'image', type: 'authenticated', invalidate: true,
+    });
     expect(eliminarPorUrl).not.toHaveBeenCalled();
   });
 
   test('reemplazar fotos sin migrar (sin photoAssets): cae a eliminarPorUrl() por cada URL vieja', async () => {
     await Business.findByIdAndUpdate(business._id, { photos: ['https://cloudinary.test/vieja-legacy.jpg'] });
-    subirBuffer.mockResolvedValue({ secure_url: 'https://cloudinary.test/nueva.jpg', public_id: 'creaos/x/photos/nueva', resource_type: 'image' });
+    subirBuffer.mockResolvedValue({ secure_url: 'https://cloudinary.test/nueva.jpg', public_id: 'creaos/x/photos/nueva', resource_type: 'image', type: 'authenticated' });
 
     await subirFotos(business._id, [{ buffer: Buffer.from('nueva') }]);
 

@@ -1,5 +1,6 @@
 const OpenAI = require('openai');
 const { PDFParse } = require('pdf-parse');
+const path = require('path');
 const Business = require('./business.model');
 const { AppError } = require('../../middleware/error.middleware');
 const { cloudinary, subirBuffer, eliminarPorUrl } = require('../../utils/cloudinary');
@@ -28,6 +29,33 @@ const MAX_PDF_SUMMARY_LENGTH = 800;
 // contenido real de negocio (qué vende, precios, políticas) supera esto de
 // sobra; un PDF vacío/casi vacío nunca lo alcanza.
 const MIN_PDF_TEXT_LENGTH = 50;
+
+const crearMetadataAsset = (resultado, file, businessId) => {
+  if (resultado.type !== 'authenticated') {
+    throw new AppError('Cloudinary no confirmó delivery authenticated para el asset', 502);
+  }
+  const ahora = new Date();
+  return {
+    publicId: resultado.public_id,
+    resourceType: resultado.resource_type,
+    deliveryType: resultado.type,
+    businessId,
+    format: resultado.format || path.extname(file.originalname || '').slice(1).toLowerCase() || null,
+    mimeType: file.mimetype || null,
+    originalName: file.originalname || null,
+    size: Number.isFinite(file.size) ? file.size : file.buffer?.length ?? null,
+    status: 'active',
+    createdAt: ahora,
+    updatedAt: ahora,
+  };
+};
+
+// Campo de compatibilidad para que el cliente sepa que el asset existe y
+// solicite /assets/:campo/access. Nunca conserva una URL /upload/ pública.
+const crearLocatorPrivado = (resultado) =>
+  resultado.secure_url?.includes('/authenticated/')
+    ? resultado.secure_url
+    : `cloudinary-authenticated://${resultado.public_id}`;
 
 /**
  * Resume el texto del PDF a lo esencial para un agente de ventas
@@ -154,7 +182,11 @@ const actualizarSettings = async (businessId, { timezone, language, notification
 const eliminarAssetAnterior = async (assetAnterior, urlAnteriorLegacy) => {
   if (assetAnterior?.publicId) {
     try {
-      await cloudinary.uploader.destroy(assetAnterior.publicId, { resource_type: assetAnterior.resourceType });
+      await cloudinary.uploader.destroy(assetAnterior.publicId, {
+        resource_type: assetAnterior.resourceType,
+        type: assetAnterior.deliveryType === 'authenticated' ? 'authenticated' : 'upload',
+        invalidate: true,
+      });
     } catch (error) {
       logger.warn(`Error al borrar asset de Cloudinary (${assetAnterior.publicId}): ${error.message}`);
     }
@@ -173,18 +205,17 @@ const subirLogo = async (businessId, file) => {
   const resultado = await subirBuffer(file.buffer, {
     folder: `creaos/businesses/${businessId}/logo`,
     resource_type: 'image',
+    type: 'authenticated',
     overwrite: true,
   });
 
   const negocio = await Business.findByIdAndUpdate(
     businessId,
     {
-      logo: resultado.secure_url,
-      // P0 de seguridad (Bloque 1, 19/sep/2026) — dual-write mientras el
-      // Paso 3 de la migración no corrió: cada upload NUEVO ya deja la
-      // forma que consume businessAssetAccess.service.js, sin tocar el
-      // campo viejo (rollout en 3 pasos, ver docs/business-brain-audit/).
-      logoAsset: { publicId: resultado.public_id, resourceType: resultado.resource_type },
+      logo: crearLocatorPrivado(resultado),
+      // Metadata autoritativa del asset authenticated real. `logo` solo
+      // conserva un locator no público para compatibilidad del cliente.
+      logoAsset: crearMetadataAsset(resultado, file, businessId),
     },
     { new: true, runValidators: true }
   ).populate('createdBy', 'name email');
@@ -209,6 +240,7 @@ const subirFotos = async (businessId, files) => {
       subirBuffer(file.buffer, {
         folder: `creaos/businesses/${businessId}/photos`,
         resource_type: 'image',
+        type: 'authenticated',
       })
     )
   );
@@ -216,8 +248,8 @@ const subirFotos = async (businessId, files) => {
   const negocio = await Business.findByIdAndUpdate(
     businessId,
     {
-      photos: resultados.map((r) => r.secure_url),
-      photoAssets: resultados.map((r) => ({ publicId: r.public_id, resourceType: r.resource_type })),
+      photos: resultados.map(crearLocatorPrivado),
+      photoAssets: resultados.map((r, i) => crearMetadataAsset(r, files[i], businessId)),
     },
     { new: true, runValidators: true }
   ).populate('createdBy', 'name email');
@@ -241,6 +273,7 @@ const subirPdf = async (businessId, file) => {
   const resultado = await subirBuffer(file.buffer, {
     folder: `creaos/businesses/${businessId}/pdf`,
     resource_type: 'raw',
+    type: 'authenticated',
     format: 'pdf',
     overwrite: true,
   });
@@ -284,8 +317,8 @@ const subirPdf = async (businessId, file) => {
   const negocio = await Business.findByIdAndUpdate(
     businessId,
     {
-      pdfUrl: resultado.secure_url,
-      pdfAsset: { publicId: resultado.public_id, resourceType: resultado.resource_type },
+      pdfUrl: crearLocatorPrivado(resultado),
+      pdfAsset: crearMetadataAsset(resultado, file, businessId),
       pdfExtractedText: extraccionExitosa ? textoLimpio.slice(0, MAX_PDF_TEXT_LENGTH) : null,
       pdfSummary: resumen,
       pdfUploadedAt: new Date(),
@@ -335,14 +368,15 @@ const subirVideoPresentacion = async (businessId, file) => {
   const resultado = await subirBuffer(file.buffer, {
     folder: `creaos/businesses/${businessId}/presentation-video`,
     resource_type: 'video',
+    type: 'authenticated',
     overwrite: true,
   });
 
   const negocio = await Business.findByIdAndUpdate(
     businessId,
     {
-      presentationVideoUrl: resultado.secure_url,
-      presentationVideoAsset: { publicId: resultado.public_id, resourceType: resultado.resource_type },
+      presentationVideoUrl: crearLocatorPrivado(resultado),
+      presentationVideoAsset: crearMetadataAsset(resultado, file, businessId),
     },
     { new: true, runValidators: true }
   ).populate('createdBy', 'name email');
@@ -372,6 +406,7 @@ const subirBrochure = async (businessId, file) => {
   const resultado = await subirBuffer(file.buffer, {
     folder: `creaos/businesses/${businessId}/brochure`,
     resource_type: 'raw',
+    type: 'authenticated',
     format: 'pdf',
     overwrite: true,
   });
@@ -379,9 +414,9 @@ const subirBrochure = async (businessId, file) => {
   const negocio = await Business.findByIdAndUpdate(
     businessId,
     {
-      brochureUrl: resultado.secure_url,
+      brochureUrl: crearLocatorPrivado(resultado),
       brochureFilename: file.originalname,
-      brochureAsset: { publicId: resultado.public_id, resourceType: resultado.resource_type },
+      brochureAsset: crearMetadataAsset(resultado, file, businessId),
     },
     { new: true, runValidators: true }
   ).populate('createdBy', 'name email');

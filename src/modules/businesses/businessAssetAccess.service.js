@@ -1,5 +1,6 @@
 const { extraerPublicId } = require('../../utils/cloudinary');
 const { DURACION_SEGUNDOS, generarUrlDeAcceso } = require('../../utils/cloudinaryAssetAccess');
+const { AppError } = require('../../middleware/error.middleware');
 
 /**
  * P0 de seguridad (auditoría Business Brain, 19/sep/2026, Bloque 1) —
@@ -12,8 +13,8 @@ const { DURACION_SEGUNDOS, generarUrlDeAcceso } = require('../../utils/cloudinar
  * extraído al construir productAssetAccess.service.js) — es 100% genérico,
  * no tiene nada de "business". Este archivo se queda con lo que SÍ es
  * específico de negocio: RESOLVER {publicId, resourceType, tipoEntrega} a
- * partir de un documento Business (dual-mode: campo *Asset nuevo vs. URL
- * vieja, ver resolverAsset()/resolverFoto() abajo).
+ * partir de un documento Business. Los campos legacy se reconocen para la
+ * migración, pero el acceso runtime falla cerrado mientras sigan públicos.
  *
  * TTL variable por PROPÓSITO, no un valor único — decisión confirmada
  * después de identificar 2 restricciones reales:
@@ -34,18 +35,30 @@ const CAMPO_URL_LEGACY = {
   brochure: (business) => business.brochureUrl,
 };
 
+const resolverMetadataPrivada = (business, asset) => {
+  if (!asset?.publicId) return null;
+  if (asset.deliveryType !== 'authenticated' || asset.status !== 'active') return null;
+  if (!asset.businessId || String(asset.businessId) !== String(business._id)) {
+    throw new AppError('El asset no pertenece a este negocio', 403);
+  }
+  return {
+    publicId: asset.publicId,
+    resourceType: asset.resourceType,
+    tipoEntrega: asset.deliveryType,
+    ...(asset.format ? { format: asset.format } : {}),
+  };
+};
+
 /**
  * Resuelve {publicId, resourceType, tipoEntrega} para un campo de asset —
- * prioriza la forma NUEVA (business.<campo>Asset) y cae a extraer el
- * public_id de la URL vieja si el documento todavía no se migró (Paso 1/2:
- * ambas formas coexisten). tipoEntrega:'authenticated' en la forma nueva
- * (siempre, después del Paso 3); 'upload' en el fallback — todavía público
- * en Cloudinary, no hay nada real que firmar todavía.
+ * prioriza metadata authenticated y reconoce una URL vieja como `upload`.
+ * El generador compartido rechaza ese fallback: identificar un legacy no
+ * equivale a conceder acceso público.
  */
 const resolverAsset = (business, campo) => {
   const assetField = business[`${campo}Asset`];
   if (assetField?.publicId) {
-    return { publicId: assetField.publicId, resourceType: assetField.resourceType, tipoEntrega: 'authenticated' };
+    return resolverMetadataPrivada(business, assetField);
   }
   const urlVieja = CAMPO_URL_LEGACY[campo]?.(business);
   if (!urlVieja) return null;
@@ -58,7 +71,7 @@ const resolverAsset = (business, campo) => {
 const resolverFoto = (business, index) => {
   const asset = business.photoAssets?.[index];
   if (asset?.publicId) {
-    return { publicId: asset.publicId, resourceType: asset.resourceType, tipoEntrega: 'authenticated' };
+    return resolverMetadataPrivada(business, asset);
   }
   const urlVieja = business.photos?.[index];
   if (!urlVieja) return null;
