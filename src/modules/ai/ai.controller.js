@@ -113,9 +113,12 @@ const sendAgentMessage = async (req, res, next) => {
     if (!conversation) throw new AppError('Conversación no encontrada', 404);
     if (conversation.status === 'resolved') throw new AppError('La conversación ya está resuelta', 400);
 
-    const mensajeGuardado = await aiService.sendAgentMessage(conversationId, message, req.user);
+    const mensajeGuardado = await aiService.sendAgentMessage(conversationId, message, req.user, {
+      tenantId: req.businessId,
+      idempotencyKey: req.get('Idempotency-Key') || req.body.idempotencyKey,
+    });
 
-    return respuestaExito(res, { message: 'Mensaje guardado', data: { message: mensajeGuardado } });
+    return respuestaExito(res, { statusCode: 202, message: 'Mensaje aceptado y encolado', data: { message: mensajeGuardado } });
   } catch (err) {
     next(err);
   }
@@ -142,9 +145,12 @@ const sendTemplateMessage = async (req, res, next) => {
     if (!conversation) throw new AppError('Conversación no encontrada', 404);
     if (conversation.status === 'resolved') throw new AppError('La conversación ya está resuelta', 400);
 
-    const mensajeGuardado = await aiService.sendTemplateMessage(conversationId, { id: templateId, params }, req.user);
+    const mensajeGuardado = await aiService.sendTemplateMessage(conversationId, { id: templateId, params }, req.user, {
+      tenantId: req.businessId,
+      idempotencyKey: req.get('Idempotency-Key') || req.body.idempotencyKey,
+    });
 
-    return respuestaExito(res, { message: 'Plantilla enviada', data: { message: mensajeGuardado } });
+    return respuestaExito(res, { statusCode: 202, message: 'Plantilla aceptada y encolada', data: { message: mensajeGuardado } });
   } catch (err) {
     next(err);
   }
@@ -181,10 +187,14 @@ const sendMediaMessage = async (req, res, next) => {
         mediaType,
         caption,
       },
-      req.user
+      req.user,
+      {
+        tenantId: req.businessId,
+        idempotencyKey: req.get('Idempotency-Key') || req.body.idempotencyKey,
+      }
     );
 
-    return respuestaExito(res, { message: 'Media enviada', data: { message: mensajeGuardado } });
+    return respuestaExito(res, { statusCode: 202, message: 'Media aceptada y encolada', data: { message: mensajeGuardado } });
   } catch (err) {
     next(err);
   }

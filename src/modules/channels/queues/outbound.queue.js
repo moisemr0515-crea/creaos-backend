@@ -6,11 +6,9 @@ const logger = require('../../../utils/logger');
 const RECOVERABLE_OUTBOUND_STATUSES = ['pending', 'enqueue_failed', 'queued', 'retryable_failed'];
 
 /**
- * Cola de mensajes salientes — consumida por outbound.worker.js. Se usa
- * exclusivamente para las respuestas automáticas de la IA generadas por
- * inbound.worker.js (vía AgentRuntime). El envío manual de un agente humano
- * (ai.service.js#sendAgentMessage()) NO pasa por acá — sigue siendo
- * síncrono vía channelService.sendMessage() directo (ver resumen de plan).
+ * Cola durable de mensajes salientes — consumida por outbound.worker.js.
+ * Unifica respuestas automáticas de IA y envíos manuales de texto,
+ * plantilla y media; el origen vive en OutboundEvent, no en otra cola.
  */
 
 let queue = null;

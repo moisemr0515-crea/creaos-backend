@@ -2,6 +2,7 @@ jest.mock('./queues/outbound.queue', () => ({ enqueueOutbound: jest.fn().mockRes
 
 const mongoose = require('mongoose');
 const OutboundEvent = require('./outboundEvent.model');
+const Conversation = require('../ai/conversation.model');
 const { enqueueOutbound } = require('./queues/outbound.queue');
 const {
   isDeliveryReceipt,
@@ -22,17 +23,28 @@ describe('outboundDelivery.service — receipts y política at-most-once', () =>
     enqueueOutbound.mockClear();
   });
 
-  const createEvent = (overrides = {}) => OutboundEvent.create({
-    channel: new mongoose.Types.ObjectId(),
-    tenantId: new mongoose.Types.ObjectId(),
-    conversation: new mongoose.Types.ObjectId(),
-    sourceInboundEvent: new mongoose.Types.ObjectId(),
-    to: '51900000000',
-    text: 'Mensaje de prueba',
-    status: 'delivery_uncertain',
-    providerMessageId: 'gupshup-message-1',
-    ...overrides,
-  });
+  const createEvent = async (overrides = {}) => {
+    const tenantId = overrides.tenantId || new mongoose.Types.ObjectId();
+    const channel = overrides.channel || new mongoose.Types.ObjectId();
+    const conversation = overrides.conversation || (await Conversation.create({
+      business: tenantId,
+      tenantId,
+      lead: new mongoose.Types.ObjectId(),
+      channel: 'whatsapp',
+      whatsappChannel: channel,
+    }))._id;
+    return OutboundEvent.create({
+      channel,
+      tenantId,
+      conversation,
+      sourceInboundEvent: new mongoose.Types.ObjectId(),
+      to: '51900000000',
+      text: 'Mensaje de prueba',
+      status: 'delivery_uncertain',
+      providerMessageId: 'gupshup-message-1',
+      ...overrides,
+    });
+  };
 
   test('reconoce y normaliza receipts message-event sin confundirlos con mensajes inbound', () => {
     const payload = {
@@ -93,5 +105,47 @@ describe('outboundDelivery.service — receipts y política at-most-once', () =>
 
     expect((await OutboundEvent.findById(event._id)).status).toBe('sent');
     expect(enqueueOutbound).not.toHaveBeenCalled();
+  });
+
+  test('receipt de un evento manual reconcilia también el mensaje persistido', async () => {
+    const event = await createEvent({ origin: 'manual' });
+    await Conversation.updateOne(
+      { _id: event.conversation },
+      {
+        $push: {
+          messages: {
+            role: 'assistant',
+            content: 'Mensaje manual',
+            sentBy: 'agent',
+            whatsappStatus: 'delivery_uncertain',
+            outboundEventId: event._id,
+          },
+        },
+      }
+    );
+
+    await reconcileDeliveryReceipt({
+      type: 'message-event',
+      payload: { id: event.providerMessageId, type: 'delivered' },
+      timestamp: Date.now(),
+    });
+
+    const conversation = await Conversation.findById(event.conversation);
+    expect(conversation.messages[0].whatsappStatus).toBe('sent');
+    expect((await OutboundEvent.findById(event._id)).providerStatus).toBe('delivered');
+  });
+
+  test('no reconcilia un evento cuya conversación no coincide con tenant/canal', async () => {
+    const event = await createEvent();
+    await Conversation.updateOne({ _id: event.conversation }, { whatsappChannel: new mongoose.Types.ObjectId() });
+
+    const result = await reconcileDeliveryReceipt({
+      type: 'message-event',
+      payload: { id: event.providerMessageId, type: 'delivered' },
+      timestamp: Date.now(),
+    });
+
+    expect(result).toEqual([null]);
+    expect((await OutboundEvent.findById(event._id)).status).toBe('delivery_uncertain');
   });
 });

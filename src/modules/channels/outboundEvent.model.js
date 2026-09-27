@@ -32,9 +32,14 @@ const outboundEventSchema = new mongoose.Schema(
     tenantId: { type: mongoose.Schema.Types.ObjectId, ref: 'Business', required: true },
     provider: { type: String, default: 'gupshup' },
     conversation: { type: mongoose.Schema.Types.ObjectId, ref: 'Conversation', required: true },
+    origin: { type: String, enum: ['ai', 'manual'], default: 'ai' },
+    messageType: { type: String, enum: ['text', 'template', 'media'], default: 'text' },
+    payload: { type: mongoose.Schema.Types.Mixed, default: null },
+    requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    idempotencyKey: { type: String, default: null },
     // Referencia al InboundEvent que originó esta respuesta automática (solo
-    // aplica a respuestas de la IA, no a envíos manuales de un agente —
-    // esos no pasan por esta cola). Se usa para idempotencia: si un job de
+    // aplica a respuestas de la IA; los envíos manuales usan idempotencyKey).
+    // Se usa para idempotencia: si un job de
     // inbound.worker.js se reintenta después de haber generado ya una
     // respuesta, esto permite detectarlo sin volver a llamar a la IA
     // (hallazgo de code review, sub-fase 1.d).
@@ -58,6 +63,11 @@ const outboundEventSchema = new mongoose.Schema(
 outboundEventSchema.index({ tenantId: 1, createdAt: -1 });
 outboundEventSchema.index({ conversation: 1, createdAt: -1 });
 outboundEventSchema.index({ sourceInboundEvent: 1 });
+outboundEventSchema.index(
+  { idempotencyKey: 1 },
+  { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } }
+);
+outboundEventSchema.index({ providerMessageId: 1 });
 
 module.exports = mongoose.model('OutboundEvent', outboundEventSchema);
 module.exports.STATUSES = STATUSES;

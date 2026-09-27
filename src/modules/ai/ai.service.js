@@ -1,4 +1,6 @@
 const OpenAI = require('openai');
+const crypto = require('crypto');
+const mongoose = require('mongoose');
 const { OPENAI_API_KEY, OPENAI_MODEL, OPENAI_MODEL_CHEAP, AI_MODEL_ROUTING_ENABLED, AI_MAX_TOKENS, AI_TEMPERATURE } = require('../../config/env');
 const Conversation = require('./conversation.model');
 const Lead = require('../leads/lead.model');
@@ -6,6 +8,9 @@ const Business = require('../businesses/business.model');
 const WhatsAppChannel = require('../channels/whatsappChannel.model');
 const { AppError } = require('../../middleware/error.middleware');
 const channelService = require('../channels/channel.service');
+const OutboundEvent = require('../channels/outboundEvent.model');
+const { enqueueOutbound } = require('../channels/queues/outbound.queue');
+const { assertActiveUserInBusiness } = require('../users/userScope.service');
 // Se requiere el módulo completo (no se destructura subirBuffer acá) para
 // que la llamada use siempre la referencia viva del export — mismo motivo
 // que gupshupProvider.js con gupshup.client.js: permite mockearlo en tests
@@ -1226,25 +1231,135 @@ Responde: { "suggestions": ["respuesta1", "respuesta2", "respuesta3"] }`,
  * Un agente humano escribe un mensaje en el chat del CRM para mandárselo al
  * lead — a diferencia de chat() (que recibe lo que dijo el LEAD y genera la
  * respuesta de la IA), acá el texto ya viene decidido por una persona: se
- * guarda tal cual y, si la conversación es por WhatsApp, se intenta despachar
- * de verdad vía Gupshup.
+ * guarda tal cual y, si la conversación es por WhatsApp, persiste una
+ * intención durable en OutboundEvent para que el worker la entregue.
  *
- * Fail-soft a propósito: un fallo de Gupshup (caído, número inválido, etc.)
- * NUNCA debe perder el mensaje que el agente ya escribió — se guarda igual,
- * marcado whatsappStatus:'failed', para que el frontend pueda mostrar el
- * error real en vez de un falso "enviado".
+ * La aceptación del request no depende de Gupshup: el mensaje y el evento
+ * quedan correlacionados, con estado real actualizado por worker/receipts.
  *
  * Al intervenir un humano, se apaga aiEnabled para esta conversación (mismo
  * criterio que escalate()) — evita que la IA responda por encima del agente
  * en el próximo mensaje entrante del lead.
  */
-const sendAgentMessage = async (conversationId, text, actor) => {
+const MANUAL_IDEMPOTENCY_WINDOW_MS = 60 * 1000;
+
+const buildManualIdempotency = ({ tenantId, conversationId, actorId, messageType, payload, suppliedKey }) => {
+  const requestIdentity = suppliedKey
+    ? `request:${String(suppliedKey).slice(0, 200)}`
+    : `window:${Math.floor(Date.now() / MANUAL_IDEMPOTENCY_WINDOW_MS)}:${JSON.stringify(payload)}`;
+  return `manual:${crypto.createHash('sha256')
+    .update([tenantId, conversationId, actorId || 'unknown', messageType, requestIdentity].join(':'))
+    .digest('hex')}`;
+};
+
+const messageStatusForEvent = (status) => (status === 'pending' ? 'queued' : status);
+
+async function persistAndEnqueueManualOutbound({
+  conversation,
+  lead,
+  actor,
+  tenantId,
+  messageType,
+  payload,
+  message,
+  suppliedIdempotencyKey,
+}) {
+  if (String(conversation.business) !== String(tenantId) || String(lead.business) !== String(tenantId)) {
+    throw new AppError('Conversación o lead fuera del negocio actual', 403);
+  }
+  await assertActiveUserInBusiness(conversation.assignedTo, tenantId);
+  const channel = await channelService.getChannelForConversation(conversation, tenantId);
+
+  const idempotencyKey = buildManualIdempotency({
+    tenantId: String(tenantId),
+    conversationId: String(conversation._id),
+    actorId: actor?._id ? String(actor._id) : null,
+    messageType,
+    payload,
+    suppliedKey: suppliedIdempotencyKey,
+  });
+  const outboundEventId = new mongoose.Types.ObjectId(
+    crypto.createHash('sha256').update(idempotencyKey).digest('hex').slice(0, 24)
+  );
+
+  message.outboundEventId = outboundEventId;
+  message.whatsappStatus = 'queued';
+  message.whatsappError = null;
+
+  await Conversation.updateOne(
+    {
+      _id: conversation._id,
+      business: tenantId,
+      isDeleted: false,
+      'messages.outboundEventId': { $ne: outboundEventId },
+    },
+    {
+      $push: { messages: message },
+      $set: { aiEnabled: false },
+    }
+  );
+
+  const event = await OutboundEvent.findOneAndUpdate(
+    { _id: outboundEventId },
+    {
+      $setOnInsert: {
+        channel: channel._id,
+        tenantId,
+        provider: channel.provider,
+        conversation: conversation._id,
+        origin: 'manual',
+        messageType,
+        payload,
+        requestedBy: actor?._id || null,
+        idempotencyKey,
+        to: lead.phone,
+        text: message.content,
+        status: 'pending',
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+
+  if (['pending', 'enqueue_failed', 'retryable_failed'].includes(event.status)) {
+    try {
+      await enqueueOutbound(event._id);
+    } catch (error) {
+      logger.error('[manualOutbound] intención persistida pero Redis no aceptó el job', {
+        outboundEventId: String(event._id),
+        conversationId: String(conversation._id),
+        businessId: String(tenantId),
+        channelId: String(channel._id),
+        jobId: String(event._id),
+        errorType: 'queue_unavailable',
+      });
+    }
+  }
+
+  const storedEvent = await OutboundEvent.findById(event._id);
+  const finalStatus = messageStatusForEvent(storedEvent?.status || event.status);
+  await Conversation.updateOne(
+    { _id: conversation._id, business: tenantId, 'messages.outboundEventId': event._id },
+    {
+      $set: {
+        'messages.$.whatsappStatus': finalStatus,
+        'messages.$.whatsappError': storedEvent?.error || null,
+      },
+    }
+  );
+
+  const updatedConversation = await Conversation.findOne({ _id: conversation._id, business: tenantId });
+  return updatedConversation.messages.find((item) => String(item.outboundEventId) === String(event._id));
+}
+
+const sendAgentMessage = async (conversationId, text, actor, options = {}) => {
   if (!text?.trim()) throw new AppError('El mensaje no puede estar vacío', 400);
 
-  const conversation = await Conversation.findById(conversationId);
+  const tenantId = options.tenantId || actor?.business;
+  if (!tenantId) throw new AppError('No se pudo determinar el negocio actual', 400);
+  const conversation = await Conversation.findOne({ _id: conversationId, business: tenantId, isDeleted: false });
   if (!conversation) throw new AppError('Conversación no encontrada', 404);
 
-  const lead = await Lead.findById(conversation.lead);
+  const lead = await Lead.findOne({ _id: conversation.lead, business: tenantId });
   // La Conversation de un lead soft-deleted NO se marca isDeleted a su vez
   // (son entidades independientes) — sigue 100% funcional salvo este
   // chequeo. Sin esto, un conversationId viejo (cacheado en el frontend,
@@ -1285,36 +1400,16 @@ const sendAgentMessage = async (conversationId, text, actor) => {
   };
 
   if (esCanalWhatsApp && tieneTelefono) {
-    try {
-      // channelService.sendMessage() (sub-fase 1.b) es síncrono — se
-      // resuelve el canal por `conversation.business` (no `tenantId`: ese
-      // campo sigue siendo opcional en Conversation, sin backfill todavía;
-      // `business` es requerido desde siempre y tiene el mismo valor,
-      // Decisión 1). Este envío NO pasa por la cola de salida — esa cola
-      // (sub-fase 1.d) es solo para las respuestas automáticas de la IA.
-      // PR-10a: resuelve por conversation.whatsappChannel cuando está
-      // poblado (el canal que RECIBIÓ el mensaje del lead) — con 1 solo
-      // canal activo (100% de la base hoy) es idéntico a
-      // getChannelForTenant() de siempre.
-      const channel = await channelService.getChannelForConversation(conversation, conversation.business);
-      if (!channel) {
-        // Antes de esta sub-fase, el envío siempre se intentaba vía el
-        // número compartido — este es un modo de fallo NUEVO para negocios
-        // sin un WhatsAppChannel activo todavía (migración de Channel Core
-        // incompleta para ese tenant). Se loguea aparte, a nivel warn, para
-        // poder detectar qué tenants están en esta situación sin esperar a
-        // que alguien reporte el mensaje "perdido" (hallazgo de code review).
-        logger.warn(`sendAgentMessage: sin WhatsAppChannel activo para el tenant ${conversation.business} (conversación ${conversationId})`);
-        throw new Error(`Ningún WhatsAppChannel activo para el tenant ${conversation.business}`);
-      }
-      await channelService.sendMessage(channel._id, lead.phone, text, conversation.business);
-      mensaje.whatsappStatus = 'sent';
-    } catch (error) {
-      // No relanzar: el mensaje se guarda igual, solo queda marcado como fallido.
-      logger.error(`No se pudo enviar mensaje de agente por WhatsApp (conversación ${conversationId}): ${error.message}`);
-      mensaje.whatsappStatus = 'failed';
-      mensaje.whatsappError = error.message;
-    }
+    return persistAndEnqueueManualOutbound({
+      conversation,
+      lead,
+      actor,
+      tenantId,
+      messageType: 'text',
+      payload: { text },
+      message: mensaje,
+      suppliedIdempotencyKey: options.idempotencyKey,
+    });
   } else if (esCanalWhatsApp && !tieneTelefono) {
     // Caso legítimo, no un bug: conversación marcada whatsapp pero el lead
     // no tiene teléfono registrado — no hay a dónde despachar.
@@ -1347,13 +1442,15 @@ const sendAgentMessage = async (conversationId, text, actor) => {
  * @param {{ id: string, params?: string[] }} template
  * @param {{_id, name}} [actor]
  */
-const sendTemplateMessage = async (conversationId, template, actor) => {
+const sendTemplateMessage = async (conversationId, template, actor, options = {}) => {
   if (!template?.id) throw new AppError('templateId es requerido', 400);
 
-  const conversation = await Conversation.findById(conversationId);
+  const tenantId = options.tenantId || actor?.business;
+  if (!tenantId) throw new AppError('No se pudo determinar el negocio actual', 400);
+  const conversation = await Conversation.findOne({ _id: conversationId, business: tenantId, isDeleted: false });
   if (!conversation) throw new AppError('Conversación no encontrada', 404);
 
-  const lead = await Lead.findById(conversation.lead);
+  const lead = await Lead.findOne({ _id: conversation.lead, business: tenantId });
   if (!lead || lead.isDeleted) {
     throw new AppError('No se puede enviar la plantilla: el lead asociado a esta conversación ya no existe o fue eliminado', 404);
   }
@@ -1379,29 +1476,16 @@ const sendTemplateMessage = async (conversationId, template, actor) => {
     },
   };
 
-  try {
-    // PR-10a: mismo criterio que sendAgentMessage() — resuelve por
-    // conversation.whatsappChannel cuando está poblado.
-    const channel = await channelService.getChannelForConversation(conversation, conversation.business);
-    if (!channel) {
-      logger.warn(`sendTemplateMessage: sin WhatsAppChannel activo para el tenant ${conversation.business} (conversación ${conversationId})`);
-      throw new Error(`Ningún WhatsAppChannel activo para el tenant ${conversation.business}`);
-    }
-    await channelService.sendTemplate(channel._id, lead.phone, template, conversation.business);
-    mensaje.whatsappStatus = 'sent';
-  } catch (error) {
-    logger.error(`No se pudo enviar plantilla de WhatsApp (conversación ${conversationId}): ${error.message}`);
-    mensaje.whatsappStatus = 'failed';
-    mensaje.whatsappError = error.message;
-  }
-
-  conversation.messages.push(mensaje);
-  // Mismo criterio que sendAgentMessage(): un agente inició este envío
-  // (aunque sea una plantilla, no texto libre) — toma el control manual.
-  conversation.aiEnabled = false;
-  await conversation.save();
-
-  return conversation.messages[conversation.messages.length - 1];
+  return persistAndEnqueueManualOutbound({
+    conversation,
+    lead,
+    actor,
+    tenantId,
+    messageType: 'template',
+    payload: { template },
+    message: mensaje,
+    suppliedIdempotencyKey: options.idempotencyKey,
+  });
 };
 
 /**
@@ -1429,7 +1513,7 @@ const sendTemplateMessage = async (conversationId, template, actor) => {
  * @param {{ file?: {buffer:Buffer, mimetype:string}, mediaUrl?: string, mediaType?: 'image'|'video', caption?: string }} media
  * @param {{_id, name}} [actor]
  */
-const sendMediaMessage = async (conversationId, media, actor) => {
+const sendMediaMessage = async (conversationId, media, actor, options = {}) => {
   if (!media?.file && !media?.mediaUrl) {
     throw new AppError('Se requiere un archivo (media) o una mediaUrl ya alojada', 400);
   }
@@ -1437,10 +1521,12 @@ const sendMediaMessage = async (conversationId, media, actor) => {
     throw new AppError('mediaType es requerido cuando se envía mediaUrl sin archivo', 400);
   }
 
-  const conversation = await Conversation.findById(conversationId);
+  const tenantId = options.tenantId || actor?.business;
+  if (!tenantId) throw new AppError('No se pudo determinar el negocio actual', 400);
+  const conversation = await Conversation.findOne({ _id: conversationId, business: tenantId, isDeleted: false });
   if (!conversation) throw new AppError('Conversación no encontrada', 404);
 
-  const lead = await Lead.findById(conversation.lead);
+  const lead = await Lead.findOne({ _id: conversation.lead, business: tenantId });
   // Mismo chequeo que sendAgentMessage()/sendTemplateMessage() — ver el
   // comentario detallado en sendAgentMessage() sobre por qué es necesario.
   if (!lead || lead.isDeleted) {
@@ -1485,28 +1571,16 @@ const sendMediaMessage = async (conversationId, media, actor) => {
     metadata: actor ? { agentId: actor._id, agentName: actor.name } : undefined,
   };
 
-  try {
-    // PR-10a: mismo criterio que sendAgentMessage()/sendTemplateMessage().
-    const channel = await channelService.getChannelForConversation(conversation, conversation.business);
-    if (!channel) {
-      logger.warn(`sendMediaMessage: sin WhatsAppChannel activo para el tenant ${conversation.business} (conversación ${conversationId})`);
-      throw new Error(`Ningún WhatsAppChannel activo para el tenant ${conversation.business}`);
-    }
-    await channelService.sendMedia(channel._id, lead.phone, { url, type: mediaType, caption: media.caption }, conversation.business);
-    mensaje.whatsappStatus = 'sent';
-  } catch (error) {
-    // No relanzar: el mensaje (y el archivo, ya subido a Cloudinary) se
-    // guardan igual, solo queda marcado como fallido.
-    logger.error(`No se pudo enviar media por WhatsApp (conversación ${conversationId}): ${error.message}`);
-    mensaje.whatsappStatus = 'failed';
-    mensaje.whatsappError = error.message;
-  }
-
-  conversation.messages.push(mensaje);
-  conversation.aiEnabled = false; // mismo criterio que sendAgentMessage()/sendTemplateMessage()
-  await conversation.save();
-
-  return conversation.messages[conversation.messages.length - 1];
+  return persistAndEnqueueManualOutbound({
+    conversation,
+    lead,
+    actor,
+    tenantId,
+    messageType: 'media',
+    payload: { media: { url, type: mediaType, caption: media.caption } },
+    message: mensaje,
+    suppliedIdempotencyKey: options.idempotencyKey,
+  });
 };
 
 module.exports = {

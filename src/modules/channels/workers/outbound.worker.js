@@ -60,16 +60,38 @@ function extractProviderMessageId(result) {
   return result?.messageId || result?.messages?.[0]?.id || result?.id || null;
 }
 
+async function syncManualMessage(event, status, error = null) {
+  if (event.origin !== 'manual') return;
+  await Conversation.updateOne(
+    {
+      _id: event.conversation,
+      business: event.tenantId,
+      whatsappChannel: event.channel,
+      'messages.outboundEventId': event._id,
+    },
+    {
+      $set: {
+        'messages.$.whatsappStatus': status,
+        'messages.$.whatsappError': error,
+      },
+    }
+  );
+}
+
+function deliverEvent(event) {
+  if (event.messageType === 'template') {
+    return channelService.sendTemplate(event.channel, event.to, event.payload?.template, event.tenantId);
+  }
+  if (event.messageType === 'media') {
+    return channelService.sendMedia(event.channel, event.to, event.payload?.media, event.tenantId);
+  }
+  return channelService.sendMessage(event.channel, event.to, event.payload?.text || event.text, event.tenantId);
+}
+
 /**
- * outbound.worker.js — sub-fase 1.d. Consume whatsapp-outbound (encolado
- * por inbound.worker.js después de que AgentRuntime genera una respuesta).
- *
- * Llama a channelService.sendMessage() — la MISMA función síncrona
- * construida en 1.b, sin cambios de contrato. La cola no vive dentro de
- * channelService.sendMessage(); vive acá, un nivel arriba — así el envío
- * manual de un agente humano (ai.service.js#sendAgentMessage(), adaptado en
- * este mismo PR) puede seguir llamando a channelService.sendMessage()
- * directo y síncrono, sin pasar por ninguna cola.
+ * Consume whatsapp-outbound para respuestas automáticas de IA y mensajes
+ * manuales. Esta es la única capa que llama a channelService para delivery;
+ * OutboundEvent.messageType decide texto, plantilla o media.
  */
 
 async function processOutboundJob(job) {
@@ -99,6 +121,7 @@ async function processOutboundJob(job) {
       { new: true }
     );
     if (interrupted) {
+      await syncManualMessage(interrupted, 'delivery_uncertain', interrupted.error);
       logger.error('[outboundWorker] entrega ambigua tras interrupción; requiere conciliación', {
         outboundEventId: String(interrupted._id),
         tenantId: String(interrupted.tenantId),
@@ -115,44 +138,52 @@ async function processOutboundJob(job) {
 
   let providerAccepted = false;
   try {
+    await syncManualMessage(event, 'processing');
     // Repregunta aiEnabled justo antes de mandar: la IA pudo generar esta
     // respuesta antes de que un agente humano tomara control.
     const conversation = await Conversation.findOne({ _id: event.conversation, business: event.tenantId }, 'aiEnabled whatsappChannel business');
     if (!conversation || String(conversation.whatsappChannel) !== String(event.channel)) {
       throw permanentError('Conversación fuera del tenant o canal original inconsistente', 'tenant_or_channel_mismatch');
     }
-    if (!conversation.aiEnabled) {
+    if (event.origin !== 'manual' && !conversation.aiEnabled) {
       event.status = 'skipped';
       event.error = 'aiEnabled se apagó (agente humano tomó control) antes del envío';
       event.errorType = 'human_takeover';
       event.terminalAt = new Date();
       await event.save();
+      await syncManualMessage(event, 'skipped', event.error);
       logger.info('[outboundWorker] envío cancelado, agente humano tomó control', { outboundEventId, tenantId: String(event.tenantId), channelId: String(event.channel), attempt, finalState: 'skipped' });
       return;
     }
 
     const entitlement = await subscriptionService.getEntitlement(event.tenantId);
-    if (!entitlement.limits.aiEnabled
-      || !entitlement.limits.whatsappEnabled
-      || !entitlement.limits.automationsEnabled) {
+    const entitlementBlocked = event.origin === 'manual'
+      ? !entitlement.limits.whatsappEnabled
+      : (!entitlement.limits.aiEnabled
+        || !entitlement.limits.whatsappEnabled
+        || !entitlement.limits.automationsEnabled);
+    if (entitlementBlocked) {
       event.status = 'skipped';
       event.error = 'Entitlement de IA/WhatsApp/automatizaciones no disponible al ejecutar el envío';
       event.errorType = 'entitlement';
       event.terminalAt = new Date();
       await event.save();
+      await syncManualMessage(event, 'skipped', event.error);
       logger.info('[outboundWorker] envío cancelado por entitlement', { outboundEventId, tenantId: String(event.tenantId), channelId: String(event.channel), attempt, finalState: 'skipped' });
       return;
     }
 
     event.status = 'sending';
     await event.save();
-    const result = await channelService.sendMessage(event.channel, event.to, event.text, event.tenantId);
+    await syncManualMessage(event, 'sending');
+    const result = await deliverEvent(event);
     providerAccepted = true;
     event.status = 'sent';
     event.providerMessageId = extractProviderMessageId(result);
     event.sentAt = new Date();
     event.terminalAt = event.sentAt;
     await event.save();
+    await syncManualMessage(event, 'sent');
   } catch (err) {
     if (providerAccepted) {
       event.status = 'delivery_uncertain';
@@ -160,6 +191,7 @@ async function processOutboundJob(job) {
       event.errorType = 'provider_accepted_persistence_failed';
       event.terminalAt = new Date();
       await event.save();
+      await syncManualMessage(event, 'delivery_uncertain', event.error);
       logger.error('[outboundWorker] aceptación externa con persistencia local incierta; no se reenvía', {
         outboundEventId: String(event._id),
         tenantId: String(event.tenantId),
@@ -179,6 +211,7 @@ async function processOutboundJob(job) {
       event.errorType = classification.type;
       event.terminalAt = new Date();
       await event.save();
+      await syncManualMessage(event, 'delivery_uncertain', event.error);
       logger.error('[outboundWorker] timeout ambiguo; no se reenvía automáticamente', {
         outboundEventId: String(event._id),
         tenantId: String(event.tenantId),
@@ -196,6 +229,7 @@ async function processOutboundJob(job) {
     event.errorType = classification.type;
     if (!classification.retryable) event.terminalAt = new Date();
     await event.save();
+    await syncManualMessage(event, event.status, event.error);
 
     logger[classification.retryable ? 'warn' : 'error']('[outboundWorker] intento outbound fallido', {
       outboundEventId: String(event._id),
@@ -230,6 +264,7 @@ async function handleOutboundFailure(job, err) {
     errorType: classification.type,
     terminalAt: new Date(),
   }, { new: true }).catch(() => null);
+  if (terminalEvent) await syncManualMessage(terminalEvent, 'permanently_failed', terminalEvent.error).catch(() => {});
   logger.error('[outboundWorker] outbound terminó sin más reintentos', {
     outboundEventId: String(job.data.outboundEventId),
     tenantId: terminalEvent ? String(terminalEvent.tenantId) : undefined,

@@ -1,4 +1,5 @@
 const OutboundEvent = require('./outboundEvent.model');
+const Conversation = require('../ai/conversation.model');
 const { enqueueOutbound } = require('./queues/outbound.queue');
 const logger = require('../../utils/logger');
 
@@ -47,14 +48,48 @@ function toDate(value) {
   return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
 }
 
+async function syncManualMessage(event, status, error = null) {
+  if (!event || event.origin !== 'manual') return;
+  await Conversation.updateOne(
+    {
+      _id: event.conversation,
+      business: event.tenantId,
+      whatsappChannel: event.channel,
+      'messages.outboundEventId': event._id,
+    },
+    {
+      $set: {
+        'messages.$.whatsappStatus': status,
+        'messages.$.whatsappError': error,
+      },
+    }
+  );
+}
+
+async function findTenantSafeEvent(providerMessageId) {
+  const events = await OutboundEvent.find({ providerMessageId }).limit(2);
+  if (events.length !== 1) return null;
+  const [event] = events;
+  const conversationMatches = await Conversation.exists({
+    _id: event.conversation,
+    business: event.tenantId,
+    whatsappChannel: event.channel,
+  });
+  return conversationMatches ? event : null;
+}
+
 async function reconcileOne(receipt) {
   if (!receipt.providerMessageId) return null;
   const providerStatusAt = toDate(receipt.timestamp);
+  const candidate = await findTenantSafeEvent(receipt.providerMessageId);
+  if (!candidate) return null;
 
   if (DELIVERED_STATUSES.has(receipt.status)) {
     const event = await OutboundEvent.findOneAndUpdate(
       {
-        providerMessageId: receipt.providerMessageId,
+        _id: candidate._id,
+        tenantId: candidate.tenantId,
+        channel: candidate.channel,
         status: { $nin: ['permanently_failed', 'skipped'] },
       },
       {
@@ -71,6 +106,7 @@ async function reconcileOne(receipt) {
       { new: true }
     );
     if (event) {
+      await syncManualMessage(event, 'sent');
       logger.info('[outboundDelivery] receipt reconciliado como entregado', {
         outboundEventId: String(event._id),
         tenantId: String(event.tenantId),
@@ -84,7 +120,9 @@ async function reconcileOne(receipt) {
 
   const event = await OutboundEvent.findOneAndUpdate(
     {
-      providerMessageId: receipt.providerMessageId,
+      _id: candidate._id,
+      tenantId: candidate.tenantId,
+      channel: candidate.channel,
       status: { $in: ['delivery_uncertain', 'sending', 'sent'] },
       providerStatus: { $nin: ['delivered', 'read'] },
     },
@@ -100,7 +138,10 @@ async function reconcileOne(receipt) {
     },
     { new: true }
   );
-  if (event) await enqueueOutbound(event._id);
+  if (event) {
+    await syncManualMessage(event, 'retryable_failed', event.error);
+    await enqueueOutbound(event._id);
+  }
   return event;
 }
 

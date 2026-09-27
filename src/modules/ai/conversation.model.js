@@ -71,8 +71,17 @@ const messageSchema = new mongoose.Schema(
     // conversación entera, porque una misma conversación puede tener
     // mensajes que sí intentaron salir por WhatsApp y otros que no (ej. un
     // mensaje interno en una conversación de canal 'manual').
-    whatsappStatus: { type: String, enum: ['sent', 'failed', 'not_applicable'], default: 'not_applicable' },
+    whatsappStatus: {
+      type: String,
+      enum: [
+        'pending', 'enqueue_failed', 'queued', 'processing', 'sending', 'sent',
+        'retryable_failed', 'permanently_failed', 'delivery_uncertain', 'skipped',
+        'failed', 'not_applicable',
+      ],
+      default: 'not_applicable',
+    },
     whatsappError:  { type: String, default: null },
+    outboundEventId: { type: mongoose.Schema.Types.ObjectId, ref: 'OutboundEvent', default: null },
     // Imagen/video/documento adjunto — `content` sigue siendo required
     // (queda con el caption si lo hay, o un placeholder tipo
     // "[Imagen]"/"[Video]"/"[Documento]" si no, para no romper nada que ya
