@@ -28,6 +28,7 @@ describe('pdfIngestion.service', () => {
 
   beforeAll(async () => {
     await mongoose.connect(MONGO_URI);
+    await BusinessDocument.init();
   });
 
   afterAll(async () => {
@@ -57,12 +58,12 @@ describe('pdfIngestion.service', () => {
       expect(documentoAnteriorId).toBeNull();
     });
 
-    test('segundo documento: version 2, y el documento "ready" anterior pasa a "replacing" sin tocar sus chunks', async () => {
+    test('segundo documento: version 2 y predecessor explícito, sin tocar el activo anterior', async () => {
       const anterior = await BusinessDocument.create({
         business: business._id,
         version: 1,
         sourceAsset: { publicId: 'a', resourceType: 'raw' },
-        status: 'ready',
+        status: 'active',
       });
       await BusinessDocumentChunk.create({
         business: business._id, documentId: anterior._id, documentVersion: 1, chunkIndex: 0,
@@ -78,24 +79,38 @@ describe('pdfIngestion.service', () => {
       expect(String(documentoAnteriorId)).toBe(String(anterior._id));
 
       const anteriorReleido = await BusinessDocument.findById(anterior._id);
-      expect(anteriorReleido.status).toBe('replacing');
+      expect(anteriorReleido.status).toBe('active');
       const chunkViejo = await BusinessDocumentChunk.findOne({ documentId: anterior._id });
       expect(chunkViejo.active).toBe(true); // sin tocar todavía
+    });
+
+    test('uploads concurrentes reservan versiones distintas y forman una cadena de predecessors', async () => {
+      const asset = (suffix) => ({ publicId: `creaos/docs/x/${suffix}`, resourceType: 'raw' });
+      const [a, b] = await Promise.all([
+        iniciarNuevoDocumento(business._id, asset('a'), 'texto A '.repeat(10)),
+        iniciarNuevoDocumento(business._id, asset('b'), 'texto B '.repeat(10)),
+      ]);
+      const docs = await BusinessDocument.find({ business: business._id }).sort({ version: 1 });
+      expect(docs.map((doc) => doc.version)).toEqual([1, 2]);
+      expect(docs[0].predecessor).toBeNull();
+      expect(String(docs[1].predecessor)).toBe(String(docs[0]._id));
+      expect(new Set([a.documento.version, b.documento.version])).toEqual(new Set([1, 2]));
     });
   });
 
   describe('procesarDocumento() — camino feliz, primera generación (sin documento anterior)', () => {
-    test('chunkea, pide embeddings en batch, deja el documento "ready" con sus chunks active:true', async () => {
+    test('chunkea, pide embeddings en batch y completa uploaded→processing→ready→active', async () => {
       const documento = await BusinessDocument.create({
-        business: business._id, version: 1, sourceAsset: { publicId: 'a', resourceType: 'raw' }, status: 'uploaded',
+        business: business._id, version: 1, sourceAsset: { publicId: 'a', resourceType: 'raw' },
+        sourceText: 'Un documento de negocio con suficiente texto indexable para generar embeddings correctamente.', status: 'uploaded',
       });
       generarEmbeddings.mockResolvedValue([[0.1, 0.2]]);
 
-      const resultado = await procesarDocumento(documento._id, 'Un documento de negocio chico.');
+      const resultado = await procesarDocumento(documento._id);
 
       expect(resultado.chunkCount).toBe(1);
       const documentoFinal = await BusinessDocument.findById(documento._id);
-      expect(documentoFinal.status).toBe('ready');
+      expect(documentoFinal.status).toBe('active');
       expect(documentoFinal.chunkCount).toBe(1);
       expect(documentoFinal.readyAt).toBeInstanceOf(Date);
 
@@ -103,19 +118,25 @@ describe('pdfIngestion.service', () => {
       expect(chunks).toHaveLength(1);
       expect(chunks[0].active).toBe(true);
       expect(chunks[0].embedding).toEqual([0.1, 0.2]);
+
+      const replay = await procesarDocumento(documento._id);
+      expect(replay.alreadyProcessed).toBe(true);
+      expect(generarEmbeddings).toHaveBeenCalledTimes(1);
+      expect(await BusinessDocumentChunk.countDocuments({ documentId: documento._id })).toBe(1);
     });
 
-    test('PDF sin texto extraíble (escaneado): 0 chunks, "ready" igual, nunca llama a embeddings', async () => {
+    test('PDF sin texto extraíble queda failed/no_indexable_text y nunca activa chunks', async () => {
       const documento = await BusinessDocument.create({
         business: business._id, version: 1, sourceAsset: { publicId: 'a', resourceType: 'raw' }, status: 'uploaded',
       });
 
-      const resultado = await procesarDocumento(documento._id, '   \n\n  ');
+      const resultado = await procesarDocumento(documento._id);
 
       expect(resultado.chunkCount).toBe(0);
       expect(generarEmbeddings).not.toHaveBeenCalled();
       const documentoFinal = await BusinessDocument.findById(documento._id);
-      expect(documentoFinal.status).toBe('ready');
+      expect(documentoFinal.status).toBe('failed');
+      expect(documentoFinal.errorCode).toBe('no_indexable_text');
       expect(documentoFinal.chunkCount).toBe(0);
     });
   });
@@ -125,7 +146,7 @@ describe('pdfIngestion.service', () => {
 
     beforeEach(async () => {
       anterior = await BusinessDocument.create({
-        business: business._id, version: 1, sourceAsset: { publicId: 'a', resourceType: 'raw' }, status: 'replacing',
+        business: business._id, version: 1, sourceAsset: { publicId: 'a', resourceType: 'raw' }, status: 'active',
       });
       await BusinessDocumentChunk.create([
         { business: business._id, documentId: anterior._id, documentVersion: 1, chunkIndex: 0, text: 'chunk viejo 1', embedding: [0.1], active: true },
@@ -133,13 +154,14 @@ describe('pdfIngestion.service', () => {
       ]);
     });
 
-    test('éxito: la nueva generación queda "ready" y activa, la anterior queda "archived" con sus chunks inactivos', async () => {
+    test('éxito: la nueva generación queda active, la anterior archived con chunks inactivos', async () => {
       const nuevo = await BusinessDocument.create({
-        business: business._id, version: 2, sourceAsset: { publicId: 'b', resourceType: 'raw' }, status: 'uploaded',
+        business: business._id, version: 2, predecessor: anterior._id, sourceAsset: { publicId: 'b', resourceType: 'raw' },
+        sourceText: 'Documento nuevo de reemplazo con suficiente contenido indexable para procesar correctamente.', status: 'uploaded',
       });
       generarEmbeddings.mockResolvedValue([[0.9, 0.9]]);
 
-      await procesarDocumento(nuevo._id, 'Documento nuevo de reemplazo.');
+      await procesarDocumento(nuevo._id);
 
       const anteriorFinal = await BusinessDocument.findById(anterior._id);
       expect(anteriorFinal.status).toBe('archived');
@@ -147,7 +169,7 @@ describe('pdfIngestion.service', () => {
       expect(chunksViejos.every((c) => c.active === false)).toBe(true);
 
       const nuevoFinal = await BusinessDocument.findById(nuevo._id);
-      expect(nuevoFinal.status).toBe('ready');
+      expect(nuevoFinal.status).toBe('active');
       const chunksNuevos = await BusinessDocumentChunk.find({ documentId: nuevo._id });
       expect(chunksNuevos.every((c) => c.active === true)).toBe(true);
 
@@ -160,11 +182,12 @@ describe('pdfIngestion.service', () => {
 
     test('CRÍTICO — si falla la generación de embeddings: el documento nuevo queda "failed" y el anterior VUELVE a "ready" sin que sus chunks se hayan tocado', async () => {
       const nuevo = await BusinessDocument.create({
-        business: business._id, version: 2, sourceAsset: { publicId: 'b', resourceType: 'raw' }, status: 'uploaded',
+        business: business._id, version: 2, predecessor: anterior._id, sourceAsset: { publicId: 'b', resourceType: 'raw' },
+        sourceText: 'Documento nuevo de reemplazo con suficiente contenido indexable para fallar en embeddings.', status: 'uploaded',
       });
       generarEmbeddings.mockRejectedValue(new Error('OpenAI rate limit'));
 
-      await expect(procesarDocumento(nuevo._id, 'Documento nuevo de reemplazo.')).rejects.toThrow('OpenAI rate limit');
+      await expect(procesarDocumento(nuevo._id)).rejects.toThrow('OpenAI rate limit');
 
       const nuevoFinal = await BusinessDocument.findById(nuevo._id);
       expect(nuevoFinal.status).toBe('failed');
@@ -172,7 +195,7 @@ describe('pdfIngestion.service', () => {
       expect(await BusinessDocumentChunk.countDocuments({ documentId: nuevo._id })).toBe(0);
 
       const anteriorFinal = await BusinessDocument.findById(anterior._id);
-      expect(anteriorFinal.status).toBe('ready'); // vuelve a ready, no se queda en 'replacing' ni 'archived'
+      expect(anteriorFinal.status).toBe('active');
       const chunksViejos = await BusinessDocumentChunk.find({ documentId: anterior._id });
       expect(chunksViejos.every((c) => c.active === true)).toBe(true); // NUNCA se tocaron
 
@@ -182,7 +205,7 @@ describe('pdfIngestion.service', () => {
     });
 
     test('el documento nuevo no existe (id inválido): lanza, no revienta silenciosamente', async () => {
-      await expect(procesarDocumento(new mongoose.Types.ObjectId(), 'texto')).rejects.toThrow('no encontrado');
+      await expect(procesarDocumento(new mongoose.Types.ObjectId())).rejects.toThrow('no encontrado');
     });
   });
 });

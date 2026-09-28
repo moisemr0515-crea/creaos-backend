@@ -333,20 +333,23 @@ const subirPdf = async (businessId, file) => {
   // PDF, en paralelo al flujo de arriba (pdfSummary/pdfExtractedText), sin
   // reemplazarlo. Se pasa `texto` CRUDO (no `textoLimpio`) — el pipeline de
   // chunking necesita los separadores de página que acá ya se limpiaron
-  // para poblar `page`. Mismo guard `extraccionExitosa`: un PDF escaneado
-  // no tiene nada real que indexar. Best-effort: si esto falla, el upload
+  // para poblar `page`. Incluso un PDF sin texto crea una generación: el
+  // worker la deja en `failed/no_indexable_text`, estado explícito y
+  // observable, sin embeddings ni cutover. Best-effort: si esto falla, el upload
   // ya completó del lado del dueño (el PDF se subió, el resumen barato
   // sigue funcionando) — un fallo acá no debe tumbar la respuesta.
-  if (extraccionExitosa) {
-    try {
-      const { documento } = await pdfIngestionService.iniciarNuevoDocumento(businessId, {
+  try {
+    const { documento } = await pdfIngestionService.iniciarNuevoDocumento(
+      businessId,
+      {
         publicId: resultado.public_id,
         resourceType: resultado.resource_type,
-      });
-      await enqueueIndexBusinessDocument({ documentId: documento._id, textoCompleto: texto });
-    } catch (error) {
-      logger.warn(`[subirPdf] No se pudo encolar la indexación RAG del PDF (business ${businessId}): ${error.message}`);
-    }
+      },
+      texto
+    );
+    await enqueueIndexBusinessDocument({ documentId: documento._id });
+  } catch (error) {
+    logger.warn(`[subirPdf] No se pudo encolar la indexación RAG del PDF (business ${businessId}): ${error.message}`);
   }
 
   return negocio;

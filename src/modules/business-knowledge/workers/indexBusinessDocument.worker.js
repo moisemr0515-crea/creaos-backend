@@ -10,9 +10,12 @@ const logger = require('../../../utils/logger');
 // archivo es solo el pegamento BullMQ, mismo criterio que
 // automationExecute.worker.js.
 async function processIndexJob(job) {
-  const { documentId, textoCompleto } = job.data;
-  const resultado = await procesarDocumento(documentId, textoCompleto);
-  return { chunkCount: resultado.chunkCount };
+  const { documentId } = job.data;
+  const resultado = await procesarDocumento(documentId, {
+    attempt: (job.attemptsMade || 0) + 1,
+    maxAttempts: job.opts?.attempts || 1,
+  });
+  return { chunkCount: resultado.chunkCount, status: resultado.documento.status };
 }
 
 function startIndexBusinessDocumentWorker() {

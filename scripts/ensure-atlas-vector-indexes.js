@@ -22,7 +22,8 @@
  *
  * Uso:
  *   node scripts/ensure-atlas-vector-indexes.js           # dry-run, solo lista qué falta
- *   node scripts/ensure-atlas-vector-indexes.js --confirm # crea los que falten
+ *   node scripts/ensure-atlas-vector-indexes.js --confirm # crea/actualiza lo que falte
+ *   node scripts/ensure-atlas-vector-indexes.js --check-ready # falla si algo no está READY
  */
 const DIMENSIONES_EMBEDDING = 1536; // text-embedding-3-small (ver src/utils/embeddings.js)
 
@@ -78,9 +79,23 @@ const DEFINICIONES = [
   },
 ];
 
-/** Compara por `path` (orden-independiente) — no por igualdad profunda literal del objeto completo. */
+const VERSION_INDEX = {
+  coleccion: 'businessdocuments',
+  nombreIndice: 'business_1_version_unique',
+  key: { business: 1, version: -1 },
+};
+
+/** Compara todos los atributos relevantes, sin depender del orden de fields. */
 const mismaDefinicion = (definicionActual, definicionDeseada) => {
-  const normalizar = (fields) => [...fields].map((f) => `${f.type}:${f.path}`).sort().join('|');
+  const normalizar = (fields) => [...fields]
+    .map((f) => JSON.stringify({
+      type: f.type,
+      path: f.path,
+      numDimensions: f.numDimensions,
+      similarity: f.similarity,
+    }))
+    .sort()
+    .join('|');
   return normalizar(definicionActual?.fields || []) === normalizar(definicionDeseada.fields);
 };
 
@@ -88,17 +103,50 @@ const mismaDefinicion = (definicionActual, definicionDeseada) => {
  * @param {import('mongodb').Db} db
  * @param {{confirm?: boolean}} [opts]
  */
-async function run(db, { confirm = false } = {}) {
+async function run(db, { confirm = false, requireReady = false } = {}) {
   const resultados = [];
+
+  const versionCollection = db.collection(VERSION_INDEX.coleccion);
+  const normalIndexes = await versionCollection.listIndexes().toArray().catch((error) => {
+    if (/ns not found/i.test(error.message)) return [];
+    throw error;
+  });
+  const sameVersionKey = (key = {}) => key.business === 1 && key.version === -1 && Object.keys(key).length === 2;
+  const versionIndex = normalIndexes.find((index) => sameVersionKey(index.key));
+  const duplicate = await versionCollection.aggregate([
+    { $group: { _id: { business: '$business', version: '$version' }, count: { $sum: 1 } } },
+    { $match: { count: { $gt: 1 } } },
+    { $limit: 1 },
+  ]).toArray().then((rows) => rows[0] || null).catch((error) => {
+    if (/ns not found/i.test(error.message)) return null;
+    throw error;
+  });
+
+  if (duplicate) {
+    resultados.push({ ...VERSION_INDEX, accion: 'conflicto_datos' });
+    if (confirm || requireReady) throw new Error('Hay versiones duplicadas por negocio; no se puede crear el índice único');
+  } else if (versionIndex?.unique === true) {
+    resultados.push({ ...VERSION_INDEX, accion: 'ya_existia', status: 'READY' });
+  } else if (confirm) {
+    if (versionIndex) await versionCollection.dropIndex(versionIndex.name);
+    await versionCollection.createIndex(VERSION_INDEX.key, { unique: true, name: VERSION_INDEX.nombreIndice });
+    resultados.push({ ...VERSION_INDEX, accion: versionIndex ? 'actualizado' : 'creado', status: 'READY' });
+  } else {
+    resultados.push({ ...VERSION_INDEX, accion: versionIndex ? 'pendiente_de_actualizar' : 'pendiente_de_crear' });
+  }
 
   for (const { coleccion, nombreIndice, definition } of DEFINICIONES) {
     const collection = db.collection(coleccion);
-    const existentes = await collection.listSearchIndexes().toArray().catch(() => []);
+    const existentes = await collection.listSearchIndexes().toArray().catch((error) => {
+      if (/ns not found/i.test(error.message)) return [];
+      throw error;
+    });
     const existente = existentes.find((idx) => idx.name === nombreIndice);
 
     if (existente && mismaDefinicion(existente.latestDefinition, definition)) {
-      console.log(`✅ ${coleccion}.${nombreIndice} ya existe con la definición correcta — nada que hacer.`);
-      resultados.push({ coleccion, nombreIndice, accion: 'ya_existia' });
+      const status = existente.status || 'UNKNOWN';
+      console.log(`✅ ${coleccion}.${nombreIndice} ya existe con la definición correcta — status ${status}.`);
+      resultados.push({ coleccion, nombreIndice, accion: 'ya_existia', status });
       continue;
     }
 
@@ -129,10 +177,17 @@ async function run(db, { confirm = false } = {}) {
     console.log('\n🔎 Dry-run (default) — no se aplicó ningún cambio. Corré con --confirm para aplicar.');
   }
 
+  if (requireReady) {
+    const noListos = resultados.filter((resultado) => resultado.accion !== 'ya_existia' || resultado.status !== 'READY');
+    if (noListos.length) {
+      throw new Error(`Infraestructura RAG no lista: ${noListos.map((r) => `${r.coleccion}.${r.nombreIndice}`).join(', ')}`);
+    }
+  }
+
   return resultados;
 }
 
-module.exports = { run, DEFINICIONES };
+module.exports = { run, DEFINICIONES, VERSION_INDEX };
 
 if (require.main === module) {
   const dns = require('dns');
@@ -145,11 +200,12 @@ if (require.main === module) {
     if (!uri) throw new Error('MONGODB_URI_PROD no está en .env');
 
     const confirm = process.argv.includes('--confirm');
+    const requireReady = process.argv.includes('--check-ready');
 
     await mongoose.connect(uri);
     console.log(`✅ Conectado a producción (${confirm ? 'CREANDO ÍNDICES' : 'solo lectura / dry-run'})`);
 
-    await run(mongoose.connection.db, { confirm });
+    await run(mongoose.connection.db, { confirm, requireReady });
 
     await mongoose.disconnect();
   })().catch((err) => {

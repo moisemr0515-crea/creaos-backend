@@ -10,6 +10,7 @@
 // propio módulo (mismo criterio que ai.service.js).
 const mongoose = require('mongoose');
 const Business = require('./business.model');
+const BusinessDocument = require('../business-knowledge/businessDocument.model');
 require('../users/user.model'); // subirPdf() hace populate('createdBy', ...)
 
 jest.mock('../../utils/cloudinary', () => ({
@@ -54,12 +55,14 @@ describe('business.service#subirPdf() — guard de extracción vacía (BUG 3)', 
   });
 
   afterAll(async () => {
+    await BusinessDocument.deleteMany({});
     await Business.deleteMany({});
     await mongoose.disconnect();
   });
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    await BusinessDocument.deleteMany({});
     await Business.deleteMany({});
     business = await Business.create({ name: 'CREA OS' });
     createSpy = jest.spyOn(openai.chat.completions, 'create');
@@ -137,21 +140,21 @@ describe('business.service#subirPdf() — guard de extracción vacía (BUG 3)', 
     expect(documento).not.toBeNull();
     expect(documento.status).toBe('uploaded');
     expect(documento.sourceAsset).toEqual({ publicId: 'creaos/businesses/x/pdf/abc', resourceType: 'raw' });
+    expect(documento.sourceText).toBe(textoConSeparadorDePagina);
 
-    expect(enqueueIndexBusinessDocument).toHaveBeenCalledWith({
-      documentId: documento._id,
-      textoCompleto: textoConSeparadorDePagina, // crudo, CON el separador de página
-    });
+    expect(enqueueIndexBusinessDocument).toHaveBeenCalledWith({ documentId: documento._id });
   });
 
-  test('extracción fallida (texto vacío): NO crea BusinessDocument ni encola nada — no hay nada real que indexar', async () => {
+  test('extracción vacía: persiste la intención y encola para registrar failed/no_indexable_text', async () => {
     mockGetText.mockResolvedValue({ text: '' });
 
     await subirPdf(business._id, fileFalso);
 
     const BusinessDocument = require('../business-knowledge/businessDocument.model');
-    expect(await BusinessDocument.countDocuments({ business: business._id })).toBe(0);
-    expect(enqueueIndexBusinessDocument).not.toHaveBeenCalled();
+    const documento = await BusinessDocument.findOne({ business: business._id });
+    expect(documento).not.toBeNull();
+    expect(documento.sourceText).toBe('');
+    expect(enqueueIndexBusinessDocument).toHaveBeenCalledWith({ documentId: documento._id });
   });
 
   test('si falla la creación del BusinessDocument (ej. Mongo momentáneamente caído): subirPdf() NO rompe — el resumen/PDF ya se guardó igual', async () => {

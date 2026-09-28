@@ -12,7 +12,9 @@
     "seed": "node src/database/seeds/index.js",
     "seed:roles": "node src/database/seeds/roles.seed.js",
     "seed:plans": "node src/database/seeds/plans.seed.js",
-    "test": "jest"
+    "test": "jest",
+    "rag:indexes:check": "node scripts/ensure-atlas-vector-indexes.js --check-ready",
+    "rag:indexes:ensure": "node scripts/ensure-atlas-vector-indexes.js --confirm"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

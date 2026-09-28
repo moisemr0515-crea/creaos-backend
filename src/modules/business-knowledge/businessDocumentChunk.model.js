@@ -31,6 +31,6 @@ const businessDocumentChunkSchema = new mongoose.Schema(
 );
 
 businessDocumentChunkSchema.index({ business: 1, active: 1 });
-businessDocumentChunkSchema.index({ documentId: 1, chunkIndex: 1 });
+businessDocumentChunkSchema.index({ documentId: 1, chunkIndex: 1 }, { unique: true });
 
 module.exports = mongoose.model('BusinessDocumentChunk', businessDocumentChunkSchema);

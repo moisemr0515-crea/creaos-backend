@@ -68,7 +68,7 @@ const K_CHUNKS_DOCUMENTO = 5;
  * teniendo los resultados de texto igual, nunca se cae el retrieval
  * entero por esto.
  */
-const buscarSemantico = async (Model, indexName, filtro, queryEmbedding) => {
+const buscarSemantico = async (Model, indexName, filtro, queryEmbedding, { failClosed = false } = {}) => {
   if (!queryEmbedding) return [];
 
   try {
@@ -87,6 +87,18 @@ const buscarSemantico = async (Model, indexName, filtro, queryEmbedding) => {
     ]);
     return resultados.filter((r) => r.score >= UMBRAL_SIMILITUD_SEMANTICA);
   } catch (error) {
+    if (failClosed) {
+      const retrievalError = new Error(`El indice vectorial requerido ${indexName} no esta disponible`);
+      retrievalError.code = 'RAG_VECTOR_INDEX_UNAVAILABLE';
+      retrievalError.cause = error;
+      logger.error('[knowledgeRetrieval] RAG documental no disponible', {
+        indexName,
+        collection: Model.collection.name,
+        code: retrievalError.code,
+        error: error.message,
+      });
+      throw retrievalError;
+    }
     // Fail-soft: si el índice todavía no terminó de construirse en Atlas
     // (status PENDING) o cualquier otro problema transitorio, el
     // retrieval sigue funcionando solo con texto — nunca se cae la
@@ -206,7 +218,8 @@ const buscarChunksDocumento = async (businessId, texto) => {
     BusinessDocumentChunk,
     'chunk_vector_index',
     { business: businessId, active: true },
-    queryEmbedding
+    queryEmbedding,
+    { failClosed: true }
   );
 
   return resultados.slice(0, K_CHUNKS_DOCUMENTO);

@@ -28,6 +28,7 @@ const { startAutomationSweepWorker } = require('./src/modules/automations/worker
 const { startAutomationExecuteWorker } = require('./src/modules/automations/workers/automationExecute.worker');
 // Bloque 3 de la auditoría Business Brain (§45-50, 20/sep/2026) — RAG del PDF.
 const { startIndexBusinessDocumentWorker } = require('./src/modules/business-knowledge/workers/indexBusinessDocument.worker');
+const { recoverStuckBusinessDocuments } = require('./src/modules/business-knowledge/queues/indexBusinessDocument.queue');
 // Bloque 4 de la auditoría Business Brain (§59, 20/sep/2026) — reservas de stock.
 const { scheduleStockReservationSweep } = require('./src/modules/products/queues/stockReservationSweep.queue');
 const { startStockReservationSweepWorker } = require('./src/modules/products/workers/stockReservationSweep.worker');
@@ -58,6 +59,7 @@ const iniciar = async () => {
     indexBusinessDocumentWorker = startIndexBusinessDocumentWorker();
     stockReservationSweepWorker = startStockReservationSweepWorker();
     await recoverPendingOutboundEvents();
+    await recoverStuckBusinessDocuments();
     // Idempotente (upsertJobScheduler) — seguro de llamar en cada boot,
     // incluso con varias instancias de este worker arrancando a la vez
     // (rolling restart de Railway).

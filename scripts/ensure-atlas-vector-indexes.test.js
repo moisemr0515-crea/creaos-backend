@@ -16,15 +16,25 @@ const { run, DEFINICIONES } = require('./ensure-atlas-vector-indexes');
 // correcta — Atlas devuelve `latestDefinition`, no `definition`.
 const existenteConDefinicionCorrecta = (nombreIndice) => {
   const { definition } = DEFINICIONES.find((d) => d.nombreIndice === nombreIndice);
-  return { name: nombreIndice, latestDefinition: definition };
+  return { name: nombreIndice, latestDefinition: definition, status: 'READY' };
 };
 
-function fakeDb({ indicesExistentes = [] } = {}) {
+function fakeDb({ indicesExistentes = [], versionIndexExisting = false, duplicates = [] } = {}) {
   const listSearchIndexes = jest.fn().mockReturnValue({ toArray: () => Promise.resolve(indicesExistentes) });
   const createSearchIndex = jest.fn().mockResolvedValue(undefined);
   const updateSearchIndex = jest.fn().mockResolvedValue(undefined);
-  const collection = jest.fn().mockReturnValue({ listSearchIndexes, createSearchIndex, updateSearchIndex });
-  return { db: { collection }, collection, listSearchIndexes, createSearchIndex, updateSearchIndex };
+  const listIndexes = jest.fn().mockReturnValue({
+    toArray: () => Promise.resolve(versionIndexExisting
+      ? [{ name: 'business_1_version_unique', key: { business: 1, version: -1 }, unique: true }]
+      : []),
+  });
+  const aggregate = jest.fn().mockReturnValue({ toArray: () => Promise.resolve(duplicates) });
+  const createIndex = jest.fn().mockResolvedValue('business_1_version_unique');
+  const dropIndex = jest.fn().mockResolvedValue(undefined);
+  const collection = jest.fn().mockImplementation((name) => name === 'businessdocuments'
+    ? { listIndexes, aggregate, createIndex, dropIndex }
+    : { listSearchIndexes, createSearchIndex, updateSearchIndex });
+  return { db: { collection }, collection, listSearchIndexes, createSearchIndex, updateSearchIndex, createIndex, dropIndex };
 }
 
 describe('ensure-atlas-vector-indexes', () => {
@@ -87,6 +97,7 @@ describe('ensure-atlas-vector-indexes', () => {
   test('todos ya existen con la definición correcta: --confirm no crea ni actualiza nada', async () => {
     const { db, createSearchIndex, updateSearchIndex } = fakeDb({
       indicesExistentes: DEFINICIONES.map((d) => existenteConDefinicionCorrecta(d.nombreIndice)),
+      versionIndexExisting: true,
     });
 
     const resultados = await run(db, { confirm: true });
@@ -94,6 +105,18 @@ describe('ensure-atlas-vector-indexes', () => {
     expect(createSearchIndex).not.toHaveBeenCalled();
     expect(updateSearchIndex).not.toHaveBeenCalled();
     expect(resultados.every((r) => r.accion === 'ya_existia')).toBe(true);
+  });
+
+  test('--check-ready falla si un índice vectorial existe pero Atlas aún no lo reporta READY', async () => {
+    const building = DEFINICIONES.map((d) => ({ ...existenteConDefinicionCorrecta(d.nombreIndice), status: 'PENDING' }));
+    const { db } = fakeDb({ indicesExistentes: building, versionIndexExisting: true });
+    await expect(run(db, { requireReady: true })).rejects.toThrow('Infraestructura RAG no lista');
+  });
+
+  test('no crea el índice único de versión si detecta duplicados', async () => {
+    const { db, createIndex } = fakeDb({ duplicates: [{ _id: { business: 'b', version: 1 }, count: 2 }] });
+    await expect(run(db, { confirm: true })).rejects.toThrow('versiones duplicadas');
+    expect(createIndex).not.toHaveBeenCalled();
   });
 
   describe('índice existente con una definición DISTINTA a la esperada (self-healing del bug real de scope)', () => {
@@ -135,11 +158,18 @@ describe('ensure-atlas-vector-indexes', () => {
   test('si listSearchIndexes().toArray() falla (colección todavía no existe): no revienta, lo trata como "sin índices todavía"', async () => {
     // Mismo shape que el driver real: listSearchIndexes() devuelve un
     // cursor de forma síncrona, el error real llega al await .toArray().
-    const collection = jest.fn().mockReturnValue({
-      listSearchIndexes: jest.fn().mockReturnValue({ toArray: () => Promise.reject(new Error('ns not found')) }),
-      createSearchIndex: jest.fn().mockResolvedValue(undefined),
-      updateSearchIndex: jest.fn().mockResolvedValue(undefined),
-    });
+    const collection = jest.fn().mockImplementation((name) => name === 'businessdocuments'
+      ? {
+        listIndexes: jest.fn().mockReturnValue({ toArray: () => Promise.reject(new Error('ns not found')) }),
+        aggregate: jest.fn().mockReturnValue({ toArray: () => Promise.reject(new Error('ns not found')) }),
+        createIndex: jest.fn(),
+        dropIndex: jest.fn(),
+      }
+      : {
+        listSearchIndexes: jest.fn().mockReturnValue({ toArray: () => Promise.reject(new Error('ns not found')) }),
+        createSearchIndex: jest.fn().mockResolvedValue(undefined),
+        updateSearchIndex: jest.fn().mockResolvedValue(undefined),
+      });
 
     const resultados = await run({ collection }, { confirm: false });
 

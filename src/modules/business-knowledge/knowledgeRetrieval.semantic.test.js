@@ -187,6 +187,15 @@ describe('knowledgeRetrieval.service — retrieval semántico (Bloque 3, §51/§
       expect(resultado).toHaveLength(5);
       expect(resultado[0].text).toBe('chunk 0');
     });
+
+    test('si falta el índice vectorial documental falla de forma explícita, no simula RAG vacío', async () => {
+      generarEmbedding.mockResolvedValue([0.1, 0.2, 0.3]);
+      jest.spyOn(BusinessDocumentChunk, 'aggregate').mockRejectedValue(new Error('index not found'));
+
+      await expect(buscarChunksDocumento(business._id, 'una pregunta')).rejects.toMatchObject({
+        code: 'RAG_VECTOR_INDEX_UNAVAILABLE',
+      });
+    });
   });
 
   describe('resolverConocimiento() — incluye documentChunks en el resultado final', () => {
