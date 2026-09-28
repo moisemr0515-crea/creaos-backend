@@ -1,6 +1,8 @@
 const { parse } = require('csv-parse/sync');
 const XLSX = require('xlsx');
 const Product = require('./product.model');
+const Variant = require('./variant.model');
+const { assertSkuAvailable } = require('./skuNamespace.service');
 const logger = require('../../utils/logger');
 const { AppError } = require('../../middleware/error.middleware');
 
@@ -221,6 +223,8 @@ const parsearYValidarArchivo = async (businessId, file) => {
   // producto a otro negocio porque nunca aparece en `skusExistentes`.
   const existentes = await Product.find({ business: businessId }).select('sku').lean();
   const skusExistentes = new Set(existentes.map((p) => p.sku));
+  const variantes = await Variant.find({ business: businessId }).select('sku').lean();
+  const skusDeVariantes = new Set(variantes.map((v) => v.sku));
 
   const skusVistosEnArchivo = new Set();
   const filas = [];
@@ -241,6 +245,9 @@ const parsearYValidarArchivo = async (businessId, file) => {
         errores.push('SKU duplicado dentro del archivo (ya aparece en una fila anterior)');
       } else {
         skusVistosEnArchivo.add(campos.sku);
+      }
+      if (skusDeVariantes.has(campos.sku)) {
+        errores.push('SKU ya utilizado por una variante en este negocio');
       }
     }
 
@@ -303,6 +310,9 @@ const confirmarImportacion = async (businessId, actor, file) => {
 
   for (const fila of filasValidas) {
     try {
+      // Revalidación al confirmar para cubrir cambios entre preview y escritura.
+      const productoExistente = await Product.findOne({ business: businessId, sku: fila.sku }).select('_id').lean();
+      await assertSkuAvailable(businessId, fila.sku, { excludeProductId: productoExistente?._id });
       // eslint-disable-next-line no-await-in-loop -- cada fila es una escritura
       // independiente; no hay nada que paralelizar de forma segura acá (el
       // índice único {business,sku} ya protege contra colisiones entre sí).

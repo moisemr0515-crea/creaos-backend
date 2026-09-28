@@ -2,8 +2,9 @@ const Product = require('./product.model');
 const Variant = require('./variant.model');
 const Business = require('../businesses/business.model');
 const { AppError } = require('../../middleware/error.middleware');
-const { subirBuffer, cloudinary } = require('../../utils/cloudinary');
-const logger = require('../../utils/logger');
+const { subirBuffer } = require('../../utils/cloudinary');
+const { assertSkuAvailable } = require('./skuNamespace.service');
+const { destroyAssetOrRecordPending } = require('./assetCleanup.service');
 
 // CREA Product Intelligence™ V1.0 — Etapa 2/10 (modelo + service). Este
 // archivo cubre 2 audiencias distintas:
@@ -26,16 +27,6 @@ const logger = require('../../utils/logger');
  */
 const resolverMoneda = (producto, business) => producto.currency || business.currency;
 
-const verificarSkuDuplicado = async (businessId, sku, { excluirProductoId } = {}) => {
-  const filtro = { business: businessId, sku: sku.trim().toUpperCase() };
-  if (excluirProductoId) filtro._id = { $ne: excluirProductoId };
-
-  const existente = await Product.findOne(filtro);
-  if (existente) {
-    throw new AppError(`Ya existe un producto con el SKU "${existente.sku}" en este negocio: ${existente.name}`, 409);
-  }
-};
-
 /**
  * `actor` se recibe por consistencia con el resto de los services del
  * proyecto (crearLead, actualizarLead, etc. lo reciben aunque hoy Product
@@ -46,7 +37,7 @@ const verificarSkuDuplicado = async (businessId, sku, { excluirProductoId } = {}
  * disponible en el controller), para no loguear un `actor` a medias acá.
  */
 const crearProducto = async (businessId, actor, data) => {
-  await verificarSkuDuplicado(businessId, data.sku);
+  await assertSkuAvailable(businessId, data.sku);
 
   const producto = new Product({
     ...data,
@@ -104,7 +95,7 @@ const actualizarProducto = async (businessId, productId, actor, data) => {
   const producto = await obtenerProducto(businessId, productId);
 
   if (data.sku !== undefined && data.sku.trim().toUpperCase() !== producto.sku) {
-    await verificarSkuDuplicado(businessId, data.sku, { excluirProductoId: producto._id });
+    await assertSkuAvailable(businessId, data.sku, { excludeProductId: producto._id });
   }
 
   Object.assign(producto, data);
@@ -330,15 +321,25 @@ const agregarFotoProducto = async (businessId, productId, file, { caption, isPri
     producto.mediaAssets.forEach((m) => { m.isPrimary = false; });
   }
 
-  producto.mediaAssets.push({
+  const uploadedAsset = {
     publicId: resultado.public_id,
     resourceType: resultado.resource_type,
+    deliveryType: 'authenticated',
+  };
+  producto.mediaAssets.push({
+    publicId: uploadedAsset.publicId,
+    resourceType: uploadedAsset.resourceType,
     caption: caption || null,
     isPrimary: marcarPrincipal,
     order: producto.mediaAssets.length,
   });
 
-  await producto.save();
+  try {
+    await producto.save();
+  } catch (error) {
+    await destroyAssetOrRecordPending({ businessId, asset: uploadedAsset, reason: 'upload_db_failure' });
+    throw error;
+  }
   return producto;
 };
 
@@ -356,12 +357,7 @@ const eliminarFotoProducto = async (businessId, productId, mediaId) => {
 
   const eraPrincipal = foto.isPrimary;
 
-  try {
-    await cloudinary.uploader.destroy(foto.publicId, { resource_type: foto.resourceType, type: 'authenticated' });
-  } catch (error) {
-    logger.warn(`Error al borrar foto de producto de Cloudinary (${foto.publicId}): ${error.message}`);
-  }
-
+  const assetToDelete = { publicId: foto.publicId, resourceType: foto.resourceType, deliveryType: 'authenticated' };
   foto.deleteOne();
 
   if (eraPrincipal && producto.mediaAssets.length > 0) {
@@ -370,6 +366,11 @@ const eliminarFotoProducto = async (businessId, productId, mediaId) => {
   }
 
   await producto.save();
+  await destroyAssetOrRecordPending({
+    businessId,
+    asset: assetToDelete,
+    reason: 'delete_provider_failure',
+  });
   return producto;
 };
 

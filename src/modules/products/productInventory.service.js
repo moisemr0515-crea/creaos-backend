@@ -6,6 +6,7 @@ const productService = require('./product.service');
 const { AppError } = require('../../middleware/error.middleware');
 const { STOCK_RESERVATION_TTL_MINUTES } = require('../../config/env');
 const logger = require('../../utils/logger');
+const { assertSkuAvailable } = require('./skuNamespace.service');
 
 // Bloque 4 de la auditoría Business Brain (§57-61, 20/sep/2026) —
 // Inventario avanzado. Archivo HERMANO de product.service.js (Fase 2,
@@ -16,16 +17,6 @@ const logger = require('../../utils/logger');
 // buscarProductos/obtenerProductoActivo se quedan en product.service.js,
 // sin mudar sus imports existentes en ai/tools/index.js y
 // priceStockGuard.service.js.
-
-const verificarSkuDuplicado = async (businessId, sku, { excluirVarianteId } = {}) => {
-  const filtro = { business: businessId, sku: sku.trim().toUpperCase() };
-  if (excluirVarianteId) filtro._id = { $ne: excluirVarianteId };
-
-  const existente = await Variant.findOne(filtro);
-  if (existente) {
-    throw new AppError(`Ya existe una variante con el SKU "${existente.sku}" en este negocio`, 409);
-  }
-};
 
 /**
  * Crea una variante para un producto — el producto pasa a hasVariants:true
@@ -42,7 +33,7 @@ const crearVariante = async (businessId, productId, data) => {
     throw new AppError('Una variante necesita al menos un atributo (ej. color, talla)', 400);
   }
 
-  await verificarSkuDuplicado(businessId, data.sku);
+  await assertSkuAvailable(businessId, data.sku);
 
   const variante = await Variant.create({
     ...data,
@@ -76,7 +67,7 @@ const actualizarVariante = async (businessId, productId, variantId, data) => {
   const variante = await obtenerVariante(businessId, productId, variantId);
 
   if (data.sku !== undefined && data.sku.trim().toUpperCase() !== variante.sku) {
-    await verificarSkuDuplicado(businessId, data.sku, { excluirVarianteId: variante._id });
+    await assertSkuAvailable(businessId, data.sku, { excludeVariantId: variante._id });
   }
 
   Object.assign(variante, data);

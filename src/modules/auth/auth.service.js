@@ -18,6 +18,7 @@ const Role = require('../roles/role.model');
 
 const { hashPassword, comparePassword, generateToken } = require('../../utils/crypto');
 const { enviarEmailVerificacion, enviarEmailResetPassword } = require('../../utils/email');
+const logger = require('../../utils/logger');
 
 // Duración del refresh token en segundos para Redis
 const REFRESH_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 días
@@ -165,9 +166,21 @@ const registrar = async ({ name, email, password, businessName, phone }) => {
   } catch (txError) {
     // MongoDB standalone no soporta transacciones — usar operaciones secuenciales
     if (txError.message?.includes('replica set') || txError.message?.includes('Transaction numbers') || txError.codeName === 'IllegalOperation') {
-      negocio = await Business.create({ name: businessName, createdBy: null });
-      usuario = await User.create({ name, email, password: passwordHash, phone: phone || null, role: rolOwner._id, business: negocio._id, emailVerificationToken: tokenVerificacionHash, emailVerificationExpires: expiracion });
-      await Business.findByIdAndUpdate(negocio._id, { createdBy: usuario._id });
+      try {
+        negocio = await Business.create({ name: businessName, createdBy: null });
+        usuario = await User.create({ name, email, password: passwordHash, phone: phone || null, role: rolOwner._id, business: negocio._id, emailVerificationToken: tokenVerificacionHash, emailVerificationExpires: expiracion });
+        await Business.findByIdAndUpdate(negocio._id, { createdBy: usuario._id });
+      } catch (fallbackError) {
+        if (negocio?._id) {
+          await User.deleteOne({ business: negocio._id, email }).catch((cleanupError) => {
+            logger.error('[auth.register] compensación de User falló', { businessId: String(negocio._id), error: cleanupError.message });
+          });
+          await Business.deleteOne({ _id: negocio._id }).catch((cleanupError) => {
+            logger.error('[auth.register] compensación de Business falló', { businessId: String(negocio._id), error: cleanupError.message });
+          });
+        }
+        throw fallbackError;
+      }
     } else {
       throw txError;
     }

@@ -7,6 +7,7 @@
 const mongoose = require('mongoose');
 const Business = require('../businesses/business.model');
 const Product = require('./product.model');
+const AssetCleanup = require('./assetCleanup.model');
 
 jest.mock('../../utils/cloudinary', () => ({
   cloudinary: { uploader: { destroy: jest.fn().mockResolvedValue({ result: 'ok' }) } },
@@ -17,6 +18,7 @@ jest.mock('../../utils/cloudinary', () => ({
 
 const { cloudinary, subirBuffer } = require('../../utils/cloudinary');
 const { agregarFotoProducto, eliminarFotoProducto } = require('./product.service');
+const { destroyAssetOrRecordPending } = require('./assetCleanup.service');
 
 const MONGO_URI = 'mongodb://localhost:27017/creaos_test_product_media_assets';
 
@@ -29,6 +31,7 @@ describe('product.service — agregarFotoProducto() / eliminarFotoProducto()', (
   });
 
   afterAll(async () => {
+    await AssetCleanup.deleteMany({});
     await Product.deleteMany({});
     await Business.deleteMany({});
     await mongoose.disconnect();
@@ -36,6 +39,7 @@ describe('product.service — agregarFotoProducto() / eliminarFotoProducto()', (
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    await AssetCleanup.deleteMany({});
     await Product.deleteMany({});
     await Business.deleteMany({});
     business = await Business.create({ name: 'Negocio de prueba' });
@@ -131,6 +135,64 @@ describe('product.service — agregarFotoProducto() / eliminarFotoProducto()', (
     const actualizado = await eliminarFotoProducto(business._id, producto._id, conFoto.mediaAssets[0]._id);
 
     expect(actualizado.mediaAssets).toHaveLength(0);
+    await expect(AssetCleanup.findOne({ business: business._id, publicId: 'a' }).lean()).resolves.toMatchObject({
+      status: 'pending', reason: 'delete_provider_failure',
+    });
+  });
+
+  test('agregarFotoProducto(): si DB falla después del upload destruye solo el asset recién creado y preserva el error DB', async () => {
+    subirBuffer.mockResolvedValue({ public_id: 'orphan-upload', resource_type: 'image' });
+    jest.spyOn(Product.prototype, 'save').mockRejectedValueOnce(new Error('DB save failed'));
+
+    await expect(agregarFotoProducto(business._id, producto._id, fotoFalsa)).rejects.toThrow('DB save failed');
+    expect(cloudinary.uploader.destroy).toHaveBeenCalledWith('orphan-upload', {
+      resource_type: 'image', type: 'authenticated',
+    });
+  });
+
+  test('si cleanup compensatorio también falla registra una tarea pending sin ocultar el error DB', async () => {
+    subirBuffer.mockResolvedValue({ public_id: 'orphan-pending', resource_type: 'image' });
+    jest.spyOn(Product.prototype, 'save').mockRejectedValueOnce(new Error('DB save failed'));
+    cloudinary.uploader.destroy.mockRejectedValueOnce(new Error('Cloudinary down'));
+
+    await expect(agregarFotoProducto(business._id, producto._id, fotoFalsa)).rejects.toThrow('DB save failed');
+    await expect(AssetCleanup.findOne({ business: business._id, publicId: 'orphan-pending' }).lean()).resolves.toMatchObject({
+      status: 'pending', reason: 'upload_db_failure', lastError: 'Cloudinary down',
+    });
+  });
+
+  test('registrar cleanup pendiente es idempotente para el mismo asset tenant-safe', async () => {
+    cloudinary.uploader.destroy.mockRejectedValue(new Error('Cloudinary down'));
+    const asset = { publicId: 'same-orphan', resourceType: 'image', deliveryType: 'authenticated' };
+
+    await destroyAssetOrRecordPending({ businessId: business._id, asset, reason: 'delete_provider_failure' });
+    await destroyAssetOrRecordPending({ businessId: business._id, asset, reason: 'delete_provider_failure' });
+
+    expect(await AssetCleanup.countDocuments({ business: business._id, publicId: asset.publicId })).toBe(1);
+    expect((await AssetCleanup.findOne({ business: business._id, publicId: asset.publicId })).attemptCount).toBe(2);
+  });
+
+  test('el mismo publicId en tenants distintos mantiene tareas de cleanup separadas', async () => {
+    const otherBusiness = await Business.create({ name: 'Otro tenant cleanup' });
+    cloudinary.uploader.destroy.mockRejectedValue(new Error('Cloudinary down'));
+    const asset = { publicId: 'shared-public-id', resourceType: 'image', deliveryType: 'authenticated' };
+
+    await destroyAssetOrRecordPending({ businessId: business._id, asset, reason: 'delete_provider_failure' });
+    await destroyAssetOrRecordPending({ businessId: otherBusiness._id, asset, reason: 'delete_provider_failure' });
+
+    expect(await AssetCleanup.countDocuments({ publicId: asset.publicId })).toBe(2);
+  });
+
+  test('si falla DB al retirar metadata, no llama a Cloudinary y la referencia permanece intacta', async () => {
+    subirBuffer.mockResolvedValue({ public_id: 'keep-on-db-failure', resource_type: 'image' });
+    const conFoto = await agregarFotoProducto(business._id, producto._id, fotoFalsa);
+    cloudinary.uploader.destroy.mockClear();
+    jest.spyOn(Product.prototype, 'save').mockRejectedValueOnce(new Error('DB delete save failed'));
+
+    await expect(eliminarFotoProducto(business._id, producto._id, conFoto.mediaAssets[0]._id))
+      .rejects.toThrow('DB delete save failed');
+    expect(cloudinary.uploader.destroy).not.toHaveBeenCalled();
+    expect((await Product.findById(producto._id)).mediaAssets).toHaveLength(1);
   });
 
   test('agregarFotoProducto(): producto de otro negocio (o inexistente) lanza 404, nunca sube a Cloudinary', async () => {
