@@ -107,10 +107,14 @@ describe('CREA SALES AI™ — Scenario Library (C.3, Etapa C3.5, spec §8)', ()
    * forzar una tabla genérica) — sí abstrae la ejecución + verificación,
    * que es idéntica siempre.
    */
-  const ejecutarEscenario = async ({ conversation, negocio, completions, expectedOutcome, expectedTools }) => {
+  const ejecutarEscenario = async ({ conversation, negocio, scenarioLead, completions, expectedOutcome, expectedTools }) => {
     completions.forEach((c) => createSpy.mockResolvedValueOnce(c));
 
-    const resultado = await aiService.runAgent({ conversationId: conversation._id, business: negocio || business, lead });
+    const resultado = await aiService.runAgent({
+      conversationId: conversation._id,
+      business: negocio || business,
+      lead: scenarioLead || lead,
+    });
 
     expect(resultado.outcome).toBe(expectedOutcome);
     if (expectedTools) {
@@ -273,6 +277,7 @@ describe('CREA SALES AI™ — Scenario Library (C.3, Etapa C3.5, spec §8)', ()
     await ejecutarEscenario({
       conversation: conversationB,
       negocio: negocioB,
+      scenarioLead: leadB,
       completions: [
         completionConToolCalls([toolCallMock('call_b1', 'search_products', { query: 'moringa' })]),
         completionFinal('Sí, tenemos moringa a S/999.'),

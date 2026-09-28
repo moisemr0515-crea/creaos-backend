@@ -3,6 +3,7 @@ const Business = require('../businesses/business.model');
 const Lead = require('../leads/lead.model');
 const WhatsAppChannel = require('../channels/whatsappChannel.model');
 const Conversation = require('./conversation.model');
+const OutboundEvent = require('../channels/outboundEvent.model');
 const aiService = require('./ai.service');
 
 const MONGO_URI = 'mongodb://localhost:27017/creaos_test_ai_tenant_defense';
@@ -47,6 +48,7 @@ describe('ai.service#generateReply() — defensa multi-tenant interna', () => {
   });
 
   afterAll(async () => {
+    await OutboundEvent.deleteMany({});
     await Conversation.deleteMany({});
     await WhatsAppChannel.deleteMany({});
     await Lead.deleteMany({});
@@ -56,6 +58,7 @@ describe('ai.service#generateReply() — defensa multi-tenant interna', () => {
 
   beforeEach(async () => {
     jest.restoreAllMocks();
+    await OutboundEvent.deleteMany({});
     await Conversation.deleteMany({});
     await WhatsAppChannel.deleteMany({});
     await Lead.deleteMany({});
@@ -93,6 +96,21 @@ describe('ai.service#generateReply() — defensa multi-tenant interna', () => {
 
     await expect(aiService.generateReply(conversation._id, business, leadB)).rejects.toMatchObject({ statusCode: 500 });
     expect(openaiSpy).not.toHaveBeenCalled();
+  });
+
+  test('Lead distinto al asociado a Conversation se bloquea antes de OpenAI, tools o outbound', async () => {
+    const { business, conversation } = await crearContexto();
+    const leadIncorrecto = await Lead.create({ business: business._id, name: 'Lead incorrecto del mismo tenant' });
+    const openaiSpy = jest.spyOn(aiService.openai.chat.completions, 'create');
+
+    await expect(aiService.generateReply(conversation._id, business, leadIncorrecto)).rejects.toMatchObject({
+      statusCode: 500,
+      message: 'Inconsistencia interna de aislamiento de tenant',
+    });
+
+    expect(openaiSpy).not.toHaveBeenCalled();
+    expect(await OutboundEvent.countDocuments({ conversation: conversation._id })).toBe(0);
+    expect((await Conversation.findById(conversation._id)).messages).toHaveLength(1);
   });
 
   test('WhatsAppChannel de otro tenant se bloquea antes de generar o ejecutar tools', async () => {
