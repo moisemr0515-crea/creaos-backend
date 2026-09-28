@@ -14,6 +14,10 @@ jest.mock('../modules/auth/auth.service', () => ({
   verifyEmail: jest.fn(),
 }));
 
+// Esta suite solo ejercita los limiters HTTP. Evita cargar pdf-parse (y su
+// binding nativo @napi-rs/canvas) incidentalmente al importar la app completa.
+jest.mock('pdf-parse', () => ({ PDFParse: jest.fn() }));
+
 const request = require('supertest');
 const jwt = require('jsonwebtoken');
 const app = require('../app');
