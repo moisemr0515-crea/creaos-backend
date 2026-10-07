@@ -98,6 +98,39 @@ describe('outbound worker — recuperación durable P1-2', () => {
     expect(send).toHaveBeenCalledTimes(2);
   });
 
+  test.each([
+    ['image', { url: 'https://signed.test/photo.jpg', type: 'image', caption: 'Foto' }],
+    ['video', { url: 'https://signed.test/video.mp4', type: 'video', caption: 'Video' }],
+    ['document', { url: 'https://signed.test/brochure.pdf', type: 'document', filename: 'brochure.pdf' }],
+  ])('media IA %s se despacha con el payload exacto por el worker', async (_type, media) => {
+    const event = await createEvent({
+      origin: 'ai',
+      messageType: 'media',
+      payload: { media },
+      text: '[Media]',
+    });
+    const send = jest.spyOn(channelService, 'sendMedia').mockResolvedValue({ messageId: `provider-${_type}` });
+
+    await processOutboundJob(jobFor(event));
+
+    expect(send).toHaveBeenCalledWith(channelId, '51900000000', media, tenantId);
+    expect((await OutboundEvent.findById(event._id)).status).toBe('sent');
+  });
+
+  test('timeout ambiguo de video IA queda delivery_uncertain y no se reenvía a ciegas', async () => {
+    const media = { url: 'https://signed.test/video.mp4', type: 'video' };
+    const event = await createEvent({ origin: 'ai', messageType: 'media', payload: { media }, text: '[Video]' });
+    const send = jest.spyOn(channelService, 'sendMedia').mockRejectedValue(
+      Object.assign(new Error('request timed out'), { code: 'ETIMEDOUT' })
+    );
+
+    await expect(processOutboundJob(jobFor(event))).resolves.toBeUndefined();
+    await processOutboundJob(jobFor(event, 1));
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect((await OutboundEvent.findById(event._id)).status).toBe('delivery_uncertain');
+  });
+
   test('timeout ambiguo termina delivery_uncertain y BullMQ no recibe una excepción para reintentar', async () => {
     const event = await createEvent();
     const send = jest.spyOn(channelService, 'sendMessage').mockRejectedValue(

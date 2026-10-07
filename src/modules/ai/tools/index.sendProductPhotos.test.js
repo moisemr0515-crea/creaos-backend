@@ -12,9 +12,12 @@ const Business = require('../../businesses/business.model');
 const Product = require('../../products/product.model');
 const Lead = require('../../leads/lead.model');
 const Conversation = require('../conversation.model');
+const OutboundEvent = require('../../channels/outboundEvent.model');
 
 jest.mock('../../channels/channel.service');
 const channelService = require('../../channels/channel.service');
+jest.mock('../../channels/queues/outbound.queue', () => ({ enqueueOutbound: jest.fn() }));
+const { enqueueOutbound } = require('../../channels/queues/outbound.queue');
 
 jest.mock('../../products/productAssetAccess.service');
 const productAssetAccess = require('../../products/productAssetAccess.service');
@@ -40,6 +43,7 @@ describe('ai/tools/index — send_product_photos', () => {
 
   afterAll(async () => {
     await Conversation.deleteMany({});
+    await OutboundEvent.deleteMany({});
     await Lead.deleteMany({});
     await Product.deleteMany({});
     await Business.deleteMany({});
@@ -49,6 +53,7 @@ describe('ai/tools/index — send_product_photos', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     await Conversation.deleteMany({});
+    await OutboundEvent.deleteMany({});
     await Lead.deleteMany({});
     await Product.deleteMany({});
     await Business.deleteMany({});
@@ -70,8 +75,10 @@ describe('ai/tools/index — send_product_photos', () => {
       activeProduct: { productId: producto._id, name: producto.name, lastSearchQuery: 'moringa', updatedAt: new Date() },
     });
 
-    channelService.getChannelForConversation.mockResolvedValue({ _id: 'channel-real-id' });
-    channelService.sendMedia.mockResolvedValue({ messages: [{ id: 'msg-real-1' }] });
+    channelService.getChannelForConversation.mockResolvedValue({ _id: conversation.whatsappChannel, provider: 'gupshup' });
+    enqueueOutbound.mockImplementation(async (eventId) => {
+      await OutboundEvent.updateOne({ _id: eventId }, { status: 'queued' });
+    });
 
     productAssetAccess.resolverFotoPrincipal.mockImplementation((p) =>
       p.mediaAssets.length ? { publicId: p.mediaAssets[0].publicId, resourceType: p.mediaAssets[0].resourceType, caption: p.mediaAssets[0].caption } : null
@@ -79,21 +86,23 @@ describe('ai/tools/index — send_product_photos', () => {
     productAssetAccess.obtenerUrlDeAccesoFotoPrincipal.mockReturnValue('https://api.cloudinary.com/firmada-producto');
   });
 
-  test('con productId explícito: resuelve la foto principal, arma type:"image" con caption, llama a channelService.sendMedia()', async () => {
+  test('con productId explícito: resuelve la foto principal y crea OutboundEvent image', async () => {
     const result = await executeToolCall(toolCall({ productId: producto._id.toString() }), { conversation, business, lead });
 
-    expect(channelService.sendMedia).toHaveBeenCalledWith('channel-real-id', '+51987654321', {
+    const event = await OutboundEvent.findOne({ conversation: conversation._id });
+    expect(event.payload.media).toEqual({
       url: 'https://api.cloudinary.com/firmada-producto',
       type: 'image',
       caption: 'Vista frontal',
-    }, business._id);
-    expect(result).toEqual({ success: true, message: `Se envió una foto de "${producto.name}" al lead por WhatsApp.` });
+    });
+    expect(channelService.sendMedia).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ success: true, status: 'queued' });
   });
 
   test('sin productId: cae a conversation.activeProduct (mismo mecanismo que check_stock/get_price)', async () => {
     await executeToolCall(toolCall({}), { conversation, business, lead });
 
-    expect(channelService.sendMedia).toHaveBeenCalled();
+    expect(await OutboundEvent.countDocuments({ conversation: conversation._id })).toBe(1);
   });
 
   test('pide el acceso con propósito "send" (TTL largo) — misma restricción real que send_media', async () => {
@@ -141,7 +150,7 @@ describe('ai/tools/index — send_product_photos', () => {
 
     const result = await executeToolCall(toolCall({ productId: sinFotos._id.toString() }), { conversation, business, lead });
 
-    expect(result).toEqual({ success: false, error: 'El producto "Producto sin fotos" todavía no tiene ninguna foto cargada.' });
+    expect(result).toEqual({ success: false, status: 'asset_missing', error: 'El producto "Producto sin fotos" todavía no tiene ninguna foto cargada.' });
     expect(channelService.sendMedia).not.toHaveBeenCalled();
   });
 
@@ -161,7 +170,7 @@ describe('ai/tools/index — send_product_photos', () => {
     const result = await executeToolCall(toolCall({ productId: producto._id.toString() }), { conversation, business, lead });
 
     expect(result.success).toBe(true);
-    expect(channelService.sendMedia).toHaveBeenCalled();
+    expect(await OutboundEvent.countDocuments({ conversation: conversation._id })).toBe(1);
   });
 
   test('registra el envío con mediaKey estable (no la URL firmada) — para que el guard anti-spam funcione en el próximo turno', async () => {
@@ -183,6 +192,7 @@ describe('ai/tools/index — send_product_photos', () => {
 
   test('lead sin teléfono: rechaza antes de tocar channelService', async () => {
     const leadSinTelefono = await Lead.create({ business: business._id, name: 'Sin teléfono' });
+    conversation.lead = leadSinTelefono._id;
 
     const result = await executeToolCall(toolCall({ productId: producto._id.toString() }), {
       conversation,
@@ -215,12 +225,12 @@ describe('ai/tools/index — send_product_photos', () => {
     expect(channelService.sendMedia).not.toHaveBeenCalled();
   });
 
-  test('channelService.sendMedia() falla: executeToolCall() lo atrapa, nunca propaga', async () => {
-    channelService.sendMedia.mockRejectedValue(new Error('Gupshup Partner API error (media send): 400'));
+  test('un replay del mismo tool_call reutiliza el mismo evento durable', async () => {
+    await executeToolCall(toolCall({ productId: producto._id.toString() }), { conversation, business, lead });
+    conversation.messages = [];
+    await executeToolCall(toolCall({ productId: producto._id.toString() }), { conversation, business, lead });
 
-    const result = await executeToolCall(toolCall({ productId: producto._id.toString() }), { conversation, business, lead });
-
-    expect(result.success).toBe(false);
-    expect(result.error).toMatch(/Error ejecutando send_product_photos/);
+    expect(await OutboundEvent.countDocuments({ conversation: conversation._id })).toBe(1);
+    expect(channelService.sendMedia).not.toHaveBeenCalled();
   });
 });

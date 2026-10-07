@@ -1,4 +1,6 @@
 const logger = require('../../../utils/logger');
+const OutboundEvent = require('../../channels/outboundEvent.model');
+const { enqueueOutbound } = require('../../channels/queues/outbound.queue');
 const Lead = require('../../leads/lead.model');
 // Módulo completo (no se destructura cambiarEtapa acá) — misma convención
 // de "referencia viva" que el resto del repo (ver cloudinaryUtil en
@@ -17,11 +19,8 @@ const productService = require('../../products/product.service');
 // duplicar sus hard filters de tenant/status/vigencia ni su lógica de
 // precedencia/conflicto.
 const knowledgeRetrievalService = require('../../business-knowledge/knowledgeRetrieval.service');
-// Auditoría de factibilidad de send_media (12/sep/2026), Paso 3 — mismo
-// canal ya usado por el envío manual de un agente humano
-// (ai.service.js#sendMediaMessage()); esta tool reusa channelService.sendMedia()
-// tal cual, sin duplicar la resolución de canal/credenciales ni el
-// enrutamiento Legacy/Partner (Paso 1).
+// La tool solo resuelve el canal original. El envío real nunca ocurre en el
+// loop de OpenAI: se persiste como OutboundEvent y lo ejecuta el worker.
 const channelService = require('../../channels/channel.service');
 // P0 de seguridad (auditoría Business Brain, 19/sep/2026, Bloque 1) —
 // sendMedia() (más abajo) ya NO lee business.logo/presentationVideoUrl/
@@ -476,6 +475,11 @@ const NOMBRES_LEGIBLES_RECURSO = {
  * un agente humano, mismo canal de transporte).
  */
 const validarPuedeEnviarMedia = async (conversation, lead, business) => {
+  if (String(conversation.business) !== String(business?._id)
+    || String(conversation.lead) !== String(lead?._id)
+    || String(lead?.business) !== String(business?._id)) {
+    return { error: 'El contexto de conversación, lead y negocio es inconsistente.' };
+  }
   if (conversation.channel !== 'whatsapp') {
     return { error: 'El envío de archivos solo está disponible en conversaciones por WhatsApp.' };
   }
@@ -489,6 +493,9 @@ const validarPuedeEnviarMedia = async (conversation, lead, business) => {
   const channel = await channelService.getChannelForConversation(conversation, business._id);
   if (!channel) {
     return { error: 'No hay un canal de WhatsApp activo para este negocio.' };
+  }
+  if (conversation.whatsappChannel && String(channel._id) !== String(conversation.whatsappChannel)) {
+    return { error: 'El canal resuelto no coincide con el canal original de la conversación.' };
   }
 
   return { channel };
@@ -511,6 +518,99 @@ const yaEnviadoRecientemente = (conversation, mediaKey) =>
     .slice(-VENTANA_ANTI_SPAM)
     .some((m) => m.mediaKey === mediaKey);
 
+const ESTADOS_OUTBOUND_RECUPERABLES = ['pending', 'enqueue_failed', 'retryable_failed'];
+
+/**
+ * Persiste y encola un envío de media solicitado por la IA. El id de la tool
+ * forma la clave idempotente: un replay del mismo tool_call reutiliza el
+ * evento y jamás crea un segundo envío. Un fallo de Redis deja el evento en
+ * enqueue_failed para que la recuperación existente lo vuelva a encolar.
+ */
+const persistAndEnqueueAiMedia = async ({
+  conversation,
+  business,
+  lead,
+  channel,
+  media,
+  mediaKey,
+  content,
+  toolCallId,
+}) => {
+  const toolIdentity = toolCallId || `${mediaKey}:${conversation.messages.length}`;
+  const idempotencyKey = `ai-media:${conversation._id}:${toolIdentity}`;
+  let event;
+  try {
+    event = await OutboundEvent.findOneAndUpdate(
+      { idempotencyKey },
+      {
+        $setOnInsert: {
+          channel: channel._id,
+          tenantId: business._id,
+          provider: channel.provider || 'gupshup',
+          conversation: conversation._id,
+          origin: 'ai',
+          messageType: 'media',
+          payload: { media },
+          idempotencyKey,
+          to: lead.phone,
+          text: content,
+          status: 'pending',
+        },
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+  } catch (error) {
+    if (error?.code !== 11000) throw error;
+    event = await OutboundEvent.findOne({ idempotencyKey });
+    if (!event) throw error;
+  }
+
+  if (ESTADOS_OUTBOUND_RECUPERABLES.includes(event.status)) {
+    try {
+      await enqueueOutbound(event._id);
+    } catch (error) {
+      logger.error('[aiMedia] intención persistida pero Redis no aceptó el job', {
+        outboundEventId: String(event._id),
+        conversationId: String(conversation._id),
+        businessId: String(business._id),
+        channelId: String(channel._id),
+        errorType: 'queue_unavailable',
+      });
+    }
+  }
+
+  const storedEvent = await OutboundEvent.findById(event._id);
+  const deliveryStatus = storedEvent?.status || event.status;
+  if (!conversation.messages.some((message) => String(message.outboundEventId) === String(event._id))) {
+    conversation.messages.push({
+      role: 'assistant',
+      content,
+      timestamp: new Date(),
+      sentBy: 'ai',
+      whatsappStatus: deliveryStatus === 'pending' ? 'queued' : deliveryStatus,
+      whatsappError: storedEvent?.error || null,
+      outboundEventId: event._id,
+      mediaUrl: media.url,
+      mediaType: media.type,
+      mediaKey,
+    });
+  }
+
+  const status = deliveryStatus === 'sent'
+    ? 'success'
+    : deliveryStatus === 'delivery_uncertain'
+      ? 'delivery_uncertain'
+      : ['permanently_failed', 'failed', 'skipped'].includes(deliveryStatus)
+        ? 'failed'
+        : 'queued';
+  return {
+    success: !['failed', 'delivery_uncertain'].includes(status),
+    status,
+    deliveryStatus,
+    outboundEventId: String(event._id),
+  };
+};
+
 /**
  * send_media() — Paso 3/3 de la auditoría de factibilidad de send_media
  * (12/sep/2026). Reusa channelService.sendMedia() tal cual (Paso 1: ya
@@ -525,7 +625,7 @@ const yaEnviadoRecientemente = (conversation, mediaKey) =>
  * adjunto real en el historial de chat de la CRM, no solo como JSON de
  * bookkeeping interno de la tool.
  */
-const sendMedia = async (args, { conversation, business, lead }) => {
+const sendMedia = async (args, { conversation, business, lead, toolCallId }) => {
   const resource = typeof args?.resource === 'string' ? args.resource.trim() : '';
   const resolver = RECURSOS_MEDIA_ENVIABLES[resource];
   if (!resolver) {
@@ -539,6 +639,7 @@ const sendMedia = async (args, { conversation, business, lead }) => {
   if (!media) {
     return {
       success: false,
+      status: 'asset_missing',
       error: `Este negocio todavía no cargó su ${NOMBRES_LEGIBLES_RECURSO[resource]} — no hay nada que enviar.`,
     };
   }
@@ -553,21 +654,22 @@ const sendMedia = async (args, { conversation, business, lead }) => {
     return { success: false, error: validacion.error };
   }
 
-  await channelService.sendMedia(validacion.channel._id, lead.phone, media, business._id);
-
   const placeholder = media.type === 'image' ? '[Imagen]' : media.type === 'video' ? '[Video]' : '[Documento]';
-  conversation.messages.push({
-    role: 'assistant',
-    content: placeholder,
-    timestamp: new Date(),
-    sentBy: 'ai',
-    whatsappStatus: 'sent',
-    mediaUrl: media.url,
-    mediaType: media.type,
+  const queued = await persistAndEnqueueAiMedia({
+    conversation,
+    business,
+    lead,
+    channel: validacion.channel,
+    media,
     mediaKey,
+    content: placeholder,
+    toolCallId,
   });
 
-  return { success: true, message: `Se envió ${NOMBRES_LEGIBLES_RECURSO[resource]} al lead por WhatsApp.` };
+  return {
+    ...queued,
+    message: `El envío de ${NOMBRES_LEGIBLES_RECURSO[resource]} quedó encolado para WhatsApp.`,
+  };
 };
 
 /**
@@ -590,7 +692,7 @@ const sendMedia = async (args, { conversation, business, lead }) => {
  * hace imposible por construcción, no solo por instrucción de prompt (ver
  * el mismo comentario en check_stock/get_price).
  */
-const sendProductPhotos = async (args, { conversation, business, lead }) => {
+const sendProductPhotos = async (args, { conversation, business, lead, toolCallId }) => {
   const productId = resolverProductId(args, conversation);
   if (!productId) {
     return { success: false, error: 'Falta el productId y no hay ningún producto identificado antes en esta conversación. Usa search_products primero.' };
@@ -600,7 +702,7 @@ const sendProductPhotos = async (args, { conversation, business, lead }) => {
 
   const foto = productAssetAccess.resolverFotoPrincipal(producto);
   if (!foto) {
-    return { success: false, error: `El producto "${producto.name}" todavía no tiene ninguna foto cargada.` };
+    return { success: false, status: 'asset_missing', error: `El producto "${producto.name}" todavía no tiene ninguna foto cargada.` };
   }
 
   const mediaKey = `product:${producto._id}`;
@@ -616,20 +718,21 @@ const sendProductPhotos = async (args, { conversation, business, lead }) => {
   const url = productAssetAccess.obtenerUrlDeAccesoFotoPrincipal(producto, 'send');
   const media = { url, type: 'image', caption: foto.caption || undefined };
 
-  await channelService.sendMedia(validacion.channel._id, lead.phone, media, business._id);
-
-  conversation.messages.push({
-    role: 'assistant',
-    content: foto.caption || '[Imagen]',
-    timestamp: new Date(),
-    sentBy: 'ai',
-    whatsappStatus: 'sent',
-    mediaUrl: url,
-    mediaType: 'image',
+  const queued = await persistAndEnqueueAiMedia({
+    conversation,
+    business,
+    lead,
+    channel: validacion.channel,
+    media,
     mediaKey,
+    content: foto.caption || '[Imagen]',
+    toolCallId,
   });
 
-  return { success: true, message: `Se envió una foto de "${producto.name}" al lead por WhatsApp.` };
+  return {
+    ...queued,
+    message: `El envío de una foto de "${producto.name}" quedó encolado para WhatsApp.`,
+  };
 };
 
 // Autorización V1 — ver el comentario largo de arriba: siempre `true`
@@ -929,7 +1032,7 @@ const executeToolCall = async (toolCall, context) => {
   }
 
   try {
-    return await tool.execute(args, context);
+    return await tool.execute(args, { ...context, toolCallId: toolCall.id });
   } catch (error) {
     logger.error(`generateReply(): error ejecutando tool ${name}: ${error.message}`);
     return { success: false, error: `Error ejecutando ${name}: ${error.message}` };

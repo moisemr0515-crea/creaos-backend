@@ -11,9 +11,12 @@ const mongoose = require('mongoose');
 const Business = require('../../businesses/business.model');
 const Lead = require('../../leads/lead.model');
 const Conversation = require('../conversation.model');
+const OutboundEvent = require('../../channels/outboundEvent.model');
 
 jest.mock('../../channels/channel.service');
 const channelService = require('../../channels/channel.service');
+jest.mock('../../channels/queues/outbound.queue', () => ({ enqueueOutbound: jest.fn() }));
+const { enqueueOutbound } = require('../../channels/queues/outbound.queue');
 
 // P0 de seguridad (auditoría Business Brain, 19/sep/2026, Bloque 1) —
 // sendMedia() ya no lee business.logo/presentationVideoUrl/brochureUrl
@@ -26,6 +29,7 @@ jest.mock('../../businesses/businessAssetAccess.service');
 const { obtenerUrlDeAcceso } = require('../../businesses/businessAssetAccess.service');
 
 const { executeToolCall } = require('./index');
+const aiService = require('../ai.service');
 
 const MONGO_URI = 'mongodb://localhost:27017/creaos_test_ai_tools_sendmedia';
 
@@ -45,6 +49,7 @@ describe('ai/tools/index — send_media', () => {
 
   afterAll(async () => {
     await Conversation.deleteMany({});
+    await OutboundEvent.deleteMany({});
     await Lead.deleteMany({});
     await Business.deleteMany({});
     await mongoose.disconnect();
@@ -53,6 +58,7 @@ describe('ai/tools/index — send_media', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     await Conversation.deleteMany({});
+    await OutboundEvent.deleteMany({});
     await Lead.deleteMany({});
     await Business.deleteMany({});
 
@@ -72,8 +78,10 @@ describe('ai/tools/index — send_media', () => {
       lastInboundMessageAt: new Date(), // ventana de 24h abierta
     });
 
-    channelService.getChannelForConversation.mockResolvedValue({ _id: 'channel-real-id' });
-    channelService.sendMedia.mockResolvedValue({ messages: [{ id: 'msg-real-1' }] });
+    channelService.getChannelForConversation.mockResolvedValue({ _id: conversation.whatsappChannel, provider: 'gupshup' });
+    enqueueOutbound.mockImplementation(async (eventId) => {
+      await OutboundEvent.updateOne({ _id: eventId }, { status: 'queued' });
+    });
 
     // Mismo mapeo campo->URL que tenían los fixtures ANTES de este cambio
     // (business.logo/presentationVideoUrl/brochureUrl) — el objetivo de
@@ -87,14 +95,15 @@ describe('ai/tools/index — send_media', () => {
     });
   });
 
-  test('resource:"logo" — resuelve business.logo, arma type:"image", llama a channelService.sendMedia() con la URL real', async () => {
+  test('resource:"logo" — crea OutboundEvent image y nunca llama al proveedor desde la tool', async () => {
     const result = await executeToolCall(toolCall({ resource: 'logo' }), { conversation, business, lead });
 
-    expect(channelService.sendMedia).toHaveBeenCalledWith('channel-real-id', '+51987654321', {
-      url: 'https://cloudinary.test/logo.png',
-      type: 'image',
-    }, business._id);
-    expect(result).toEqual({ success: true, message: 'Se envió logo al lead por WhatsApp.' });
+    const event = await OutboundEvent.findOne({ conversation: conversation._id });
+    expect(event).toMatchObject({ origin: 'ai', messageType: 'media', status: 'queued', to: '+51987654321' });
+    expect(event.payload.media).toEqual({ url: 'https://cloudinary.test/logo.png', type: 'image' });
+    expect(enqueueOutbound).toHaveBeenCalledWith(event._id);
+    expect(channelService.sendMedia).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ success: true, status: 'queued', deliveryStatus: 'queued' });
   });
 
   test('pide el acceso con propósito "send" (TTL largo) — restricción real: Meta/Gupshup buscan el archivo de forma asíncrona, no al instante', async () => {
@@ -106,20 +115,19 @@ describe('ai/tools/index — send_media', () => {
   test('resource:"presentation_video" — resuelve business.presentationVideoUrl, arma type:"video"', async () => {
     await executeToolCall(toolCall({ resource: 'presentation_video' }), { conversation, business, lead });
 
-    expect(channelService.sendMedia).toHaveBeenCalledWith('channel-real-id', '+51987654321', {
-      url: 'https://cloudinary.test/presentacion.mp4',
-      type: 'video',
-    }, business._id);
+    const event = await OutboundEvent.findOne({ conversation: conversation._id });
+    expect(event.payload.media).toEqual({ url: 'https://cloudinary.test/presentacion.mp4', type: 'video' });
+    expect(channelService.sendMedia).not.toHaveBeenCalled();
   });
 
   test('resource:"brochure" — resuelve business.brochureUrl + brochureFilename, arma type:"document" con filename (confirmado en el Paso 1 que Gupshup lo acepta ahí)', async () => {
     await executeToolCall(toolCall({ resource: 'brochure' }), { conversation, business, lead });
 
-    expect(channelService.sendMedia).toHaveBeenCalledWith('channel-real-id', '+51987654321', {
-      url: 'https://cloudinary.test/brochure.pdf',
-      type: 'document',
-      filename: 'brochure-creaos.pdf',
-    }, business._id);
+    const event = await OutboundEvent.findOne({ conversation: conversation._id });
+    expect(event.payload.media).toEqual({
+      url: 'https://cloudinary.test/brochure.pdf', type: 'document', filename: 'brochure-creaos.pdf',
+    });
+    expect(channelService.sendMedia).not.toHaveBeenCalled();
   });
 
   test('el modelo NUNCA puede mandar una URL libre — un "resource" fuera del enum se rechaza sin llamar a channelService', async () => {
@@ -145,6 +153,7 @@ describe('ai/tools/index — send_media', () => {
 
     expect(result).toEqual({
       success: false,
+      status: 'asset_missing',
       error: 'Este negocio todavía no cargó su brochure — no hay nada que enviar.',
     });
     expect(channelService.sendMedia).not.toHaveBeenCalled();
@@ -162,6 +171,7 @@ describe('ai/tools/index — send_media', () => {
 
   test('lead sin teléfono: rechaza antes de tocar channelService', async () => {
     const leadSinTelefono = await Lead.create({ business: business._id, name: 'Sin teléfono' });
+    conversation.lead = leadSinTelefono._id;
 
     const result = await executeToolCall(toolCall({ resource: 'logo' }), {
       conversation,
@@ -194,6 +204,22 @@ describe('ai/tools/index — send_media', () => {
     expect(channelService.sendMedia).not.toHaveBeenCalled();
   });
 
+  test('contexto cross-tenant se bloquea antes de crear OutboundEvent', async () => {
+    const otroBusiness = await Business.create({ name: 'Otro negocio' });
+    const leadDeOtroTenant = await Lead.create({ business: otroBusiness._id, name: 'Lead externo', phone: '+51911111111' });
+
+    const result = await executeToolCall(toolCall({ resource: 'logo' }), {
+      conversation,
+      business,
+      lead: leadDeOtroTenant,
+    });
+
+    expect(result).toMatchObject({ success: false });
+    expect(result.error).toMatch(/contexto de conversación, lead y negocio es inconsistente/);
+    expect(await OutboundEvent.countDocuments({})).toBe(0);
+    expect(enqueueOutbound).not.toHaveBeenCalled();
+  });
+
   test('registra el envío como mensaje assistant propio (sentBy:"ai", mediaUrl/mediaType) — visible en el historial de chat, no solo como JSON de bookkeeping', async () => {
     await executeToolCall(toolCall({ resource: 'brochure' }), { conversation, business, lead });
 
@@ -202,16 +228,52 @@ describe('ai/tools/index — send_media', () => {
       role: 'assistant',
       sentBy: 'ai',
       mediaType: 'document',
-      whatsappStatus: 'sent',
+      whatsappStatus: 'queued',
+      outboundEventId: expect.any(mongoose.Types.ObjectId),
     });
   });
 
-  test('channelService.sendMedia() falla (ej. Gupshup responde error): executeToolCall() lo atrapa, nunca propaga', async () => {
-    channelService.sendMedia.mockRejectedValue(new Error('Gupshup Partner API error (media send): 400'));
+  test('un replay del mismo tool_call es idempotente: reutiliza evento y no duplica intención', async () => {
+    await executeToolCall(toolCall({ resource: 'logo' }), { conversation, business, lead });
+    conversation.messages = [];
+    await executeToolCall(toolCall({ resource: 'logo' }), { conversation, business, lead });
 
-    const result = await executeToolCall(toolCall({ resource: 'logo' }), { conversation, business, lead });
+    expect(await OutboundEvent.countDocuments({ conversation: conversation._id })).toBe(1);
+    expect(channelService.sendMedia).not.toHaveBeenCalled();
+  });
 
-    expect(result.success).toBe(false);
-    expect(result.error).toMatch(/Error ejecutando send_media/);
+  test('generateReply continúa después del resultado queued de la tool y produce respuesta final', async () => {
+    const persistedConversation = await Conversation.create({
+      business: business._id,
+      lead: lead._id,
+      channel: 'whatsapp',
+      lastInboundMessageAt: new Date(),
+      messages: [{ role: 'user', content: 'Envíame el video de presentación', sentBy: 'lead' }],
+    });
+    const resolvedChannelId = new mongoose.Types.ObjectId();
+    channelService.getChannelForConversation.mockResolvedValue({ _id: resolvedChannelId, provider: 'gupshup' });
+    const openai = jest.spyOn(aiService.openai.chat.completions, 'create')
+      .mockResolvedValueOnce({
+        choices: [{ message: {
+          content: null,
+          tool_calls: [toolCall({ resource: 'presentation_video' })],
+        } }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      })
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: 'Te envié el video de presentación.' } }],
+        usage: { prompt_tokens: 12, completion_tokens: 6, total_tokens: 18 },
+      });
+
+    const result = await aiService.generateReply(persistedConversation._id, business, lead);
+
+    expect(result.reply).toBe('Te envié el video de presentación.');
+    const event = await OutboundEvent.findOne({ conversation: persistedConversation._id });
+    expect(event).toMatchObject({ messageType: 'media', origin: 'ai', status: 'queued' });
+    const storedConversation = await Conversation.findById(persistedConversation._id);
+    expect(storedConversation.messages.some((message) => message.role === 'tool'
+      && message.content.includes('"status":"queued"'))).toBe(true);
+    expect(channelService.sendMedia).not.toHaveBeenCalled();
+    openai.mockRestore();
   });
 });

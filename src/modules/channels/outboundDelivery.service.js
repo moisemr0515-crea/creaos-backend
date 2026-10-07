@@ -48,8 +48,8 @@ function toDate(value) {
   return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
 }
 
-async function syncManualMessage(event, status, error = null) {
-  if (!event || event.origin !== 'manual') return;
+async function syncLinkedMessage(event, status, error = null) {
+  if (!event) return;
   await Conversation.updateOne(
     {
       _id: event.conversation,
@@ -106,7 +106,7 @@ async function reconcileOne(receipt) {
       { new: true }
     );
     if (event) {
-      await syncManualMessage(event, 'sent');
+      await syncLinkedMessage(event, 'sent');
       logger.info('[outboundDelivery] receipt reconciliado como entregado', {
         outboundEventId: String(event._id),
         tenantId: String(event.tenantId),
@@ -139,7 +139,7 @@ async function reconcileOne(receipt) {
     { new: true }
   );
   if (event) {
-    await syncManualMessage(event, 'retryable_failed', event.error);
+    await syncLinkedMessage(event, 'retryable_failed', event.error);
     await enqueueOutbound(event._id);
   }
   return event;

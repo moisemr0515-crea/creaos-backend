@@ -135,6 +135,35 @@ describe('outboundDelivery.service — receipts y política at-most-once', () =>
     expect((await OutboundEvent.findById(event._id)).providerStatus).toBe('delivered');
   });
 
+  test('receipt de media IA reconcilia el mensaje enlazado al mismo OutboundEvent', async () => {
+    const event = await createEvent({ origin: 'ai', messageType: 'media' });
+    await Conversation.updateOne(
+      { _id: event.conversation },
+      {
+        $push: {
+          messages: {
+            role: 'assistant',
+            content: '[Video]',
+            sentBy: 'ai',
+            whatsappStatus: 'delivery_uncertain',
+            outboundEventId: event._id,
+            mediaType: 'video',
+          },
+        },
+      }
+    );
+
+    await reconcileDeliveryReceipt({
+      type: 'message-event',
+      payload: { id: event.providerMessageId, type: 'delivered' },
+      timestamp: Date.now(),
+    });
+
+    const conversation = await Conversation.findById(event.conversation);
+    expect(conversation.messages[0].whatsappStatus).toBe('sent');
+    expect((await OutboundEvent.findById(event._id)).providerStatus).toBe('delivered');
+  });
+
   test('no reconcilia un evento cuya conversación no coincide con tenant/canal', async () => {
     const event = await createEvent();
     await Conversation.updateOne({ _id: event.conversation }, { whatsappChannel: new mongoose.Types.ObjectId() });
