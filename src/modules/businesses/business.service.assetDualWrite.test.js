@@ -208,4 +208,52 @@ describe('business.service — dual-write de campos *Asset (subirFotos)', () => 
     expect(eliminarPorUrl).toHaveBeenCalledWith('https://cloudinary.test/vieja-legacy.jpg', expect.anything());
     expect(cloudinary.uploader.destroy).not.toHaveBeenCalled();
   });
+
+  test('conserva una foto authenticated del tenant y agrega una nueva sin redescargarla', async () => {
+    await Business.findByIdAndUpdate(business._id, {
+      photos: ['cloudinary-authenticated://creaos/x/photos/a', 'cloudinary-authenticated://creaos/x/photos/b'],
+      photoAssets: [
+        {
+          publicId: 'creaos/x/photos/a', resourceType: 'image', deliveryType: 'authenticated',
+          businessId: business._id, status: 'active', createdAt: new Date(), updatedAt: new Date(),
+        },
+        {
+          publicId: 'creaos/x/photos/b', resourceType: 'image', deliveryType: 'authenticated',
+          businessId: business._id, status: 'active', createdAt: new Date(), updatedAt: new Date(),
+        },
+      ],
+    });
+    subirBuffer.mockResolvedValue({
+      secure_url: 'https://cloudinary.test/nueva.jpg', public_id: 'creaos/x/photos/nueva',
+      resource_type: 'image', type: 'authenticated',
+    });
+
+    const actualizado = await subirFotos(business._id, [
+      { buffer: Buffer.from('nueva'), originalname: 'nueva.jpg', mimetype: 'image/jpeg', size: 5 },
+    ], [1]);
+
+    expect(actualizado.photos).toEqual([
+      'cloudinary-authenticated://creaos/x/photos/b',
+      'cloudinary-authenticated://creaos/x/photos/nueva',
+    ]);
+    expect(cloudinary.uploader.destroy).toHaveBeenCalledWith('creaos/x/photos/a', expect.objectContaining({
+      resource_type: 'image', type: 'authenticated',
+    }));
+    expect(cloudinary.uploader.destroy).not.toHaveBeenCalledWith('creaos/x/photos/b', expect.anything());
+  });
+
+  test('rechaza conservar metadata de foto asociada a otro tenant', async () => {
+    const otroNegocio = await Business.create({ name: 'Otro negocio' });
+    await Business.findByIdAndUpdate(business._id, {
+      photos: ['cloudinary-authenticated://creaos/x/photos/ajena'],
+      photoAssets: [{
+        publicId: 'creaos/x/photos/ajena', resourceType: 'image', deliveryType: 'authenticated',
+        businessId: otroNegocio._id, status: 'active', createdAt: new Date(), updatedAt: new Date(),
+      }],
+    });
+
+    await expect(subirFotos(business._id, [], [0]))
+      .rejects.toThrow('No se puede conservar una foto que no pertenece al negocio');
+    expect(subirBuffer).not.toHaveBeenCalled();
+  });
 });

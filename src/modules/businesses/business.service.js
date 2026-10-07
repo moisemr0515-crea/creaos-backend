@@ -229,11 +229,28 @@ const subirLogo = async (businessId, file) => {
 /**
  * Sube hasta 2 fotos de producto a Cloudinary (reemplaza las anteriores).
  */
-const subirFotos = async (businessId, files) => {
-  if (files.length > 2) throw new AppError('Máximo 2 fotos de producto', 400);
-
+const subirFotos = async (businessId, files, retainPhotoIndexes = []) => {
   const negocioAnterior = await Business.findById(businessId);
   if (!negocioAnterior) throw new AppError('Negocio no encontrado', 404);
+
+  if (!Array.isArray(retainPhotoIndexes)
+    || retainPhotoIndexes.some((index) => !Number.isInteger(index) || index < 0)
+    || new Set(retainPhotoIndexes).size !== retainPhotoIndexes.length
+    || files.length + retainPhotoIndexes.length > 2) {
+    throw new AppError('Selección de fotos inválida', 400);
+  }
+
+  const fotosRetenidas = retainPhotoIndexes.map((index) => {
+    const url = negocioAnterior.photos[index];
+    const asset = negocioAnterior.photoAssets?.[index];
+    if (!url || !asset
+      || asset.deliveryType !== 'authenticated'
+      || asset.status !== 'active'
+      || String(asset.businessId) !== String(businessId)) {
+      throw new AppError('No se puede conservar una foto que no pertenece al negocio', 403);
+    }
+    return { url, asset };
+  });
 
   const resultados = await Promise.all(
     files.map((file) =>
@@ -248,15 +265,25 @@ const subirFotos = async (businessId, files) => {
   const negocio = await Business.findByIdAndUpdate(
     businessId,
     {
-      photos: resultados.map(crearLocatorPrivado),
-      photoAssets: resultados.map((r, i) => crearMetadataAsset(r, files[i], businessId)),
+      photos: [
+        ...fotosRetenidas.map(({ url }) => url),
+        ...resultados.map(crearLocatorPrivado),
+      ],
+      photoAssets: [
+        ...fotosRetenidas.map(({ asset }) => asset),
+        ...resultados.map((r, i) => crearMetadataAsset(r, files[i], businessId)),
+      ],
     },
     { new: true, runValidators: true }
   ).populate('createdBy', 'name email');
 
   // Borrado best-effort de las fotos anteriores — no debe bloquear la respuesta
   await Promise.all(
-    negocioAnterior.photos.map((urlVieja, i) => eliminarAssetAnterior(negocioAnterior.photoAssets?.[i], urlVieja))
+    negocioAnterior.photos.map((urlVieja, i) => (
+      retainPhotoIndexes.includes(i)
+        ? Promise.resolve()
+        : eliminarAssetAnterior(negocioAnterior.photoAssets?.[i], urlVieja)
+    ))
   );
 
   return negocio;

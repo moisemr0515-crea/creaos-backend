@@ -5,6 +5,22 @@ const { AppError } = require('../../middleware/error.middleware');
 
 const CAMPOS_ASSET_VALIDOS = ['logo', 'pdf', 'presentationVideo', 'brochure', 'photos'];
 
+const parseRetainPhotoIndexes = (value) => {
+  if (value === undefined) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new AppError('retainPhotoIndexes debe ser un array JSON válido', 400);
+  }
+  if (!Array.isArray(parsed)
+    || parsed.some((index) => !Number.isInteger(index) || index < 0 || index > 1)
+    || new Set(parsed).size !== parsed.length) {
+    throw new AppError('retainPhotoIndexes contiene índices inválidos', 400);
+  }
+  return parsed;
+};
+
 /**
  * GET /api/v1/businesses/current
  * Devuelve el negocio del usuario autenticado.
@@ -86,11 +102,12 @@ const uploadLogo = async (req, res, next) => {
  */
 const uploadPhotos = async (req, res, next) => {
   try {
-    if (!req.files || req.files.length === 0) {
+    const retainPhotoIndexes = parseRetainPhotoIndexes(req.body?.retainPhotoIndexes);
+    if ((!req.files || req.files.length === 0) && retainPhotoIndexes.length === 0) {
       throw new AppError('Se requiere al menos 1 imagen', 400);
     }
 
-    const negocio = await businessService.subirFotos(req.businessId, req.files);
+    const negocio = await businessService.subirFotos(req.businessId, req.files || [], retainPhotoIndexes);
 
     return respuestaExito(res, {
       message: 'Fotos actualizadas exitosamente',
