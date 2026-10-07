@@ -603,7 +603,10 @@ const getNotifications = async (req, res, next) => {
     respuestaExito(res, {
       message: 'Notificaciones',
       data:    result.items,
-      meta:    buildMeta({ page: result.page, limit: result.limit, total: result.total }),
+      meta: {
+        ...buildMeta({ page: result.page, limit: result.limit, total: result.total }),
+        unreadCount: result.unreadCount,
+      },
     });
   } catch (err) { next(err); }
 };

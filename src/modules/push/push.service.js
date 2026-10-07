@@ -26,19 +26,33 @@ const TOKEN_DEAD_ERROR_CODES = [
  * solo administra el registro de tokens.
  */
 const registrarToken = async (userId, businessId, { token, platform, deviceId }) => {
-  return PushToken.findOneAndUpdate(
-    { user: userId, token },
-    {
-      $set: {
-        business: businessId,
-        platform: platform || 'android',
-        deviceId: deviceId || null,
-        isActive: true,
-        lastSeenAt: new Date(),
-      },
-    },
-    { upsert: true, new: true, setDefaultsOnInsert: true }
-  );
+  const normalizedDeviceId = typeof deviceId === 'string' && deviceId.trim() ? deviceId.trim() : null;
+  const update = {
+    business: businessId,
+    token,
+    platform: platform || 'android',
+    deviceId: normalizedDeviceId,
+    isActive: true,
+    lastSeenAt: new Date(),
+  };
+
+  // Compatibilidad con registros existentes previos a deviceId: el token
+  // conocido se adopta primero. Si FCM rotó el token, el deviceId estable
+  // encuentra y actualiza la misma fila, evitando dos pushes al dispositivo.
+  const existingByToken = await PushToken.findOne({ user: userId, token });
+  if (existingByToken) {
+    Object.assign(existingByToken, update);
+    return existingByToken.save();
+  }
+
+  const filter = normalizedDeviceId
+    ? { user: userId, deviceId: normalizedDeviceId }
+    : { user: userId, token };
+  return PushToken.findOneAndUpdate(filter, { $set: update }, {
+    upsert: true,
+    new: true,
+    setDefaultsOnInsert: true,
+  });
 };
 
 /**

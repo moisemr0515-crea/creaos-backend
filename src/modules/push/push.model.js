@@ -31,6 +31,13 @@ const pushTokenSchema = new mongoose.Schema(
 // reinstall, o simplemente FCM le refresca el token), el POST de arriba
 // hace upsert sobre esta clave en vez de acumular filas duplicadas.
 pushTokenSchema.index({ user: 1, token: 1 }, { unique: true });
+// Un dispositivo estable solo puede tener un token activo por usuario. El
+// índice parcial ignora instalaciones antiguas sin deviceId y permite que un
+// refresh de FCM reemplace el token en vez de acumular destinatarios duplicados.
+pushTokenSchema.index(
+  { user: 1, deviceId: 1 },
+  { unique: true, partialFilterExpression: { deviceId: { $type: 'string' } } }
+);
 // Para push.service.js#sendToUser() (PR-B): buscar rápido los tokens
 // activos de un usuario sin escanear los desactivados.
 pushTokenSchema.index({ user: 1, isActive: 1 });

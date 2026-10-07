@@ -140,13 +140,23 @@ describe('inbound.worker#processInboundJob() — paridad con processGupshupMessa
     });
     await crearLeadYConversacionSinIA();
 
+    const pushSpy = jest.spyOn(pushService, 'sendToUser').mockResolvedValue({ sent: 1, failed: 0, tokens: 1 });
     const event = await crearInboundEvent();
     await processInboundJob({ data: { inboundEventId: event._id } });
 
     const notifs = await Notification.find({ business: business._id, category: 'lead' });
     expect(notifs).toHaveLength(1);
     expect(notifs[0].user.toString()).toBe(owner._id.toString());
-    expect(pushService.sendToUser).not.toBeUndefined(); // sanity: el módulo real sigue existiendo
+    expect(pushSpy).toHaveBeenCalledTimes(1);
+    expect(pushSpy).toHaveBeenCalledWith(owner._id, expect.objectContaining({
+      data: expect.objectContaining({ type: 'lead_message' }),
+    }));
+
+    // BullMQ puede reentregar el mismo job: no debe crear otra Notification
+    // ni enviar un segundo push para el mismo InboundEvent ya procesado.
+    await processInboundJob({ data: { inboundEventId: event._id } });
+    expect(await Notification.countDocuments({ business: business._id, category: 'lead' })).toBe(1);
+    expect(pushSpy).toHaveBeenCalledTimes(1);
 
     const updatedEvent = await InboundEvent.findById(event._id);
     expect(updatedEvent.status).toBe('processed');
