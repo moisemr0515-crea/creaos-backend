@@ -340,7 +340,7 @@ REGLA ANTI-ALUCINACIÓN (nunca la rompas): nunca afirmes que un producto existe,
 // a que el negocio ya tenga políticas cargadas" que PRODUCT_INTELLIGENCE_GUIDANCE:
 // si search_business_knowledge no encuentra nada, ESE es el resultado real.
 const BUSINESS_KNOWLEDGE_GUIDANCE = `POLÍTICAS, PREGUNTAS FRECUENTES Y DOCUMENTO DEL NEGOCIO (search_business_knowledge):
-Este negocio puede tener políticas (garantías, cambios, devoluciones, pagos, reservas, cancelaciones, etc.), preguntas frecuentes autorizadas, y un documento/PDF con información general (qué vende, diferenciadores, condiciones). Consulta search_business_knowledge SIEMPRE que el lead pregunte por una regla, condición, plazo, requisito, algo que podría estar cubierto por una política o FAQ, o información general del negocio — nunca respondas ese tipo de pregunta de memoria ni inventando algo que esta herramienta no confirmó.
+Este negocio puede tener políticas (garantías, cambios, devoluciones, pagos, reservas, cancelaciones, etc.), preguntas frecuentes autorizadas, y un documento/PDF con información general (qué vende, diferenciadores, condiciones). Consulta search_business_knowledge SIEMPRE que el lead pregunte por una regla, condición, plazo, requisito, algo que podría estar cubierto por una política o FAQ, o información general del negocio — nunca respondas ese tipo de pregunta de memoria ni inventando algo que esta herramienta no confirmó. EXCEPCIÓN: para sitio web, redes sociales o contacto digital no uses esta herramienta; responde desde el bloque CONTACTO DIGITAL OFICIAL.
 
 CÓMO INTERPRETAR EL RESULTADO (nunca lo ignores):
 - Si needsClarification:true, el tema varía según el producto y no está claro a cuál se refiere el lead — preguntale cuál antes de responder, no elijas una política al azar ni asumas que la más general aplica.
@@ -455,6 +455,20 @@ const buildSystemPrompt = (business, lead, leadQualification, activeProduct) => 
   const identidadAgente = business.agentName && business.agentName.trim()
     ? `Eres ${business.agentName.trim()}, un agente de ventas profesional y empático de ${business.name}.`
     : `Eres un agente de ventas profesional y empático de ${business.name}.`;
+  const contactoDigital = {
+    website: typeof business.website === 'string' && business.website.trim() ? business.website.trim() : null,
+    facebook: typeof business.facebookUrl === 'string' && business.facebookUrl.trim() ? business.facebookUrl.trim() : null,
+    instagram: typeof business.instagramUrl === 'string' && business.instagramUrl.trim() ? business.instagramUrl.trim() : null,
+    tiktok: typeof business.tiktokUrl === 'string' && business.tiktokUrl.trim() ? business.tiktokUrl.trim() : null,
+  };
+  const bloqueContactoDigital = `CONTACTO DIGITAL OFICIAL DEL NEGOCIO ACTUAL (fuente estructurada y autoritativa):
+- Sitio web: ${contactoDigital.website || 'NO CONFIGURADO'}
+- Facebook: ${contactoDigital.facebook || 'NO CONFIGURADO'}
+- Instagram: ${contactoDigital.instagram || 'NO CONFIGURADO'}
+- TikTok: ${contactoDigital.tiktok || 'NO CONFIGURADO'}
+
+Cuando el lead pida el sitio web, una red social, "las redes" o el contacto digital, usa exclusivamente los valores configurados de este bloque y conserva cada URL exactamente como aparece. Estos valores tienen prioridad sobre el PDF/documento, resultados de search_business_knowledge, historial de conversación y conocimiento general. Si un canal figura como NO CONFIGURADO, indica que no está disponible; nunca inventes una URL, completes un usuario ni uses un valor de otra fuente o negocio.`;
+
 
   const infoNegocio = [
     business.productDescription && `- Qué vende: ${business.productDescription}`,
@@ -467,16 +481,6 @@ const buildSystemPrompt = (business, lead, leadQualification, activeProduct) => 
     // interpolación nunca se escribió.
     business.averageTicket &&
       `- Ticket promedio: ${business.averageTicket} ${business.currency || ''}`.trim(),
-    // Mismo hallazgo, mismo criterio: website existe en el schema
-    // (business.model.js) desde el onboarding pero ningún lugar del módulo
-    // ai lo consumía.
-    business.website && `- Sitio web: ${business.website}`,
-    // Identidad del negocio — redes sociales (12/sep/2026): para que el
-    // agente pueda compartirlas cuando el lead las pida, mismo patrón
-    // condicional (solo si el campo existe y no está vacío).
-    business.facebookUrl && `- Facebook: ${business.facebookUrl}`,
-    business.instagramUrl && `- Instagram: ${business.instagramUrl}`,
-    business.tiktokUrl && `- TikTok: ${business.tiktokUrl}`,
     // Se usa el resumen (barato en tokens) en vez del texto completo del PDF;
     // pdfExtractedText queda como fallback para PDFs subidos antes de tener resumen
     (business.pdfSummary || business.pdfExtractedText) &&
@@ -506,7 +510,9 @@ const buildSystemPrompt = (business, lead, leadQualification, activeProduct) => 
   return `${identidadAgente}
 ${infoNegocio ? `\nINFORMACIÓN DEL NEGOCIO:\n${infoNegocio}\n` : ''}
 Tu objetivo es calificar al lead y guiarlo hacia una venta de manera natural y conversacional.
-${bloqueInstruccionesDueno}${bloquePersonalidad}
+${bloqueInstruccionesDueno}
+${bloqueContactoDigital}
+${bloquePersonalidad}
 INFORMACIÓN DEL LEAD:
 - Nombre: ${lead.name}
 - Empresa: ${lead.company || 'No especificada'}

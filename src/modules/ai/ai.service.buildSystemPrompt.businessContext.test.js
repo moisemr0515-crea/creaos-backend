@@ -30,10 +30,10 @@ describe('ai.service#buildSystemPrompt() — averageTicket/currency/website (GAP
     expect(prompt).toMatch(/Sitio web: https:\/\/creaemprendedores\.com/);
   });
 
-  test('negocio sin averageTicket/currency/website (no completó el onboarding): no aparecen líneas vacías ni rotas', () => {
+  test('negocio sin averageTicket/currency/website: contacto digital marca el canal como no configurado', () => {
     const prompt = buildSystemPrompt({ ...NEGOCIO_BASE }, LEAD_BASE, null);
     expect(prompt).not.toMatch(/Ticket promedio/);
-    expect(prompt).not.toMatch(/Sitio web/);
+    expect(prompt).toMatch(/Sitio web: NO CONFIGURADO/);
   });
 
   test('averageTicket sin currency (documento viejo, campo ausente): igual muestra el ticket, sin "undefined" pegado', () => {
@@ -85,11 +85,11 @@ describe('ai.service#buildSystemPrompt() — redes sociales (facebookUrl/instagr
     expect(prompt).toMatch(/TikTok: https:\/\/tiktok\.com\/@creaos/);
   });
 
-  test('negocio sin ninguna red cargada: ninguna línea aparece', () => {
+  test('negocio sin ninguna red cargada: todas quedan explícitamente no configuradas', () => {
     const prompt = buildSystemPrompt({ ...NEGOCIO_BASE }, LEAD_BASE, null);
-    expect(prompt).not.toMatch(/Facebook:/);
-    expect(prompt).not.toMatch(/Instagram:/);
-    expect(prompt).not.toMatch(/TikTok:/);
+    expect(prompt).toMatch(/Facebook: NO CONFIGURADO/);
+    expect(prompt).toMatch(/Instagram: NO CONFIGURADO/);
+    expect(prompt).toMatch(/TikTok: NO CONFIGURADO/);
   });
 
   test('negocio con solo Instagram cargado (parcial): solo esa línea aparece, sin romper el resto', () => {
@@ -99,7 +99,7 @@ describe('ai.service#buildSystemPrompt() — redes sociales (facebookUrl/instagr
       null,
     );
     expect(prompt).toMatch(/Instagram: https:\/\/instagram\.com\/creaos/);
-    expect(prompt).not.toMatch(/Facebook:/);
-    expect(prompt).not.toMatch(/TikTok:/);
+    expect(prompt).toMatch(/Facebook: NO CONFIGURADO/);
+    expect(prompt).toMatch(/TikTok: NO CONFIGURADO/);
   });
 });
