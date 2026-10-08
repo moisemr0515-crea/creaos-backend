@@ -14,7 +14,13 @@ jest.mock('../../utils/cloudinary', () => ({
   eliminarPorUrl: jest.fn().mockResolvedValue(undefined),
 }));
 
-const { subirBuffer, eliminarPorUrl } = require('../../utils/cloudinary');
+jest.mock('../../utils/documentStorage', () => ({
+  isConfigured: jest.fn().mockReturnValue(false),
+  uploadDocument: jest.fn(),
+  deleteDocument: jest.fn().mockResolvedValue(undefined),
+}));
+
+const documentStorage = require('../../utils/documentStorage');const { subirBuffer, eliminarPorUrl } = require('../../utils/cloudinary');
 const { subirVideoPresentacion, subirBrochure } = require('./business.service');
 
 const MONGO_URI = 'mongodb://localhost:27017/creaos_test_business_media_assets';
@@ -33,6 +39,9 @@ describe('business.service#subirVideoPresentacion()', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    documentStorage.isConfigured.mockReturnValue(false);
+    documentStorage.uploadDocument.mockReset();
+    documentStorage.deleteDocument.mockReset().mockResolvedValue(undefined);
     await Business.deleteMany({});
     business = await Business.create({ name: 'CREA OS' });
   });
@@ -100,6 +109,9 @@ describe('business.service#subirBrochure()', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    documentStorage.isConfigured.mockReturnValue(false);
+    documentStorage.uploadDocument.mockReset();
+    documentStorage.deleteDocument.mockReset().mockResolvedValue(undefined);
     await Business.deleteMany({});
     business = await Business.create({ name: 'CREA OS' });
   });
@@ -150,4 +162,44 @@ describe('business.service#subirBrochure()', () => {
     await expect(subirBrochure(idInexistente, brochureFalso)).rejects.toThrow('Negocio no encontrado');
     expect(subirBuffer).not.toHaveBeenCalled();
   });
-});
+
+  test('5 MB conserva el fallback Cloudinary authenticated cuando storage documental no está configurado', async () => {
+    const file = { ...brochureFalso, size: 5 * 1024 * 1024 };
+    subirBuffer.mockResolvedValue({ secure_url: 'https://cloudinary.test/raw/authenticated/5mb.pdf', public_id: 'brochure/5mb', resource_type: 'raw', format: 'pdf', type: 'authenticated' });
+
+    const actualizado = await subirBrochure(business._id, file);
+
+    expect(actualizado.brochureAsset.provider).toBe('cloudinary');
+    expect(actualizado.brochureAsset.deliveryType).toBe('authenticated');
+  });
+
+  test('12.5 MB falla cerrado si faltan credenciales de storage documental', async () => {
+    const file = { ...brochureFalso, size: Math.floor(12.5 * 1024 * 1024) };
+    await expect(subirBrochure(business._id, file)).rejects.toMatchObject({ statusCode: 503 });
+    expect(subirBuffer).not.toHaveBeenCalled();
+  });
+
+  test.each([12.5, 50, 99.5])('%s MB usa storage documental privado y persiste metadata tenant-safe', async (megabytes) => {
+    documentStorage.isConfigured.mockReturnValue(true);
+    const file = { ...brochureFalso, size: Math.floor(megabytes * 1024 * 1024) };
+    const storageKey = `businesses/${business._id}/brochures/documento.pdf`;
+    documentStorage.uploadDocument.mockResolvedValue({ storageKey });
+
+    const actualizado = await subirBrochure(business._id, file);
+
+    expect(documentStorage.uploadDocument).toHaveBeenCalledWith({ businessId: business._id, file });
+    expect(subirBuffer).not.toHaveBeenCalled();
+    expect(actualizado.brochureUrl).toBe(`document-storage://${storageKey}`);
+    expect(actualizado.brochureAsset).toEqual(expect.objectContaining({
+      provider: 'documentStorage', storageKey, deliveryType: 'signed', businessId: business._id,
+      size: file.size,
+    }));
+  });
+
+  test('más de 100 MB se rechaza antes de llamar a cualquier provider', async () => {
+    documentStorage.isConfigured.mockReturnValue(true);
+    const file = { ...brochureFalso, size: 100 * 1024 * 1024 + 1 };
+    await expect(subirBrochure(business._id, file)).rejects.toMatchObject({ statusCode: 413 });
+    expect(documentStorage.uploadDocument).not.toHaveBeenCalled();
+    expect(subirBuffer).not.toHaveBeenCalled();
+  });});

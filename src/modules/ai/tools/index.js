@@ -445,16 +445,16 @@ const searchBusinessKnowledge = async (args, { conversation, business }) => {
  * negocio todavía no cargó ese archivo — nunca un string vacío/roto.
  */
 const RECURSOS_MEDIA_ENVIABLES = {
-  logo: (business) => {
-    const url = obtenerUrlDeAcceso(business, 'logo', 'send');
+  logo: async (business) => {
+    const url = await obtenerUrlDeAcceso(business, 'logo', 'send');
     return url ? { url, type: 'image' } : null;
   },
-  presentation_video: (business) => {
-    const url = obtenerUrlDeAcceso(business, 'presentationVideo', 'send');
+  presentation_video: async (business) => {
+    const url = await obtenerUrlDeAcceso(business, 'presentationVideo', 'send');
     return url ? { url, type: 'video' } : null;
   },
-  brochure: (business) => {
-    const url = obtenerUrlDeAcceso(business, 'brochure', 'send');
+  brochure: async (business) => {
+    const url = await obtenerUrlDeAcceso(business, 'brochure', 'send');
     return url ? { url, type: 'document', filename: business.brochureFilename || undefined } : null;
   },
 };
@@ -635,7 +635,7 @@ const sendMedia = async (args, { conversation, business, lead, toolCallId }) => 
     };
   }
 
-  const media = resolver(business);
+  const media = await resolver(business);
   if (!media) {
     return {
       success: false,

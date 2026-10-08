@@ -63,11 +63,56 @@ async function sendTemplate(channelId, to, template, tenantId) {
  * @param {string} channelId
  * @returns {Promise<Array>}
  */
+const templateBody = (raw) => {
+  if (typeof raw.body === 'string') return raw.body;
+  if (typeof raw.text === 'string') return raw.text;
+  const components = Array.isArray(raw.components) ? raw.components : [];
+  const body = components.find((component) => String(component.type || '').toUpperCase() === 'BODY');
+  return typeof body?.text === 'string' ? body.text : null;
+};
+
+const readableTemplateName = (value) => String(value || '')
+  .replace(/[_-]+/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim()
+  .replace(/\b\p{L}/gu, (letter) => letter.toUpperCase());
+
+const normalizeTemplate = (raw, channel, tenantId) => {
+  const providerTemplateId = raw.id || raw._id || raw.templateId;
+  const name = raw.elementName || raw.name || raw.templateName;
+  if (!providerTemplateId || !name) return null;
+  const body = templateBody(raw);
+  const placeholders = [...String(body || '').matchAll(/\{\{\s*(\d+)\s*\}\}/g)].map((match) => Number(match[1]));
+  return {
+    providerTemplateId: String(providerTemplateId),
+    id: String(providerTemplateId),
+    name: String(name),
+    displayName: String(raw.displayName || readableTemplateName(name)),
+    category: raw.category ? String(raw.category) : (raw.templateType ? String(raw.templateType) : null),
+    language: raw.language ? String(raw.language) : (raw.languageCode ? String(raw.languageCode) : (raw.lang ? String(raw.lang) : null)),
+    status: String(raw.status || '').toUpperCase(),
+    body,
+    variablesRequired: placeholders.length > 0 ? Math.max(...placeholders) : 0,
+    channelId: String(channel._id),
+    businessId: String(tenantId),
+  };
+};
 async function listTemplates(channelId, tenantId) {
   const channel = await loadOperationalChannel(channelId, tenantId);
-
   const provider = getProviderFor(channel);
-  return provider.listTemplates(channel);
+  const templates = await provider.listTemplates(channel);
+  return templates
+    .filter((raw) => String(raw.status || '').toUpperCase() === 'APPROVED')
+    .filter((raw) => raw.active !== false && raw.isActive !== false)
+    .map((raw) => normalizeTemplate(raw, channel, tenantId))
+    .filter(Boolean);
+}
+
+async function getApprovedTemplate(channelId, tenantId, providerTemplateId) {
+  const templates = await listTemplates(channelId, tenantId);
+  const template = templates.find((item) => item.providerTemplateId === String(providerTemplateId));
+  if (!template) throw new AppError('La plantilla no está aprobada o no pertenece al canal actual', 409);
+  return template;
 }
 
 /**
@@ -171,7 +216,7 @@ function listChannels(tenantId) {
 }
 
 module.exports = {
-  sendMessage, sendTemplate, listTemplates, sendMedia, downloadMedia, getChannelStatus,
+  sendMessage, sendTemplate, listTemplates, getApprovedTemplate, sendMedia, downloadMedia, getChannelStatus,
   getChannelForTenant, getChannelForConversation, listChannels,
   reassignConversationChannel,
 };

@@ -1467,17 +1467,24 @@ const sendTemplateMessage = async (conversationId, template, actor, options = {}
     throw new AppError('El lead no tiene un número de teléfono registrado', 400);
   }
 
+  const channel = await channelService.getChannelForConversation(conversation, tenantId);
+  const approvedTemplate = await channelService.getApprovedTemplate(channel._id, tenantId, template.id);
+  const params = Array.isArray(template.params) ? template.params.map((value) => String(value).trim()) : [];
+  if (params.length !== approvedTemplate.variablesRequired || params.some((value) => !value)) {
+    throw new AppError(`La plantilla requiere ${approvedTemplate.variablesRequired} variable(s) completas`, 400);
+  }
+  const canonicalTemplate = { id: approvedTemplate.providerTemplateId, params };
   const mensaje = {
     role: 'assistant',
-    content: `[Plantilla: ${template.id}]`,
+    content: `[Plantilla: ${approvedTemplate.name}]`,
     timestamp: new Date(),
     sentBy: 'agent',
     whatsappStatus: 'not_applicable',
     whatsappError: null,
     metadata: {
       isTemplate: true,
-      templateId: template.id,
-      templateParams: template.params || [],
+      templateId: canonicalTemplate.id,
+      templateParams: canonicalTemplate.params,
       ...(actor ? { agentId: actor._id, agentName: actor.name } : {}),
     },
   };
@@ -1488,7 +1495,7 @@ const sendTemplateMessage = async (conversationId, template, actor, options = {}
     actor,
     tenantId,
     messageType: 'template',
-    payload: { template },
+    payload: { template: canonicalTemplate },
     message: mensaje,
     suppliedIdempotencyKey: options.idempotencyKey,
   });

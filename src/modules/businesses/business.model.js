@@ -36,9 +36,11 @@ const esWhatsappValido = (valor) => {
 
 const businessAssetSchema = new mongoose.Schema(
   {
-    publicId: { type: String, required: true },
+    provider: { type: String, required: true, enum: ['cloudinary', 'documentStorage'], default: 'cloudinary' },
+    publicId: { type: String, default: null },
+    storageKey: { type: String, default: null },
     resourceType: { type: String, required: true, enum: ['image', 'video', 'raw'] },
-    deliveryType: { type: String, required: true, enum: ['authenticated'] },
+    deliveryType: { type: String, required: true, enum: ['authenticated', 'signed'] },
     businessId: { type: mongoose.Schema.Types.ObjectId, required: true },
     format: { type: String, default: null },
     mimeType: { type: String, default: null },

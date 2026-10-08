@@ -74,6 +74,9 @@ describe('mensajería manual durable por WhatsApp', () => {
 
   test('template manual usa el mismo OutboundEvent durable', async () => {
     const directSend = jest.spyOn(channelService, 'sendTemplate');
+    jest.spyOn(channelService, 'getApprovedTemplate').mockResolvedValue({
+      providerTemplateId: 'bienvenida', name: 'bienvenida', variablesRequired: 1,
+    });
     await aiService.sendTemplateMessage(
       conversation._id,
       { id: 'bienvenida', params: ['Ana'] },

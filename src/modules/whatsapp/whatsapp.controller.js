@@ -1,5 +1,7 @@
 const { respuestaExito } = require('../../utils/response');
 const channelService = require('../channels/channel.service');
+const Conversation = require('../ai/conversation.model');
+const { AppError } = require('../../middleware/error.middleware');
 
 // ─── GET /api/v1/whatsapp/status ──────────────────────────────────────────────
 // Fase 1.1 (Provider Abstraction): reemplaza la llamada directa a
@@ -43,7 +45,18 @@ const getStatus = async (req, res, next) => {
 
 const getTemplates = async (req, res, next) => {
   try {
-    const channel = await channelService.getChannelForTenant(req.businessId);
+    let channel;
+    if (req.query.conversationId) {
+      const conversation = await Conversation.findOne({
+        _id: req.query.conversationId,
+        business: req.businessId,
+        isDeleted: false,
+      });
+      if (!conversation) throw new AppError('Conversación no encontrada', 404);
+      channel = await channelService.getChannelForConversation(conversation, req.businessId);
+    } else {
+      channel = await channelService.getChannelForTenant(req.businessId);
+    }
     if (!channel) {
       return respuestaExito(res, {
         message: 'Plantillas de WhatsApp obtenidas',

@@ -4,6 +4,12 @@
 // Brain, 19/sep/2026, Bloque 1). Cubre el modo dual (campo nuevo *Asset
 // vs. fallback a la URL vieja mientras un documento no se migró) y el TTL
 // distinto por propósito (display vs. send).
+jest.mock('../../utils/documentStorage', () => ({
+  assertTenantKey: jest.fn(),
+  createSignedAccessUrl: jest.fn().mockResolvedValue('https://storage.test/signed-document'),
+}));
+
+const documentStorage = require('../../utils/documentStorage');
 const {
   resolverAsset,
   resolverFoto,
@@ -156,4 +162,35 @@ describe('businessAssetAccess.service — obtenerUrlDeAcceso() / obtenerUrlDeAcc
     const url = obtenerUrlDeAccesoFoto(business, 0);
     expect(url).toContain('type=authenticated');
   });
-});
+
+  test('brochure en document storage valida tenant y devuelve URL temporal firmada', async () => {
+    const business = {
+      _id: 'tenant-a',
+      brochureAsset: {
+        provider: 'documentStorage',
+        storageKey: 'businesses/tenant-a/brochures/doc.pdf',
+        resourceType: 'raw',
+        deliveryType: 'signed',
+        businessId: 'tenant-a',
+        status: 'active',
+      },
+    };
+
+    await expect(obtenerUrlDeAcceso(business, 'brochure', 'send'))
+      .resolves.toBe('https://storage.test/signed-document');
+    expect(documentStorage.assertTenantKey).toHaveBeenCalledWith('tenant-a', business.brochureAsset.storageKey);
+    expect(documentStorage.createSignedAccessUrl).toHaveBeenCalledWith({
+      businessId: 'tenant-a', storageKey: business.brochureAsset.storageKey, purpose: 'send',
+    });
+  });
+
+  test('metadata document storage de otro tenant se bloquea', () => {
+    const business = {
+      _id: 'tenant-a',
+      brochureAsset: {
+        provider: 'documentStorage', storageKey: 'businesses/tenant-b/brochures/doc.pdf',
+        deliveryType: 'signed', businessId: 'tenant-b', status: 'active',
+      },
+    };
+    expect(() => resolverAsset(business, 'brochure')).toThrow('El asset no pertenece a este negocio');
+  });});

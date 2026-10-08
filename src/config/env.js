@@ -72,6 +72,14 @@ const validateProductionIntegrations = ({ runtime }) => {
 
   requireCompleteGroup(missing, ['CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET']);
   requireCompleteGroup(missing, ['FIREBASE_PROJECT_ID', 'FIREBASE_CLIENT_EMAIL', 'FIREBASE_PRIVATE_KEY']);
+  requireIfEnabled(
+    missing,
+    ['DOCUMENT_STORAGE_PROVIDER', 'DOCUMENT_STORAGE_BUCKET', 'DOCUMENT_STORAGE_REGION', 'DOCUMENT_STORAGE_ACCESS_KEY_ID', 'DOCUMENT_STORAGE_SECRET_ACCESS_KEY'],
+    ['DOCUMENT_STORAGE_PROVIDER', 'DOCUMENT_STORAGE_BUCKET', 'DOCUMENT_STORAGE_REGION', 'DOCUMENT_STORAGE_ACCESS_KEY_ID', 'DOCUMENT_STORAGE_SECRET_ACCESS_KEY']
+  );
+  if (hasValue('DOCUMENT_STORAGE_PROVIDER') && process.env.DOCUMENT_STORAGE_PROVIDER.trim() !== 's3') {
+    missing.push('DOCUMENT_STORAGE_PROVIDER=s3');
+  }
 
   if (runtime === 'api') {
     requireCompleteGroup(missing, ['STRIPE_SECRET_KEY', 'STRIPE_PUBLIC_KEY', 'STRIPE_WEBHOOK_SECRET']);
@@ -186,6 +194,16 @@ module.exports = {
   CLOUDINARY_API_KEY: process.env.CLOUDINARY_API_KEY,
   CLOUDINARY_API_SECRET: process.env.CLOUDINARY_API_SECRET,
 
+
+  // Storage documental S3-compatible (brochures de hasta 100 MB). Opcional:
+  // si se configura una variable del grupo, validateEnv exige el grupo completo.
+  DOCUMENT_STORAGE_PROVIDER: process.env.DOCUMENT_STORAGE_PROVIDER,
+  DOCUMENT_STORAGE_BUCKET: process.env.DOCUMENT_STORAGE_BUCKET,
+  DOCUMENT_STORAGE_REGION: process.env.DOCUMENT_STORAGE_REGION,
+  DOCUMENT_STORAGE_ENDPOINT: process.env.DOCUMENT_STORAGE_ENDPOINT,
+  DOCUMENT_STORAGE_ACCESS_KEY_ID: process.env.DOCUMENT_STORAGE_ACCESS_KEY_ID,
+  DOCUMENT_STORAGE_SECRET_ACCESS_KEY: process.env.DOCUMENT_STORAGE_SECRET_ACCESS_KEY,
+  DOCUMENT_STORAGE_FORCE_PATH_STYLE: process.env.DOCUMENT_STORAGE_FORCE_PATH_STYLE === 'true',
   // CORS — lista de orígenes permitidos separados por coma
   ALLOWED_ORIGINS: (process.env.ALLOWED_ORIGINS || '')
     .split(',')

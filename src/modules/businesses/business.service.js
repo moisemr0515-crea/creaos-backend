@@ -5,6 +5,7 @@ const Business = require('./business.model');
 const { AppError } = require('../../middleware/error.middleware');
 const { cloudinary, subirBuffer, eliminarPorUrl } = require('../../utils/cloudinary');
 const logger = require('../../utils/logger');
+const documentStorage = require('../../utils/documentStorage');
 // Bloque 3 de la auditoría Business Brain (§45-50, 20/sep/2026) — RAG del
 // PDF, en paralelo al pdfSummary/pdfExtractedText de siempre (ver
 // subirPdf() más abajo).
@@ -16,6 +17,27 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 const MAX_PDF_TEXT_LENGTH = 5000;
 const MAX_PDF_SUMMARY_LENGTH = 800;
+const CLOUDINARY_RAW_SAFE_LIMIT_BYTES = 10 * 1024 * 1024;
+const BROCHURE_MAX_BYTES = 100 * 1024 * 1024;
+
+const crearMetadataDocumento = ({ storageKey }, file, businessId) => {
+  const ahora = new Date();
+  return {
+    provider: 'documentStorage',
+    publicId: null,
+    storageKey,
+    resourceType: 'raw',
+    deliveryType: 'signed',
+    businessId,
+    format: 'pdf',
+    mimeType: file.mimetype || 'application/pdf',
+    originalName: file.originalname || 'brochure.pdf',
+    size: Number.isFinite(file.size) ? file.size : file.buffer?.length ?? null,
+    status: 'active',
+    createdAt: ahora,
+    updatedAt: ahora,
+  };
+};
 
 // Auditoría de contexto del agente (12/sep/2026): un PDF escaneado/de
 // imágenes (pdf-parse no hace OCR) devuelve texto vacío o casi vacío.
@@ -180,6 +202,17 @@ const actualizarSettings = async (businessId, { timezone, language, notification
  * Best-effort en ambos casos — no debe bloquear la respuesta.
  */
 const eliminarAssetAnterior = async (assetAnterior, urlAnteriorLegacy) => {
+  if (assetAnterior?.provider === 'documentStorage' || assetAnterior?.storageKey) {
+    try {
+      await documentStorage.deleteDocument({
+        businessId: assetAnterior.businessId,
+        storageKey: assetAnterior.storageKey,
+      });
+    } catch (error) {
+      logger.warn(`Error al borrar documento anterior (${assetAnterior.storageKey}): ${error.message}`);
+    }
+    return;
+  }
   if (assetAnterior?.publicId) {
     try {
       await cloudinary.uploader.destroy(assetAnterior.publicId, {
@@ -432,28 +465,47 @@ const subirVideoPresentacion = async (businessId, file) => {
 const subirBrochure = async (businessId, file) => {
   const negocioAnterior = await Business.findById(businessId);
   if (!negocioAnterior) throw new AppError('Negocio no encontrado', 404);
+  const fileSize = Number.isFinite(file.size) ? file.size : file.buffer?.length ?? 0;
+  if (fileSize > BROCHURE_MAX_BYTES) {
+    throw new AppError('El brochure no puede exceder 100 MB', 413);
+  }
 
-  const resultado = await subirBuffer(file.buffer, {
-    folder: `creaos/businesses/${businessId}/brochure`,
-    resource_type: 'raw',
-    type: 'authenticated',
-    format: 'pdf',
-    overwrite: true,
-  });
+  let brochureUrl;
+  let brochureAsset;
+
+  if (documentStorage.isConfigured()) {
+    const resultado = await documentStorage.uploadDocument({ businessId, file });
+    brochureUrl = `document-storage://${resultado.storageKey}`;
+    brochureAsset = crearMetadataDocumento(resultado, file, businessId);
+  } else {
+    if (fileSize > CLOUDINARY_RAW_SAFE_LIMIT_BYTES) {
+      throw new AppError(
+        'El storage documental para brochures mayores a 10 MB no está configurado',
+        503
+      );
+    }
+    const resultado = await subirBuffer(file.buffer, {
+      folder: `creaos/businesses/${businessId}/brochure`,
+      resource_type: 'raw',
+      type: 'authenticated',
+      format: 'pdf',
+      overwrite: true,
+    });
+    brochureUrl = crearLocatorPrivado(resultado);
+    brochureAsset = crearMetadataAsset(resultado, file, businessId);
+  }
 
   const negocio = await Business.findByIdAndUpdate(
     businessId,
     {
-      brochureUrl: crearLocatorPrivado(resultado),
+      brochureUrl,
       brochureFilename: file.originalname,
-      brochureAsset: crearMetadataAsset(resultado, file, businessId),
+      brochureAsset,
     },
     { new: true, runValidators: true }
   ).populate('createdBy', 'name email');
 
-  // Borrado best-effort del brochure anterior — no debe bloquear la respuesta
   await eliminarAssetAnterior(negocioAnterior.brochureAsset, negocioAnterior.brochureUrl);
-
   return negocio;
 };
 

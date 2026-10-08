@@ -199,9 +199,9 @@ const getAssetAccess = async (req, res, next) => {
 
     const negocio = await businessService.obtenerNegocioActual(req.businessId);
 
-    const url = campo === 'photos'
+    const url = await (campo === 'photos'
       ? businessAssetAccess.obtenerUrlDeAccesoFoto(negocio, Number(req.query.index) || 0, 'display')
-      : businessAssetAccess.obtenerUrlDeAcceso(negocio, campo, 'display');
+      : businessAssetAccess.obtenerUrlDeAcceso(negocio, campo, 'display'));
 
     if (!url) throw new AppError('Este negocio todavía no cargó ese archivo', 404);
 

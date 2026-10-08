@@ -13,8 +13,11 @@ const Conversation = require('../ai/conversation.model');
 const WhatsAppChannel = require('./whatsappChannel.model');
 const logger = require('../../utils/logger');
 const channelService = require('./channel.service');
+const GupshupProvider = require('./providers/gupshupProvider');
 
 const MONGO_URI = 'mongodb://localhost:27017/creaos_test_channel_service';
+
+afterEach(() => jest.restoreAllMocks());
 
 describe('channelService#getChannelForConversation()', () => {
   let business;
@@ -175,4 +178,32 @@ describe('channelService#getChannelForConversation()', () => {
     const foreign = await WhatsAppChannel.create({ tenantId: other._id, businessId: other._id, provider: 'gupshup', connectionType: 'DEDICATED', status: 'active', phoneNumberId: 'pnid-known-foreign', phoneNumber: '+51900000015' });
     await expect(channelService.sendMessage(foreign._id, '+51911111111', 'hola', business._id)).rejects.toMatchObject({ statusCode: 404 });
   });
-});
+
+  test('catálogo filtra solo APPROVED activos y normaliza nombre legible, idioma, categoría y variables', async () => {
+    const channel = await crearCanal({ phoneNumberId: 'pnid-templates', phoneNumber: '+51900000016' });
+    jest.spyOn(GupshupProvider.prototype, 'listTemplates').mockResolvedValue([
+      { id: 'uuid-approved', elementName: 'bienvenida_cliente', status: 'APPROVED', language: 'es_PE', category: 'MARKETING', body: 'Hola {{1}}, tu código es {{2}}' },
+      { id: 'uuid-pending', elementName: 'pendiente', status: 'PENDING', language: 'es' },
+      { id: 'uuid-disabled', elementName: 'desactivada', status: 'APPROVED', active: false },
+    ]);
+
+    const templates = await channelService.listTemplates(channel._id, business._id);
+
+    expect(templates).toHaveLength(1);
+    expect(templates[0]).toEqual(expect.objectContaining({
+      providerTemplateId: 'uuid-approved', name: 'bienvenida_cliente',
+      displayName: 'Bienvenida Cliente', language: 'es_PE', category: 'MARKETING',
+      status: 'APPROVED', variablesRequired: 2,
+      channelId: String(channel._id), businessId: String(business._id),
+    }));
+  });
+
+  test('una plantilla no aprobada o de otro canal no puede validarse para envío', async () => {
+    const channel = await crearCanal({ phoneNumberId: 'pnid-template-guard', phoneNumber: '+51900000017' });
+    jest.spyOn(GupshupProvider.prototype, 'listTemplates').mockResolvedValue([
+      { id: 'uuid-real', elementName: 'bienvenida', status: 'APPROVED' },
+    ]);
+
+    await expect(channelService.getApprovedTemplate(channel._id, business._id, 'uuid-inventado'))
+      .rejects.toMatchObject({ statusCode: 409 });
+  });});
