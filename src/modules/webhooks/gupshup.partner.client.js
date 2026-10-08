@@ -19,6 +19,23 @@ const logger = require('../../utils/logger');
 
 const PARTNER_API_BASE_URL = 'https://partner.gupshup.io';
 
+const normalizeTemplatePhone = (value) => String(value || '').replace(/\D/g, '');
+
+const providerHttpError = (operation, response, bodyText) => {
+  let providerBody = null;
+  try {
+    providerBody = JSON.parse(bodyText);
+  } catch {
+    providerBody = null;
+  }
+  const error = new Error(`Gupshup Partner API error (${operation}): ${response.status} ${bodyText}`);
+  error.statusCode = response.status;
+  error.response = { status: response.status };
+  error.providerCode = providerBody?.code || providerBody?.errorCode || null;
+  error.providerMessage = providerBody?.message || null;
+  return error;
+};
+
 /**
  * Envía un mensaje de texto por WhatsApp vía la API de mensajería Partner
  * de Gupshup (v3, shape estilo WhatsApp Cloud API — distinto del form-
@@ -222,6 +239,8 @@ async function listTemplates({ apiKey, appId } = {}) {
  *   resolverCredencialesDeEnvio() para el envío de texto/media.
  */
 async function sendTemplateMessage(to, template, { apiKey, appId, source, appName } = {}) {
+  const normalizedSource = normalizeTemplatePhone(source);
+  const normalizedDestination = normalizeTemplatePhone(to);
   logger.info('[GupshupPartnerClient] enviando plantilla via Partner API', {
     to,
     appId,
@@ -232,8 +251,9 @@ async function sendTemplateMessage(to, template, { apiKey, appId, source, appNam
 
   const body = new URLSearchParams({
     channel: 'whatsapp',
-    source,
-    destination: to,
+    source: normalizedSource,
+    sandbox: 'false',
+    destination: normalizedDestination,
     'src.name': appName,
     template: JSON.stringify({ id: template.id, params: template.params || [] }),
   });
@@ -250,7 +270,7 @@ async function sendTemplateMessage(to, template, { apiKey, appId, source, appNam
   if (!response.ok) {
     const errText = await response.text().catch(() => '');
     logger.error('[GupshupPartnerClient] Partner API respondió error (plantilla)', { status: response.status, body: errText, appId });
-    throw new Error(`Gupshup Partner API error (template send): ${response.status} ${errText}`);
+    throw providerHttpError('template send', response, errText);
   }
 
   const json = await response.json();

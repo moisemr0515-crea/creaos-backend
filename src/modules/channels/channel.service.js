@@ -68,7 +68,20 @@ const templateBody = (raw) => {
   if (typeof raw.text === 'string') return raw.text;
   const components = Array.isArray(raw.components) ? raw.components : [];
   const body = components.find((component) => String(component.type || '').toUpperCase() === 'BODY');
-  return typeof body?.text === 'string' ? body.text : null;
+  if (typeof body?.text === 'string') return body.text;
+
+  // Partner API entrega el cuerpo real dentro de containerMeta.data. El
+  // campo top-level data agrega además los botones (" | [Botón]") y se
+  // conserva solo como fallback para respuestas antiguas/incompletas.
+  if (typeof raw.containerMeta === 'string') {
+    try {
+      const containerMeta = JSON.parse(raw.containerMeta);
+      if (typeof containerMeta?.data === 'string') return containerMeta.data;
+    } catch {
+      // Catálogo externo malformado: continuar al fallback sin inventar body.
+    }
+  }
+  return typeof raw.data === 'string' ? raw.data : null;
 };
 
 const readableTemplateName = (value) => String(value || '')

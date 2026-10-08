@@ -198,6 +198,26 @@ describe('channelService#getChannelForConversation()', () => {
     }));
   });
 
+  test('catálogo Partner obtiene body y variables desde containerMeta.data', async () => {
+    const channel = await crearCanal({ phoneNumberId: 'pnid-partner-template', phoneNumber: '+51900000018' });
+    jest.spyOn(GupshupProvider.prototype, 'listTemplates').mockResolvedValue([
+      {
+        id: 'uuid-partner',
+        elementName: 'seguimiento_comercial',
+        status: 'APPROVED',
+        languageCode: 'es',
+        category: 'MARKETING',
+        data: 'Hola {{1}} | [Continuar]',
+        containerMeta: JSON.stringify({ data: 'Hola {{1}}, soy {{2}} de {{3}}.' }),
+      },
+    ]);
+
+    const [template] = await channelService.listTemplates(channel._id, business._id);
+
+    expect(template.body).toBe('Hola {{1}}, soy {{2}} de {{3}}.');
+    expect(template.variablesRequired).toBe(3);
+  });
+
   test('una plantilla no aprobada o de otro canal no puede validarse para envío', async () => {
     const channel = await crearCanal({ phoneNumberId: 'pnid-template-guard', phoneNumber: '+51900000017' });
     jest.spyOn(GupshupProvider.prototype, 'listTemplates').mockResolvedValue([

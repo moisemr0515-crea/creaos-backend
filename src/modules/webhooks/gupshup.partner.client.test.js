@@ -361,9 +361,24 @@ describe('gupshup.partner.client#sendTemplateMessage()', () => {
     const body = new URLSearchParams(init.body);
     expect(body.get('channel')).toBe('whatsapp');
     expect(body.get('source')).toBe('51900000001');
+    expect(body.get('sandbox')).toBe('false');
     expect(body.get('destination')).toBe('51923523382');
     expect(body.get('src.name')).toBe('creaos507f1f77bcf86cd799439011');
     expect(JSON.parse(body.get('template'))).toEqual({ id: 'tpl-1', params: ['Ana', 'lunes'] });
+  });
+
+  test('normaliza source y destination al formato numérico exigido por Partner API', async () => {
+    global.fetch.mockResolvedValue(mockJsonResponse({ status: 'submitted', messageId: 'msg-tpl-1' }));
+
+    await sendTemplateMessage('+51 923 523 382', { id: 'tpl-1', params: ['Ana'] }, {
+      ...CREDENCIALES,
+      source: '+51 900 000 001',
+    });
+
+    const [, init] = global.fetch.mock.calls[0];
+    const body = new URLSearchParams(init.body);
+    expect(body.get('source')).toBe('51900000001');
+    expect(body.get('destination')).toBe('51923523382');
   });
 
   test('template sin params: manda params: [] (no undefined, no lo omite)', async () => {
@@ -391,6 +406,16 @@ describe('gupshup.partner.client#sendTemplateMessage()', () => {
     await expect(sendTemplateMessage('51923523382', { id: 'tpl-1' }, CREDENCIALES)).rejects.toThrow(
       'Gupshup Partner API error (template send): 401'
     );
+  });
+
+  test('error de provider conserva HTTP status y mensaje estructurados para el worker', async () => {
+    global.fetch.mockResolvedValue(mockJsonResponse({ message: 'Invalid App Details', code: 'INVALID_APP' }, false, 400));
+
+    await expect(sendTemplateMessage('51923523382', { id: 'tpl-1' }, CREDENCIALES)).rejects.toMatchObject({
+      statusCode: 400,
+      providerCode: 'INVALID_APP',
+      providerMessage: 'Invalid App Details',
+    });
   });
 
   test('nunca imprime la credencial — el texto del error no contiene el apiKey', async () => {
