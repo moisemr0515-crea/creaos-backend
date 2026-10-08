@@ -90,6 +90,74 @@ const readableTemplateName = (value) => String(value || '')
   .trim()
   .replace(/\b\p{L}/gu, (letter) => letter.toUpperCase());
 
+const TEMPLATE_VARIABLE_DEFINITIONS = {
+  seguimiento_comercial: [
+    { key: 'lead_name', label: 'Nombre del lead', source: 'lead.name' },
+    { key: 'agent_name', label: 'Nombre del agente', source: 'business.agentName' },
+    { key: 'business_name', label: 'Nombre del negocio', source: 'business.name' },
+  ],
+  seguimiento_cotizacion: [
+    { key: 'lead_name', label: 'Nombre del lead', source: 'lead.name' },
+    { key: 'business_name', label: 'Nombre del negocio', source: 'business.name' },
+  ],
+  reactivar_prospecto: [
+    { key: 'lead_name', label: 'Nombre del lead', source: 'lead.name' },
+    { key: 'agent_name', label: 'Nombre del agente', source: 'business.agentName' },
+    { key: 'business_name', label: 'Nombre del negocio', source: 'business.name' },
+  ],
+  recordatorio_cita: [
+    { key: 'lead_name', label: 'Nombre del lead', source: 'lead.name' },
+    { key: 'agent_name', label: 'Nombre del agente', source: 'business.agentName' },
+    { key: 'appointment_at', label: 'Fecha y hora', source: null },
+  ],
+};
+
+const valueFromSource = (source, { lead, business } = {}) => {
+  if (source === 'lead.name') return lead?.name;
+  if (source === 'business.agentName') return business?.agentName;
+  if (source === 'business.name') return business?.name;
+  return null;
+};
+
+const templateVariableDefinitions = (templateName, variablesRequired) => {
+  const configured = TEMPLATE_VARIABLE_DEFINITIONS[String(templateName || '').toLowerCase()] || [];
+  return Array.from({ length: variablesRequired }, (_, offset) => {
+    const definition = configured[offset] || {
+      key: `variable_${offset + 1}`,
+      label: `Variable {{${offset + 1}}}`,
+      source: null,
+    };
+    return { index: offset + 1, ...definition, automatic: Boolean(definition.source) };
+  });
+};
+
+const resolveTemplateVariables = (template, context = {}) => templateVariableDefinitions(
+  template.name,
+  template.variablesRequired
+).map((definition) => ({
+  ...definition,
+  value: definition.automatic
+    ? String(valueFromSource(definition.source, context) || '').trim()
+    : null,
+}));
+
+const resolveTemplateParams = (template, context = {}, providedParams = []) => {
+  const variables = resolveTemplateVariables(template, context);
+  const params = variables.map((variable, offset) => (
+    variable.automatic
+      ? variable.value
+      : String(providedParams[offset] || '').trim()
+  ));
+  const missing = variables.find((variable, offset) => !params[offset]);
+  if (missing) {
+    if (missing.key === 'appointment_at') {
+      throw new AppError('Completa la fecha y hora antes de enviar.', 400);
+    }
+    throw new AppError(`Completa ${missing.label.toLowerCase()} antes de enviar.`, 400);
+  }
+  return params;
+};
+
 const normalizeTemplate = (raw, channel, tenantId) => {
   const providerTemplateId = raw.id || raw._id || raw.templateId;
   const name = raw.elementName || raw.name || raw.templateName;
@@ -232,4 +300,5 @@ module.exports = {
   sendMessage, sendTemplate, listTemplates, getApprovedTemplate, sendMedia, downloadMedia, getChannelStatus,
   getChannelForTenant, getChannelForConversation, listChannels,
   reassignConversationChannel,
+  resolveTemplateVariables, resolveTemplateParams,
 };

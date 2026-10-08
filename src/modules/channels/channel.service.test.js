@@ -226,4 +226,35 @@ describe('channelService#getChannelForConversation()', () => {
 
     await expect(channelService.getApprovedTemplate(channel._id, business._id, 'uuid-inventado'))
       .rejects.toMatchObject({ statusCode: 409 });
-  });});
+  });
+});
+
+describe('channelService — variables conocidas de templates', () => {
+  const context = {
+    lead: { name: 'Moisés' },
+    business: { name: 'CREA OS', agentName: 'Asesora CREA' },
+  };
+
+  test.each([
+    ['seguimiento_comercial', 3, ['Moisés', 'Asesora CREA', 'CREA OS']],
+    ['seguimiento_cotizacion', 2, ['Moisés', 'CREA OS']],
+    ['reactivar_prospecto', 3, ['Moisés', 'Asesora CREA', 'CREA OS']],
+  ])('%s autocompleta solo desde lead y negocio del tenant', (name, variablesRequired, expected) => {
+    const template = { name, variablesRequired };
+    expect(channelService.resolveTemplateParams(template, context, [])).toEqual(expected);
+    expect(channelService.resolveTemplateVariables(template, context).every((item) => item.automatic)).toBe(true);
+  });
+
+  test('recordatorio_cita autocompleta lead/agente y exige únicamente fecha/hora', () => {
+    const template = { name: 'recordatorio_cita', variablesRequired: 3 };
+    expect(channelService.resolveTemplateVariables(template, context)).toEqual([
+      expect.objectContaining({ key: 'lead_name', automatic: true, value: 'Moisés' }),
+      expect.objectContaining({ key: 'agent_name', automatic: true, value: 'Asesora CREA' }),
+      expect.objectContaining({ key: 'appointment_at', automatic: false, value: null }),
+    ]);
+    expect(() => channelService.resolveTemplateParams(template, context, ['', '', '']))
+      .toThrow('Completa la fecha y hora antes de enviar.');
+    expect(channelService.resolveTemplateParams(template, context, ['', '', '10/10/2026 15:00']))
+      .toEqual(['Moisés', 'Asesora CREA', '10/10/2026 15:00']);
+  });
+});

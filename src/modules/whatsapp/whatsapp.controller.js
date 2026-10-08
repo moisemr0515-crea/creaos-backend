@@ -1,6 +1,7 @@
 const { respuestaExito } = require('../../utils/response');
 const channelService = require('../channels/channel.service');
 const Conversation = require('../ai/conversation.model');
+const Business = require('../businesses/business.model');
 const { AppError } = require('../../middleware/error.middleware');
 
 // ─── GET /api/v1/whatsapp/status ──────────────────────────────────────────────
@@ -46,12 +47,13 @@ const getStatus = async (req, res, next) => {
 const getTemplates = async (req, res, next) => {
   try {
     let channel;
+    let conversation = null;
     if (req.query.conversationId) {
-      const conversation = await Conversation.findOne({
+      conversation = await Conversation.findOne({
         _id: req.query.conversationId,
         business: req.businessId,
         isDeleted: false,
-      });
+      }).populate('lead', 'name');
       if (!conversation) throw new AppError('Conversación no encontrada', 404);
       channel = await channelService.getChannelForConversation(conversation, req.businessId);
     } else {
@@ -65,10 +67,20 @@ const getTemplates = async (req, res, next) => {
     }
 
     const templates = await channelService.listTemplates(channel._id, req.businessId);
+    const business = conversation
+      ? await Business.findById(req.businessId).select('name agentName')
+      : null;
+    const scopedTemplates = templates.map((template) => ({
+      ...template,
+      variables: channelService.resolveTemplateVariables(template, {
+        lead: conversation?.lead || null,
+        business,
+      }),
+    }));
 
     return respuestaExito(res, {
       message: 'Plantillas de WhatsApp obtenidas',
-      data: { templates },
+      data: { templates: scopedTemplates },
     });
   } catch (err) {
     next(err);

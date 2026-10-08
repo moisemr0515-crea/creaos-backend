@@ -1469,10 +1469,14 @@ const sendTemplateMessage = async (conversationId, template, actor, options = {}
 
   const channel = await channelService.getChannelForConversation(conversation, tenantId);
   const approvedTemplate = await channelService.getApprovedTemplate(channel._id, tenantId, template.id);
-  const params = Array.isArray(template.params) ? template.params.map((value) => String(value).trim()) : [];
-  if (params.length !== approvedTemplate.variablesRequired || params.some((value) => !value)) {
-    throw new AppError(`La plantilla requiere ${approvedTemplate.variablesRequired} variable(s) completas`, 400);
-  }
+  const business = await Business.findById(tenantId).select('name agentName');
+  if (!business) throw new AppError('Negocio no encontrado', 404);
+  const providedParams = Array.isArray(template.params) ? template.params : [];
+  const params = channelService.resolveTemplateParams(
+    approvedTemplate,
+    { lead, business },
+    providedParams
+  );
   const canonicalTemplate = { id: approvedTemplate.providerTemplateId, params };
   const mensaje = {
     role: 'assistant',

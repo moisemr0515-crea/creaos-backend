@@ -215,11 +215,11 @@ const getConversation = async (req, res, next) => {
     // Ventana de 24h de WhatsApp Business (Meta) — el frontend la necesita
     // para decidir si mostrar el compositor de texto libre o forzar una
     // plantilla, sin tener que pedirla aparte.
-    const { windowOpen, windowExpiresAt } = conversation.getWindowState();
+    const { windowOpen, windowExpiresAt, windowState } = conversation.getWindowState();
 
     return respuestaExito(res, {
       message: 'Conversación obtenida exitosamente',
-      data: { conversation, windowOpen, windowExpiresAt },
+      data: { conversation, windowOpen, windowExpiresAt, windowState },
     });
   } catch (err) {
     next(err);

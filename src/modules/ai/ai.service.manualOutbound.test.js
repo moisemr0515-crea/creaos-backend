@@ -6,6 +6,7 @@ const mongoose = require('mongoose');
 const aiService = require('./ai.service');
 const Conversation = require('./conversation.model');
 const Lead = require('../leads/lead.model');
+const Business = require('../businesses/business.model');
 const WhatsAppChannel = require('../channels/whatsappChannel.model');
 const OutboundEvent = require('../channels/outboundEvent.model');
 const channelService = require('../channels/channel.service');
@@ -33,7 +34,8 @@ describe('mensajería manual durable por WhatsApp', () => {
     enqueueOutbound.mockReset().mockResolvedValue(undefined);
     await mongoose.connection.dropDatabase();
 
-    tenantId = new mongoose.Types.ObjectId();
+    const business = await Business.create({ name: 'CREA OS', agentName: 'Asesora CREA' });
+    tenantId = business._id;
     actor = { _id: new mongoose.Types.ObjectId(), name: 'Agente', business: tenantId };
     lead = await Lead.create({ business: tenantId, name: 'Lead', phone: '+51900000000' });
     channel = await WhatsAppChannel.create({
@@ -91,6 +93,47 @@ describe('mensajería manual durable por WhatsApp', () => {
     expect(directSend).not.toHaveBeenCalled();
   });
 
+
+  test('primer contacto sin inbound bloquea texto libre antes de crear OutboundEvent', async () => {
+    conversation.lastInboundMessageAt = null;
+    await conversation.save();
+
+    await expect(aiService.sendAgentMessage(conversation._id, 'No enviar', actor, options('first-contact-text')))
+      .rejects.toMatchObject({ statusCode: 422 });
+    expect(await OutboundEvent.countDocuments({ conversation: conversation._id })).toBe(0);
+  });
+
+  test('seguimiento_comercial ignora valores automáticos del cliente y usa Lead/Business reales', async () => {
+    jest.spyOn(channelService, 'getApprovedTemplate').mockResolvedValue({
+      providerTemplateId: 'tpl-seguimiento', name: 'seguimiento_comercial', variablesRequired: 3,
+    });
+
+    await aiService.sendTemplateMessage(
+      conversation._id,
+      { id: 'tpl-seguimiento', params: ['Incorrecto', 'Incorrecto', 'Incorrecto'] },
+      actor,
+      options('template-auto-values')
+    );
+
+    const event = await OutboundEvent.findOne({ conversation: conversation._id });
+    expect(event.payload.template.params).toEqual(['Lead', 'Asesora CREA', 'CREA OS']);
+  });
+
+  test('recordatorio_cita sin fecha/hora no crea mensaje ni OutboundEvent', async () => {
+    jest.spyOn(channelService, 'getApprovedTemplate').mockResolvedValue({
+      providerTemplateId: 'tpl-cita', name: 'recordatorio_cita', variablesRequired: 3,
+    });
+
+    await expect(aiService.sendTemplateMessage(
+      conversation._id,
+      { id: 'tpl-cita', params: ['', '', ''] },
+      actor,
+      options('template-missing-date')
+    )).rejects.toThrow('Completa la fecha y hora antes de enviar.');
+
+    expect(await OutboundEvent.countDocuments({ conversation: conversation._id })).toBe(0);
+    expect((await Conversation.findById(conversation._id)).messages).toHaveLength(0);
+  });
   test('media manual usa el mismo OutboundEvent durable', async () => {
     const directSend = jest.spyOn(channelService, 'sendMedia');
     await aiService.sendMediaMessage(

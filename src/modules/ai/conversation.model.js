@@ -235,10 +235,11 @@ conversationSchema.index({ business: 1, createdAt: -1 });
  */
 conversationSchema.methods.getWindowState = function () {
   if (!this.lastInboundMessageAt) {
-    return { windowOpen: false, windowExpiresAt: null };
+    return { windowOpen: false, windowExpiresAt: null, windowState: 'NO_CUSTOMER_MESSAGE_YET' };
   }
   const windowExpiresAt = new Date(this.lastInboundMessageAt.getTime() + WINDOW_DURATION_MS);
-  return { windowOpen: windowExpiresAt.getTime() > Date.now(), windowExpiresAt };
+  const windowOpen = windowExpiresAt.getTime() > Date.now();
+  return { windowOpen, windowExpiresAt, windowState: windowOpen ? 'OPEN' : 'CLOSED' };
 };
 
 module.exports = mongoose.model('Conversation', conversationSchema);
