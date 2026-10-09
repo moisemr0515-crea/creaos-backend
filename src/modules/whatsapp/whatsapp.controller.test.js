@@ -38,14 +38,14 @@ describe('whatsapp.controller — endpoints activos', () => {
       select: jest.fn().mockResolvedValue({ name: 'Negocio A', agentName: 'Agente A' }),
     });
     channelService.getChannelForConversation.mockResolvedValue({ _id: 'channel-a' });
-    channelService.listTemplates.mockResolvedValue([{ name: 'seguimiento_comercial', variablesRequired: 3 }]);
+    channelService.getTemplateCatalog.mockResolvedValue({ templates: [{ name: 'seguimiento_comercial', variablesRequired: 3 }], catalogStatus: 'approved' });
     channelService.resolveTemplateVariables.mockReturnValue([{ index: 1, value: 'Lead A' }]);
     const res = mockRes();
 
     await getTemplates({ businessId: 'tenant-a', query: { conversationId: 'conversation-a' } }, res, jest.fn());
 
     expect(channelService.getChannelForConversation).toHaveBeenCalledWith(conversation, 'tenant-a');
-    expect(channelService.listTemplates).toHaveBeenCalledWith('channel-a', 'tenant-a');
+    expect(channelService.getTemplateCatalog).toHaveBeenCalledWith('channel-a', 'tenant-a');
     expect(channelService.getChannelForTenant).not.toHaveBeenCalled();
   });
 
@@ -58,13 +58,13 @@ describe('whatsapp.controller — endpoints activos', () => {
       select: jest.fn().mockResolvedValue({ name: 'Negocio A', agentName: 'Agente A' }),
     });
     channelService.getChannelForConversation.mockResolvedValue({ _id: 'channel-a' });
-    channelService.listTemplates.mockResolvedValue([]);
+    channelService.getTemplateCatalog.mockResolvedValue({ templates: [], catalogStatus: 'pending' });
     const res = mockRes();
 
     await getTemplates({ businessId: 'tenant-a', query: { conversationId: 'conversation-a' } }, res, jest.fn());
 
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
-      data: { templates: [] },
+      data: { templates: [], catalogStatus: 'pending' },
     }));
     expect(channelService.getChannelForTenant).not.toHaveBeenCalled();
   });});

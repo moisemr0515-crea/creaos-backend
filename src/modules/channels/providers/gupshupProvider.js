@@ -208,6 +208,15 @@ class GupshupProvider extends IChannelProvider {
     return gupshupClient.listTemplates(credenciales);
   }
 
+  async createTemplate(channel, template) {
+    const modo = resolveOutboundMode(channel);
+    if (modo !== 'partner') {
+      throw new AppError('El provisioning automático de plantillas requiere un canal Gupshup Partner', 409);
+    }
+    const credenciales = await resolverCredencialesDeEnvio(channel);
+    return gupshupPartnerClient.createTemplate(template, credenciales);
+  }
+
   /**
    * Auditoría de factibilidad de send_media (12/sep/2026), Paso 1: antes,
    * esto llamaba SIEMPRE a gupshupClient (Legacy) sin importar

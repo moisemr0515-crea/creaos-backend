@@ -2,7 +2,7 @@
 // diseño de migración de outbound (docs/implementation/known-issues.md,
 // 07/sep/2026). Mismo patrón que gupshup.client.test.js: mockea
 // global.fetch, nunca pega contra Gupshup real.
-const { sendTextMessage, sendMediaMessage, listTemplates, sendTemplateMessage } = require('./gupshup.partner.client');
+const { sendTextMessage, sendMediaMessage, listTemplates, createTemplate, sendTemplateMessage } = require('./gupshup.partner.client');
 
 describe('gupshup.partner.client#sendTextMessage()', () => {
   const originalFetch = global.fetch;
@@ -426,5 +426,31 @@ describe('gupshup.partner.client#sendTemplateMessage()', () => {
     } catch (err) {
       expect(err.message).not.toContain('partner-app-access-token-real');
     }
+  });
+});
+
+describe('gupshup.partner.client#createTemplate()', () => {
+  const originalFetch = global.fetch;
+  beforeEach(() => { global.fetch = jest.fn(); });
+  afterEach(() => { global.fetch = originalFetch; jest.restoreAllMocks(); });
+
+  test('somete TEXT por app con Authorization y devuelve ID/status reales', async () => {
+    global.fetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ template: { id: 'provider-real', elementName: 'primer_contacto_comercial', status: 'PENDING' } }),
+      text: async () => '',
+    });
+    const result = await createTemplate({
+      name: 'primer_contacto_comercial', language: 'es', category: 'MARKETING',
+      body: 'Hola {{1}}', example: 'Hola Ana',
+    }, { apiKey: 'secret', appId: 'app-real' });
+    const [url, init] = global.fetch.mock.calls[0];
+    const form = new URLSearchParams(init.body);
+    expect(url).toBe('https://partner.gupshup.io/partner/app/app-real/templates');
+    expect(init.headers.Authorization).toBe('secret');
+    expect(form.get('elementName')).toBe('primer_contacto_comercial');
+    expect(form.get('templateType')).toBe('TEXT');
+    expect(result).toEqual(expect.objectContaining({ id: 'provider-real', status: 'PENDING' }));
   });
 });

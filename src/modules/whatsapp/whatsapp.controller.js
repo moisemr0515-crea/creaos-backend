@@ -62,11 +62,11 @@ const getTemplates = async (req, res, next) => {
     if (!channel) {
       return respuestaExito(res, {
         message: 'Plantillas de WhatsApp obtenidas',
-        data: { templates: [] },
+        data: { templates: [], catalogStatus: 'empty' },
       });
     }
 
-    const templates = await channelService.listTemplates(channel._id, req.businessId);
+    const { templates, catalogStatus } = await channelService.getTemplateCatalog(channel._id, req.businessId);
     const business = conversation
       ? await Business.findById(req.businessId).select('name agentName')
       : null;
@@ -80,7 +80,7 @@ const getTemplates = async (req, res, next) => {
 
     return respuestaExito(res, {
       message: 'Plantillas de WhatsApp obtenidas',
-      data: { templates: scopedTemplates },
+      data: { templates: scopedTemplates, catalogStatus },
     });
   } catch (err) {
     next(err);

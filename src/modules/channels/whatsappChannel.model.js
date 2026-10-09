@@ -22,6 +22,17 @@ const CONNECTION_TYPES = ['PLATFORM', 'DEDICATED', 'MIGRATION'];
 // Ver gupshupProvider.js#resolveOutboundMode() para el único punto de
 // consumo real.
 const OUTBOUND_APIS = ['legacy', 'partner'];
+const TEMPLATE_STATUSES = ['PENDING', 'APPROVED', 'REJECTED'];
+
+const standardTemplateSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  displayName: { type: String, required: true },
+  providerTemplateId: { type: String, default: null },
+  status: { type: String, enum: TEMPLATE_STATUSES, required: true },
+  language: { type: String, required: true },
+  category: { type: String, required: true },
+  syncedAt: { type: Date, required: true },
+}, { _id: false });
 
 const whatsAppChannelSchema = new mongoose.Schema(
   {
@@ -76,6 +87,7 @@ const whatsAppChannelSchema = new mongoose.Schema(
     // scripts/seed-whatsapp-channel-platform.js, que documenta acá su carácter
     // transicional (Implementation Blueprint §6, §9 sub-fase 1.a).
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
+    standardTemplates: { type: [standardTemplateSchema], default: [] },
   },
   { timestamps: true }
 );
@@ -91,3 +103,4 @@ module.exports.STATUSES = STATUSES;
 module.exports.ONBOARDING_STATUSES = ONBOARDING_STATUSES;
 module.exports.CONNECTION_TYPES = CONNECTION_TYPES;
 module.exports.OUTBOUND_APIS = OUTBOUND_APIS;
+module.exports.TEMPLATE_STATUSES = TEMPLATE_STATUSES;

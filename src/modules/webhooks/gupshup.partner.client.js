@@ -213,6 +213,36 @@ async function listTemplates({ apiKey, appId } = {}) {
   return json.templates || [];
 }
 
+async function createTemplate(template, { apiKey, appId } = {}) {
+  const body = new URLSearchParams({
+    elementName: template.name,
+    languageCode: template.language,
+    content: template.body,
+    category: template.category,
+    templateType: 'TEXT',
+    vertical: 'Professional Services',
+    example: template.example,
+    enableSample: 'true',
+    allowTemplateCategoryChange: 'true',
+    appId,
+  });
+  const response = await fetch(`${PARTNER_API_BASE_URL}/partner/app/${appId}/templates`, {
+    method: 'POST',
+    headers: {
+      Authorization: apiKey,
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Accept: 'application/json',
+    },
+    body: body.toString(),
+  });
+  if (!response.ok) {
+    const errText = await response.text().catch(() => '');
+    throw providerHttpError('template create', response, errText);
+  }
+  const json = await response.json();
+  return json.template || json.templates || json;
+}
+
 /**
  * Envía un mensaje de plantilla aprobada vía la API Partner de Gupshup —
  * reemplaza a gupshup.client.js#sendTemplateMessage() (Legacy) para
@@ -278,4 +308,4 @@ async function sendTemplateMessage(to, template, { apiKey, appId, source, appNam
   return json;
 }
 
-module.exports = { sendTextMessage, sendMediaMessage, listTemplates, sendTemplateMessage };
+module.exports = { sendTextMessage, sendMediaMessage, listTemplates, createTemplate, sendTemplateMessage };

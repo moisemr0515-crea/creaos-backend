@@ -3,6 +3,7 @@ const channelRepository = require('./channel.repository');
 const GupshupProvider = require('./providers/gupshupProvider');
 const logger = require('../../utils/logger');
 const Conversation = require('../ai/conversation.model');
+const standardTemplateService = require('./standardTemplate.service');
 
 /**
  * ChannelService — fachada pública del módulo channels/ (Blueprint §4.4).
@@ -110,6 +111,11 @@ const TEMPLATE_VARIABLE_DEFINITIONS = {
     { key: 'agent_name', label: 'Nombre del agente', source: 'business.agentName' },
     { key: 'appointment_at', label: 'Fecha y hora', source: null },
   ],
+  primer_contacto_comercial: [
+    { key: 'lead_name', label: 'Nombre del lead', source: 'lead.name' },
+    { key: 'agent_name', label: 'Nombre del agente', source: 'business.agentName' },
+    { key: 'business_name', label: 'Nombre del negocio', source: 'business.name' },
+  ],
 };
 
 const valueFromSource = (source, { lead, business } = {}) => {
@@ -179,16 +185,23 @@ const normalizeTemplate = (raw, channel, tenantId) => {
   };
 };
 async function listTemplates(channelId, tenantId) {
+  const catalog = await getTemplateCatalog(channelId, tenantId);
+  return catalog.templates;
+}
+
+async function getTemplateCatalog(channelId, tenantId) {
   const channel = await loadOperationalChannel(channelId, tenantId);
   const provider = getProviderFor(channel);
-  const templates = await provider.listTemplates(channel);
-  return templates
+  const rawTemplates = await provider.listTemplates(channel);
+  await standardTemplateService.persistStandardTemplateCatalog(channel, rawTemplates);
+  const templates = rawTemplates
     .filter((raw) => String(raw.status || '').toUpperCase() === 'APPROVED')
     .filter((raw) => raw.active !== false && raw.isActive !== false)
     .map((raw) => normalizeTemplate(raw, channel, tenantId))
     .filter(Boolean);
+  const pending = rawTemplates.some((raw) => String(raw.status || '').toUpperCase() === 'PENDING');
+  return { templates, catalogStatus: templates.length > 0 ? 'approved' : (pending ? 'pending' : 'empty') };
 }
-
 async function getApprovedTemplate(channelId, tenantId, providerTemplateId) {
   const templates = await listTemplates(channelId, tenantId);
   const template = templates.find((item) => item.providerTemplateId === String(providerTemplateId));
@@ -297,7 +310,7 @@ function listChannels(tenantId) {
 }
 
 module.exports = {
-  sendMessage, sendTemplate, listTemplates, getApprovedTemplate, sendMedia, downloadMedia, getChannelStatus,
+  sendMessage, sendTemplate, listTemplates, getTemplateCatalog, getApprovedTemplate, sendMedia, downloadMedia, getChannelStatus,
   getChannelForTenant, getChannelForConversation, listChannels,
   reassignConversationChannel,
   resolveTemplateVariables, resolveTemplateParams,

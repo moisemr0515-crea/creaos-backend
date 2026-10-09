@@ -239,6 +239,7 @@ describe('channelService — variables conocidas de templates', () => {
     ['seguimiento_comercial', 3, ['Moisés', 'Asesora CREA', 'CREA OS']],
     ['seguimiento_cotizacion', 2, ['Moisés', 'CREA OS']],
     ['reactivar_prospecto', 3, ['Moisés', 'Asesora CREA', 'CREA OS']],
+    ['primer_contacto_comercial', 3, ['Moisés', 'Asesora CREA', 'CREA OS']],
   ])('%s autocompleta solo desde lead y negocio del tenant', (name, variablesRequired, expected) => {
     const template = { name, variablesRequired };
     expect(channelService.resolveTemplateParams(template, context, [])).toEqual(expected);

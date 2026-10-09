@@ -20,6 +20,7 @@ const partnerAuth = require('./providers/gupshup/partner/partner.auth');
 const partnerApps = require('./providers/gupshup/partner/partner.apps');
 const { nombreAppGupshup } = require('./channel.controller');
 const logger = require('../../utils/logger');
+const standardTemplateService = require('./standardTemplate.service');
 
 /**
  * ¿Este payload de webhook es el evento de Go-Live (account-event /
@@ -243,6 +244,15 @@ async function handleGupshupAccountVerified(gsAppId) {
     session.meta.accessTokenCipher = null;
     await session.save();
 
+    try {
+      await standardTemplateService.ensureStandardTemplatesForChannel(channel._id, session.tenantId);
+    } catch (templateError) {
+      logger.warn('[channelOnboardingCompletion] Canal conectado; provisioning de plantillas pendiente', {
+        tenantId: String(session.tenantId),
+        channelId: String(channel._id),
+        error: templateError.message,
+      });
+    }
     logger.info('[channelOnboardingCompletion] WhatsAppChannel DEDICATED creado, onboarding completado', {
       tenantId: String(session.tenantId),
       sessionId: String(session._id),

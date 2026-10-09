@@ -15,6 +15,7 @@ process.env.CHANNEL_CREDENTIALS_KEY = process.env.CHANNEL_CREDENTIALS_KEY || req
 
 jest.mock('./providers/gupshup/partner/partner.auth');
 jest.mock('./providers/gupshup/partner/partner.apps');
+jest.mock('./standardTemplate.service');
 
 const mongoose = require('mongoose');
 const Business = require('../businesses/business.model');
@@ -25,6 +26,7 @@ const channelCrypto = require('./channelCrypto');
 const logger = require('../../utils/logger');
 const partnerAuth = require('./providers/gupshup/partner/partner.auth');
 const partnerApps = require('./providers/gupshup/partner/partner.apps');
+const standardTemplateService = require('./standardTemplate.service');
 const { handleGupshupAccountVerified, isAccountVerifiedEvent } = require('./channelOnboardingCompletion.service');
 
 const MONGO_URI = 'mongodb://localhost:27017/creaos_test_channel_onboarding_completion';
@@ -83,6 +85,7 @@ describe('channelOnboardingCompletion#handleGupshupAccountVerified()', () => {
     await ChannelCredentials.deleteMany({});
     business = await Business.create({ name: 'Negocio de prueba' });
     jest.clearAllMocks();
+    standardTemplateService.ensureStandardTemplatesForChannel.mockResolvedValue({ created: [], catalog: [] });
     // Default feliz para PR-11 (known-issues.md): el WABA "real" que
     // devuelve Gupshup coincide con session.meta salvo que un test puntual
     // necesite demostrar la discrepancia (esos lo pisan explícito).
@@ -207,6 +210,26 @@ describe('channelOnboardingCompletion#handleGupshupAccountVerified()', () => {
     expect(refrescada.meta.accessTokenCipher).toBeNull();
   });
 
+  test('el canal queda conectado aunque el provisioning de templates falle o siga pendiente', async () => {
+    const session = await crearSesionListaParaWebhook();
+    partnerAuth.getValidToken.mockResolvedValue('partner-token-real');
+    partnerApps.getAppAccessToken.mockResolvedValue({ apikey: 'apikey-real-de-la-app' });
+    standardTemplateService.ensureStandardTemplatesForChannel.mockRejectedValue(new Error('Meta todavía no disponible'));
+    const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    await handleGupshupAccountVerified('gs-app-real');
+
+    const channel = await WhatsAppChannel.findOne({ providerAppId: 'gs-app-real' });
+    const refreshed = await ChannelOnboardingSession.findById(session._id);
+    expect(channel.status).toBe('active');
+    expect(channel.onboardingStatus).toBe('completed');
+    expect(refreshed.status).toBe('completed');
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[channelOnboardingCompletion] Canal conectado; provisioning de plantillas pendiente',
+      expect.objectContaining({ channelId: String(channel._id) })
+    );
+    warnSpy.mockRestore();
+  });
   test('CONCURRENCIA (fix de idempotencia/race condition): 2 entregas casi simultáneas del mismo webhook — solo una crea el canal, la otra hace no-op limpio sin corromper el resultado de la ganadora', async () => {
     await crearSesionListaParaWebhook();
     partnerAuth.getValidToken.mockResolvedValue('partner-token-real');
