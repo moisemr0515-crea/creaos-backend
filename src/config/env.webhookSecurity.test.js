@@ -20,7 +20,7 @@ const BASE_ENV = {
   GUPSHUP_PARTNER_SECRET: '',
   GUPSHUP_ONBOARDING_WEBHOOK_TOKEN: '',
   BACKEND_PUBLIC_URL: '',
-  CHANNEL_CREDENTIALS_KEY: '',
+  CHANNEL_CREDENTIALS_KEY: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
   STRIPE_SECRET_KEY: '',
   STRIPE_PUBLIC_KEY: '',
   STRIPE_WEBHOOK_SECRET: '',
@@ -72,6 +72,11 @@ describe('validateEnv — seguridad de webhooks en producción', () => {
   test('API de producción falla temprano si falta un servicio core', () => {
     const env = loadEnv({ OPENAI_API_KEY: undefined });
     expect(() => env.validateEnv()).toThrow(/OPENAI_API_KEY/);
+  });
+
+  test('API de producción exige la master key de cifrado persistido', () => {
+    const env = loadEnv({ CHANNEL_CREDENTIALS_KEY: '' });
+    expect(() => env.validateEnv()).toThrow(/CHANNEL_CREDENTIALS_KEY/);
   });
 
   test('worker exige solo sus dependencias críticas y no secretos JWT', () => {

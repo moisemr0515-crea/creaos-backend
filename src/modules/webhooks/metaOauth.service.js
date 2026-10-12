@@ -4,6 +4,7 @@ const { REDIS_KEYS } = require('../../config/constants');
 const { AppError } = require('../../middleware/error.middleware');
 const logger = require('../../utils/logger');
 const WebhookConfig = require('./webhookConfig.model');
+const { SECRET_SELECT, readSecret, setSecret } = require('./webhookConfigSecrets.service');
 const {
   META_APP_ID,
   META_APP_SECRET,
@@ -138,21 +139,20 @@ const handleCallback = async ({ code, state }) => {
     ? new Date(Date.now() + longLived.expires_in * 1000)
     : null;
 
-  // Upsert por {business, platform:'meta'} — reconectar actualiza en vez de duplicar.
-  // setDefaultsOnInsert genera verifyToken (default del schema) solo si es un insert nuevo.
-  const config = await WebhookConfig.findOneAndUpdate(
-    { business: businessId, platform: 'meta' },
-    {
-      $set: {
-        accessToken: page.access_token,
-        pageId: page.id,
-        pageName: page.name,
-        accessTokenExpiresAt,
-        isActive: true,
-      },
-    },
-    { upsert: true, new: true, setDefaultsOnInsert: true }
-  );
+  // Reconexion compatible: el documento obtiene _id antes de cifrar, porque
+  // ese id forma parte del contexto HKDF. Nunca se persiste el token plano.
+  let config = await WebhookConfig.findOne({ business: businessId, platform: 'meta' })
+    .select(SECRET_SELECT);
+  if (!config) {
+    config = new WebhookConfig({ business: businessId, platform: 'meta' });
+    setSecret(config, 'verifyToken', crypto.randomUUID());
+  }
+  config.pageId = page.id;
+  config.pageName = page.name;
+  config.accessTokenExpiresAt = accessTokenExpiresAt;
+  config.isActive = true;
+  setSecret(config, 'accessToken', page.access_token);
+  await config.save();
 
   return config;
 };
@@ -160,16 +160,18 @@ const handleCallback = async ({ code, state }) => {
 // ─── Desconectar la integración ───────────────────────────────────────────────
 
 const disconnect = async (businessId, actorUserId) => {
-  const config = await WebhookConfig.findOne({ business: businessId, platform: 'meta' });
+  const config = await WebhookConfig.findOne({ business: businessId, platform: 'meta' })
+    .select(SECRET_SELECT);
   if (!config || !config.isActive) {
     throw new AppError('No hay una integración de Meta conectada para este negocio', 404);
   }
 
   // Best-effort: revocar la suscripción del lado de Meta. Si falla (token ya
   // expirado, Página eliminada, etc.) igual limpiamos los datos locales.
-  if (config.pageId && config.accessToken) {
+  const accessToken = readSecret(config, 'accessToken');
+  if (config.pageId && accessToken) {
     try {
-      await unsubscribePageFromLeadgen(config.pageId, config.accessToken);
+      await unsubscribePageFromLeadgen(config.pageId, accessToken);
     } catch (err) {
       logger.warn('[metaOauth] No se pudo desuscribir la Página en Meta; se limpian los datos locales de todas formas', {
         businessId: businessId.toString(),
@@ -181,7 +183,7 @@ const disconnect = async (businessId, actorUserId) => {
 
   const pageName = config.pageName;
 
-  config.accessToken = undefined;
+  setSecret(config, 'accessToken', null);
   config.pageId = undefined;
   config.pageName = undefined;
   config.accessTokenExpiresAt = null;

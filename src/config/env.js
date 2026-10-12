@@ -108,6 +108,9 @@ const validateProductionSecurity = ({ runtime }) => {
   if (process.env.NODE_ENV !== 'production') return;
 
   if (runtime === 'api') {
+    if (!hasValue('CHANNEL_CREDENTIALS_KEY')) {
+      throw new Error('❌ CHANNEL_CREDENTIALS_KEY es obligatoria en la API de producción');
+    }
     if (process.env.JWT_SECRET.length < 32 || process.env.JWT_REFRESH_SECRET.length < 32) {
       throw new Error('❌ JWT_SECRET y JWT_REFRESH_SECRET deben tener al menos 32 caracteres en producción');
     }
@@ -180,9 +183,10 @@ module.exports = {
   FRONTEND_URL: process.env.FRONTEND_URL || 'http://localhost:5173',
 
   // Fase 2.0 (blueprint Meta+Gupshup Embedded Signup) — clave maestra para
-  // cifrar credenciales de WhatsAppChannel por tenant (ver
-  // channels/channelCrypto.js). NUNCA se usa directo para cifrar: cada
-  // canal deriva su propia subclave vía HKDF a partir de esta — así, si
+  // cifrar credenciales de WhatsAppChannel y WebhookConfig por tenant (ver
+  // channels/channelCrypto.js y webhooks/webhookConfigSecrets.service.js).
+  // NUNCA se usa directo para cifrar: cada registro/campo deriva su propia
+  // subclave vía HKDF a partir de esta — así, si
   // algo más acotado que esta variable se filtra (una subclave derivada
   // en un log, un dump puntual), el daño queda contenido a un canal, no a
   // los 100 tenants. 32 bytes en hex (64 caracteres) — generar con

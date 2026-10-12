@@ -9,6 +9,12 @@ const inboundGateway = require('../channels/inbound.gateway');
 const channelOnboardingCompletion = require('../channels/channelOnboardingCompletion.service');
 const outboundDeliveryService = require('../channels/outboundDelivery.service');
 const logger = require('../../utils/logger');
+const {
+  SECRET_SELECT,
+  findByVerifyToken,
+  hasSecret,
+  setSecret,
+} = require('./webhookConfigSecrets.service');
 
 // ─── Public: Meta webhook verification (GET) ─────────────────────────────────
 
@@ -17,7 +23,7 @@ const metaVerify = async (req, res, next) => {
     const { 'hub.mode': mode, 'hub.verify_token': token, 'hub.challenge': challenge } = req.query;
     if (mode !== 'subscribe') return res.status(400).send('Invalid mode');
 
-    const config = await WebhookConfig.findOne({ verifyToken: token, platform: 'meta', isActive: true });
+    const config = await findByVerifyToken(WebhookConfig, token, { platform: 'meta', isActive: true });
     if (!config) return res.status(403).send('Invalid verify token');
 
     return res.status(200).send(challenge);
@@ -45,7 +51,8 @@ const metaWebhook = async (req, res, next) => {
 
     for (const ent of entry) {
       const pageId = ent.id;
-      const config = await WebhookConfig.findOne({ pageId, platform: 'meta', isActive: true });
+      const config = await WebhookConfig.findOne({ pageId, platform: 'meta', isActive: true })
+        .select(SECRET_SELECT);
       if (!config) continue;
       await webhookService.processMetaLead(ent, config).catch((err) =>
         console.error('[webhook] Meta processLead error:', err.message)
@@ -61,7 +68,7 @@ const metaWebhook = async (req, res, next) => {
 const tiktokVerify = async (req, res, next) => {
   try {
     const { verify_token: token } = req.query;
-    const config = await WebhookConfig.findOne({ verifyToken: token, platform: 'tiktok', isActive: true });
+    const config = await findByVerifyToken(WebhookConfig, token, { platform: 'tiktok', isActive: true });
     if (!config) return res.status(403).json({ error: 'Invalid verify token' });
     return res.status(200).json({ code: 0, message: 'success', data: { verify_token: token } });
   } catch (err) {
@@ -234,16 +241,17 @@ const createConfig = async (req, res, next) => {
 
     await require('../users/userScope.service').assertActiveUserInBusiness(defaults?.assignedTo, req.businessId);
 
-    const config = await WebhookConfig.create({
+    const config = new WebhookConfig({
       business: req.businessId,
       platform,
-      accessToken,
       pageId,
       adAccountId,
       formIds,
       defaults,
-      verifyToken: uuidv4(),
     });
+    setSecret(config, 'verifyToken', uuidv4());
+    if (accessToken) setSecret(config, 'accessToken', accessToken);
+    await config.save();
 
     return respuestaExito(res, {
       statusCode: 201,
@@ -257,9 +265,7 @@ const createConfig = async (req, res, next) => {
 
 const listConfigs = async (req, res, next) => {
   try {
-    const configs = await WebhookConfig.find({ business: req.businessId })
-      .select('-accessToken')
-      .sort({ createdAt: -1 });
+    const configs = await WebhookConfig.find({ business: req.businessId }).sort({ createdAt: -1 });
 
     return respuestaExito(res, { message: 'Configuraciones obtenidas', data: { configs } });
   } catch (err) {
@@ -272,7 +278,7 @@ const getConfig = async (req, res, next) => {
     const config = await WebhookConfig.findOne({
       _id: req.params.configId,
       business: req.businessId,
-    }).select('-accessToken');
+    });
 
     if (!config) throw new AppError('Configuración no encontrada', 404);
 
@@ -284,7 +290,7 @@ const getConfig = async (req, res, next) => {
 
 const updateConfig = async (req, res, next) => {
   try {
-    const allowed = ['accessToken', 'pageId', 'adAccountId', 'formIds', 'defaults', 'isActive'];
+    const allowed = ['pageId', 'adAccountId', 'formIds', 'defaults', 'isActive'];
     if (req.body.defaults) {
       await require('../users/userScope.service').assertActiveUserInBusiness(req.body.defaults.assignedTo, req.businessId);
     }
@@ -293,13 +299,16 @@ const updateConfig = async (req, res, next) => {
       if (req.body[key] !== undefined) updates[key] = req.body[key];
     }
 
-    const config = await WebhookConfig.findOneAndUpdate(
-      { _id: req.params.configId, business: req.businessId },
-      { $set: updates },
-      { new: true, runValidators: true }
-    ).select('-accessToken');
+    const config = await WebhookConfig.findOne({
+      _id: req.params.configId,
+      business: req.businessId,
+    }).select(SECRET_SELECT);
 
     if (!config) throw new AppError('Configuración no encontrada', 404);
+
+    for (const [key, value] of Object.entries(updates)) config.set(key, value);
+    if (req.body.accessToken !== undefined) setSecret(config, 'accessToken', req.body.accessToken);
+    await config.save();
 
     return respuestaExito(res, { message: 'Configuración actualizada', data: { config } });
   } catch (err) {
@@ -326,14 +335,14 @@ const testWebhook = async (req, res, next) => {
     const config = await WebhookConfig.findOne({
       _id: req.params.configId,
       business: req.businessId,
-    });
+    }).select(SECRET_SELECT);
     if (!config) throw new AppError('Configuración no encontrada', 404);
 
     return respuestaExito(res, {
       message: 'Webhook configurado correctamente',
       data: {
         platform:    config.platform,
-        verifyToken: config.verifyToken,
+        verifyTokenConfigured: hasSecret(config, 'verifyToken'),
         isActive:    config.isActive,
         metaVerifyUrl:   config.platform === 'meta' ? '/api/v1/webhooks/meta' : undefined,
         tiktokVerifyUrl: config.platform === 'tiktok' ? '/api/v1/webhooks/tiktok' : undefined,

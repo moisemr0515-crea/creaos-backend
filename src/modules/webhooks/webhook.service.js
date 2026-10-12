@@ -12,6 +12,7 @@ const leadService = require('../leads/lead.service');
 const pipelineService = require('../pipeline/pipeline.service');
 const { normalizeToE164 } = require('../../utils/phone');
 const logger = require('../../utils/logger');
+const { readSecret } = require('./webhookConfigSecrets.service');
 const {
   META_APP_SECRET,
   META_GRAPH_API_VERSION,
@@ -116,7 +117,9 @@ async function processMetaLead(entry, config) {
     // Fetch full lead data from Meta Graph API
     let leadData;
     try {
-      leadData = await fetchMetaLead(leadgenId, config.accessToken);
+      const accessToken = readSecret(config, 'accessToken');
+      if (!accessToken) throw new Error('meta_access_token_unavailable');
+      leadData = await fetchMetaLead(leadgenId, accessToken);
     } catch (err) {
       results.push({ leadgenId, status: 'error', error: err.message });
       continue;
