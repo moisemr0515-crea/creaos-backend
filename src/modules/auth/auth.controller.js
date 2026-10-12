@@ -5,6 +5,7 @@ const {
   setRefreshCookie,
   clearRefreshCookie,
 } = require('./authCookie');
+const { CURRENT_LEGAL_VERSIONS } = require('../../config/legalDocuments');
 
 const withoutRefreshToken = ({ refreshToken, ...publicResult }) => publicResult;
 
@@ -14,9 +15,20 @@ const withoutRefreshToken = ({ refreshToken, ...publicResult }) => publicResult;
  */
 const register = async (req, res, next) => {
   try {
-    const { name, email, password, businessName, phone } = req.body;
+    const { name, email, password, businessName, phone, legalAcceptance } = req.body;
 
-    const resultado = await authService.registrar({ name, email, password, businessName, phone });
+    const resultado = await authService.registrar({
+      name,
+      email,
+      password,
+      businessName,
+      phone,
+      legalAcceptance,
+      legalContext: {
+        ip: req.ip || null,
+        userAgent: req.get('user-agent') || null,
+      },
+    });
 
     return respuestaExito(res, {
       statusCode: 201,
@@ -27,6 +39,11 @@ const register = async (req, res, next) => {
     next(error);
   }
 };
+
+const legalDocuments = (_req, res) => respuestaExito(res, {
+  statusCode: 200,
+  data: CURRENT_LEGAL_VERSIONS,
+});
 
 /**
  * POST /api/v1/auth/login
@@ -152,4 +169,13 @@ const verifyEmail = async (req, res, next) => {
   }
 };
 
-module.exports = { register, login, logout, refresh, forgotPassword, resetPassword, verifyEmail };
+module.exports = {
+  register,
+  legalDocuments,
+  login,
+  logout,
+  refresh,
+  forgotPassword,
+  resetPassword,
+  verifyEmail,
+};

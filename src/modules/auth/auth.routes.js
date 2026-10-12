@@ -23,6 +23,10 @@ const router = Router();
 // ADEMÁS de (no en reemplazo de) los limiters específicos de abajo.
 router.use(rateLimitAuthGeneral);
 
+// Versiones vigentes definidas server-side. El frontend las consulta antes
+// de registrar y el backend vuelve a validarlas al recibir la aceptación.
+router.get('/legal-documents', controller.legalDocuments);
+
 // POST /api/v1/auth/register
 router.post('/register', rateLimitRegister, validarRegistro, validate, controller.register);
 

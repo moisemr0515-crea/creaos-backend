@@ -1,4 +1,5 @@
 const { body } = require('express-validator');
+const { CURRENT_LEGAL_VERSIONS } = require('../../config/legalDocuments');
 
 // ─── REGISTER ────────────────────────────────────────────────────────────────
 const validarRegistro = [
@@ -28,6 +29,24 @@ const validarRegistro = [
     .optional()
     .trim()
     .isMobilePhone('any').withMessage('Número de teléfono inválido'),
+
+  body('legalAcceptance.termsAccepted')
+    .custom((value) => value === true)
+    .withMessage('Debes aceptar los Términos y Condiciones'),
+
+  body('legalAcceptance.privacyAccepted')
+    .custom((value) => value === true)
+    .withMessage('Debes aceptar la Política de Privacidad'),
+
+  body('legalAcceptance.termsVersion')
+    .isString()
+    .custom((value) => value === CURRENT_LEGAL_VERSIONS.termsVersion)
+    .withMessage('La versión de Términos no está vigente'),
+
+  body('legalAcceptance.privacyVersion')
+    .isString()
+    .custom((value) => value === CURRENT_LEGAL_VERSIONS.privacyVersion)
+    .withMessage('La versión de Política de Privacidad no está vigente'),
 ];
 
 // ─── LOGIN ────────────────────────────────────────────────────────────────────

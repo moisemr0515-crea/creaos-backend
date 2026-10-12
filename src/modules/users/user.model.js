@@ -1,5 +1,29 @@
 const mongoose = require('mongoose');
 
+const legalConsentSchema = new mongoose.Schema(
+  {
+    documentType: {
+      type: String,
+      enum: ['terms', 'privacy'],
+      required: true,
+    },
+    documentVersion: { type: String, required: true, trim: true, maxlength: 50 },
+    acceptedAt: { type: Date, required: true },
+    source: {
+      type: String,
+      enum: ['registration', 'reconsent'],
+      required: true,
+    },
+    context: {
+      // El IP se minimiza como hash SHA-256: permite correlacionar la
+      // evidencia aportando el IP original, sin persistirlo en claro.
+      ipHash: { type: String, default: null, maxlength: 64 },
+      userAgent: { type: String, default: null, maxlength: 512 },
+    },
+  },
+  { _id: true, versionKey: false }
+);
+
 const userSchema = new mongoose.Schema(
   {
     email: {
@@ -78,6 +102,14 @@ const userSchema = new mongoose.Schema(
     // JTIs (IDs) de refresh tokens activos — referencia; Redis es la fuente de verdad
     refreshTokenJtis: {
       type: [String],
+      select: false,
+      default: [],
+    },
+    // Historial extensible por documento/versión. select:false evita que el
+    // contexto técnico salga en respuestas ordinarias; auditoría autorizada
+    // puede consultarlo explícitamente con .select('+legalConsents').
+    legalConsents: {
+      type: [legalConsentSchema],
       select: false,
       default: [],
     },

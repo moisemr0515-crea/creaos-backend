@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const mongoose = require('mongoose');
+const crypto = require('crypto');
 
 const {
   JWT_SECRET,
@@ -9,6 +10,10 @@ const {
   JWT_REFRESH_EXPIRES_IN,
 } = require('../../config/env');
 const { ROLES } = require('../../config/constants');
+const {
+  LEGAL_DOCUMENTS,
+  isCurrentLegalAcceptance,
+} = require('../../config/legalDocuments');
 const { getRedis } = require('../../config/redis');
 const { AppError } = require('../../middleware/error.middleware');
 
@@ -125,7 +130,19 @@ const revocarTodosLosRefreshTokens = async (userId) => {
  * Registro completo: crea Business + User en una transacción MongoDB.
  * Asigna rol Owner y envía email de verificación.
  */
-const registrar = async ({ name, email, password, businessName, phone }) => {
+const registrar = async ({
+  name,
+  email,
+  password,
+  businessName,
+  phone,
+  legalAcceptance,
+  legalContext = {},
+}) => {
+  if (!isCurrentLegalAcceptance(legalAcceptance)) {
+    throw new AppError('La aceptación legal es requerida y debe usar las versiones vigentes', 422);
+  }
+
   // Normalización defensiva — auth.validator.js#validarRegistro ya deja
   // req.body.email normalizado (trim+lowercase+reglas de proveedor, ej.
   // Gmail ignora puntos) antes de llegar acá vía el middleware de la ruta;
@@ -149,6 +166,20 @@ const registrar = async ({ name, email, password, businessName, phone }) => {
   const passwordHash = await hashPassword(password);
   const { tokenPlano: tokenVerificacion, tokenHash: tokenVerificacionHash } = generateToken();
   const expiracion = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 horas
+  const acceptedAt = new Date();
+  const ipHash = legalContext.ip
+    ? crypto.createHash('sha256').update(String(legalContext.ip)).digest('hex')
+    : null;
+  const userAgent = legalContext.userAgent
+    ? String(legalContext.userAgent).slice(0, 512)
+    : null;
+  const legalConsents = Object.values(LEGAL_DOCUMENTS).map((legalDocument) => ({
+    documentType: legalDocument.documentType,
+    documentVersion: legalDocument.documentVersion,
+    acceptedAt,
+    source: 'registration',
+    context: { ipHash, userAgent },
+  }));
 
   let negocio, usuario;
 
@@ -158,7 +189,7 @@ const registrar = async ({ name, email, password, businessName, phone }) => {
     await session.withTransaction(async () => {
       [negocio] = await Business.create([{ name: businessName, createdBy: null }], { session });
       [usuario] = await User.create(
-        [{ name, email, password: passwordHash, phone: phone || null, role: rolOwner._id, business: negocio._id, emailVerificationToken: tokenVerificacionHash, emailVerificationExpires: expiracion }],
+        [{ name, email, password: passwordHash, phone: phone || null, role: rolOwner._id, business: negocio._id, emailVerificationToken: tokenVerificacionHash, emailVerificationExpires: expiracion, legalConsents }],
         { session }
       );
       await Business.findByIdAndUpdate(negocio._id, { createdBy: usuario._id }, { session });
@@ -168,7 +199,7 @@ const registrar = async ({ name, email, password, businessName, phone }) => {
     if (txError.message?.includes('replica set') || txError.message?.includes('Transaction numbers') || txError.codeName === 'IllegalOperation') {
       try {
         negocio = await Business.create({ name: businessName, createdBy: null });
-        usuario = await User.create({ name, email, password: passwordHash, phone: phone || null, role: rolOwner._id, business: negocio._id, emailVerificationToken: tokenVerificacionHash, emailVerificationExpires: expiracion });
+        usuario = await User.create({ name, email, password: passwordHash, phone: phone || null, role: rolOwner._id, business: negocio._id, emailVerificationToken: tokenVerificacionHash, emailVerificationExpires: expiracion, legalConsents });
         await Business.findByIdAndUpdate(negocio._id, { createdBy: usuario._id });
       } catch (fallbackError) {
         if (negocio?._id) {

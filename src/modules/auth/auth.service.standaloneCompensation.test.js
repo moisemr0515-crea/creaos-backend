@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const Business = require('../businesses/business.model');
 const Role = require('../roles/role.model');
 const User = require('../users/user.model');
+const { CURRENT_LEGAL_VERSIONS } = require('../../config/legalDocuments');
 
 jest.mock('../../utils/email', () => ({
   enviarEmailVerificacion: jest.fn().mockResolvedValue(undefined),
@@ -15,6 +16,7 @@ describe('auth.registrar fallback standalone', () => {
   let ownerRole;
   const payload = {
     name: 'Owner', email: 'owner@test.com', password: 'Password1', businessName: 'Nuevo negocio',
+    legalAcceptance: { termsAccepted: true, privacyAccepted: true, ...CURRENT_LEGAL_VERSIONS },
   };
 
   beforeAll(async () => {

@@ -15,6 +15,7 @@ const Business = require('../businesses/business.model');
 const Role = require('../roles/role.model');
 const User = require('../users/user.model');
 const { hashPassword } = require('../../utils/crypto');
+const { CURRENT_LEGAL_VERSIONS } = require('../../config/legalDocuments');
 
 jest.mock('../../utils/email', () => ({
   enviarEmailVerificacion: jest.fn().mockResolvedValue(undefined),
@@ -67,6 +68,7 @@ describe('auth.service.js — normalización de email (variantes de mayúsculas/
         email: '  Existente@Test.com  ',
         password: 'Password1',
         businessName: 'Otro negocio',
+        legalAcceptance: { termsAccepted: true, privacyAccepted: true, ...CURRENT_LEGAL_VERSIONS },
       })
     ).rejects.toMatchObject({ statusCode: 409, message: expect.stringMatching(/ya está registrado/i) });
 

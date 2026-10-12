@@ -24,6 +24,7 @@ jest.mock('./auth.service', () => ({
 const request = require('supertest');
 const app = require('../../app');
 const authService = require('./auth.service');
+const { CURRENT_LEGAL_VERSIONS } = require('../../config/legalDocuments');
 
 describe('POST /api/v1/auth/register — validación de contraseña', () => {
   beforeEach(() => jest.clearAllMocks());
@@ -32,6 +33,7 @@ describe('POST /api/v1/auth/register — validación de contraseña', () => {
     name: 'Luna Lizeth',
     email: 'luna@example.com',
     businessName: 'Negocio de Luna',
+    legalAcceptance: { termsAccepted: true, privacyAccepted: true, ...CURRENT_LEGAL_VERSIONS },
   };
 
   test('contraseña sin mayúscula (reproducción real: "lunalizeth2011"): 422, con el mensaje ESPECÍFICO en errors[], no solo el genérico', async () => {

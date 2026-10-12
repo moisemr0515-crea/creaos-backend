@@ -120,7 +120,7 @@ Ciclo observado: CREATE -> USE -> STORE -> SHARE -> ARCHIVE parcial -> DELETE in
 
 | ID | Área | Requirement | Status | Evidence | File / línea o componente | Risk | Recommended action | Priority |
 |---|---|---|---|---|---|---|---|---|
-| C-001 | LEGAL/BACKEND | Evidencia versionada de aceptación legal | 🔴 FALTA | El checkbox existe, pero registro no envía ni guarda versión/fecha/IP | Front `src/pages/auth/index.tsx:81,149-150,275-299`; back `src/controllers/auth.controller.js:15-20`, `src/models/user.model.js` | No puede probarse consentimiento contractual | Persistir documento, versión, fecha, contexto y separar consentimientos opcionales | P0 |
+| C-001 | LEGAL/BACKEND | Evidencia versionada de aceptación legal | ✅ CERRADO | El registro exige Términos y Privacidad, obtiene las versiones vigentes del backend, valida ambas server-side y persiste evidencia minimizada por documento | Front `src/routes/auth.index.tsx`, `src/lib/legal-consent.ts`; back `src/config/legalDocuments.js`, `src/modules/auth/auth.controller.js`, `src/modules/auth/auth.service.js`, `src/modules/users/user.model.js` | Riesgo residual: el reconsentimiento ante futuras versiones está preparado en el modelo, pero su workflow corresponde a C-030 | Mantener las versiones canónicas server-side y activar el workflow de reconsentimiento cuando cambie un documento | P0 |
 | C-002 | LEGAL/BACKEND | Eliminación de cuenta y datos asociados | 🔴 FALTA | Solo desactivación de otros usuarios; propietario no puede autoeliminarse; no hay cascade/DSAR ni URL técnica externa | `src/services/user.service.js:146-165`; rutas auth/user | Incumplimiento de derechos y Google Play | Crear workflow autenticado, validación de propiedad, cascade/anonymization, recibo y URL pública | P0 |
 | C-003 | WHATSAPP | Opt-in, revocación y suppression list | 🔴 FALTA | No se encontró registro de fuente/fecha/finalidad ni procesamiento STOP/BAJA/SALIR | modelos/rutas de channels, conversation y outbound | Mensajería sin evidencia de autorización y recontacto indebido | Implementar consentimiento por canal/finalidad, suppression server-side y bloqueo antes de enqueue | P0 |
 | C-004 | BACKEND | Dependencias sin vulnerabilidades críticas conocidas | ✅ IMPLEMENTADO | P0-A redujo el audit de 17 (1 critical/5 high/11 moderate) a 1 (0 critical/0 high/1 moderate). `xlsx@0.18.5` fue sustituido por SheetJS CE oficial 0.20.3, con regresión XLS/XLSX/CSV y sin advisories HIGH/CRITICAL en el árbol | `package.json`, `package-lock.json`, `src/modules/imports/spreadsheet.compatibility.test.js`; evidencia P0-A 11/10/2026 | La única vulnerabilidad backend restante es `uuid@9.0.1` MODERATE; el uso actual no entrega buffers controlados por usuario a v3/v5/v6 y su fix exige major | Mantener SCA continuo; migrar `uuid` mediante bloque separado con pruebas de compatibilidad, sin `audit fix --force` | P0 |
@@ -169,9 +169,19 @@ Ciclo observado: CREATE -> USE -> STORE -> SHARE -> ARCHIVE parcial -> DELETE in
 | C-047 | FRONTEND | Cleanup de metadatos locales de integraciones | 🟡 PARCIAL | Estados/connection_info se guardan localmente por usuario | `src/components/**/IntegrationsSection.tsx:64-80` | Persistencia innecesaria de metadatos | Minimizar, TTL y purge en logout/desconexión | P3 |
 | C-048 | INFRA | Reproducibilidad y claridad de deployment frontend | 🟡 PARCIAL | Vercel es real; configuración Wrangler histórica puede confundir y no hay CI declarativo | `.vercel/project.json`, `wrangler.*`, scripts package | Publicación equivocada o no reproducible | Documentar proveedor canónico y usar build/install reproducible en CI | P3 |
 
+### Evidencia de remediación C-001 — 12/10/2026
+
+**ANTES:** la aceptación era exclusivamente visual; no existía evidencia durable que relacionara usuario, documento, versión y fecha.
+
+**DESPUÉS:** `User.legalConsents[]` conserva un registro separado para Términos y Privacidad con `documentType`, `documentVersion`, `acceptedAt`, `source` y contexto técnico minimizado (`ipHash` SHA-256 y `userAgent`). Las versiones vigentes se publican y validan desde `src/config/legalDocuments.js`; el backend genera el timestamp y rechaza aceptación ausente, parcial o con versiones alteradas. La IP completa no se persiste. Los usuarios legacy conservan `legalConsents: []`, pueden iniciar sesión y no requieren reconsentimiento inmediato. El modelo admite `source: reconsent` para el futuro workflow de C-030.
+
+**TESTS:** 10 suites backend / 39 tests PASS (registro, persistencia, login legacy, auth y aislamiento tenant); 2 suites frontend / 8 tests PASS; TypeScript, lint focalizado, build de producción y `git diff --check` PASS.
+
+**RIESGO RESIDUAL:** C-001 queda cerrado. La activación de reconsentimiento cuando cambie una versión legal sigue separada y registrada en C-030.
+
 ## 7. Frontend findings
 
-- El consentimiento legal se presenta en UI, pero no llega al backend con versión y timestamp (C-001).
+- El consentimiento de Términos y Privacidad se obtiene desde versiones canónicas del backend y queda persistido por documento con versión, timestamp y contexto minimizado (C-001 cerrado).
 - La política de privacidad, términos y cookies existen, con versión visual `1.0.0` y fecha 15/07/2026, pero no están vinculados a evidencia individual ni a un registry (C-029, C-030).
 - El access token se mantiene en memoria y se eliminan claves legacy; esto reduce exposición. La cookie de refresh es HttpOnly/Secure/SameSite=None/Partitioned.
 - Los mensajes optimistas y ciertos metadatos de integración permanecen en localStorage sin lifecycle formal (C-027, C-047).
@@ -303,7 +313,7 @@ La arquitectura tiene `country`, idioma y timezone, pero no un motor normativo. 
 
 ## 20. P0 — riesgo inmediato / lanzamiento
 
-1. **C-001:** consentimiento legal no persistido ni versionado.
+1. **C-001 (cerrado 12/10/2026):** consentimiento legal persistido y versionado con autoridad server-side y evidencia minimizada.
 2. **C-002:** eliminación de cuenta/datos y URL pública operativa inexistentes.
 3. **C-003:** WhatsApp sin ledger de opt-in/opt-out/suppression.
 4. **C-004:** árbol backend con CVE crítica y cinco altas.
@@ -373,7 +383,7 @@ Estas comprobaciones no pueden inferirse del repositorio y deben marcarse **🔵
 1. Congelar evidencia de alcance y asignar owners de Privacy, Security, Android y WhatsApp.
 2. Remediar C-004/C-005 y publicar releases verificadas.
 3. Cifrar/rotar credenciales C-006.
-4. Implementar registro versionado de consentimiento C-001.
+4. ✅ C-001 implementado: registro versionado de consentimiento con autoridad server-side y compatibilidad legacy.
 5. Implementar opt-in/opt-out/suppression y enforcement C-003.
 6. Implementar eliminación/DSAR/cascade/third-party receipts C-002/C-011/C-012/C-032.
 7. Auditar y gobernar backups; probar restore y aprobar RPO/RTO C-007/C-019.
