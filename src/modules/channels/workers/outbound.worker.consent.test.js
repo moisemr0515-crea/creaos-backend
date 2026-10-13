@@ -20,7 +20,7 @@ describe('outbound worker — enforcement C-003', () => {
     });
   });
 
-  async function createEvent({ intent, status }) {
+  async function createEvent({ intent, status, origin }) {
     const tenantId = new mongoose.Types.ObjectId();
     const channelId = new mongoose.Types.ObjectId();
     const phone = '+51922222222';
@@ -49,7 +49,7 @@ describe('outbound worker — enforcement C-003', () => {
       conversation: conversation._id,
       to: phone,
       text: 'Mensaje',
-      origin: 'manual',
+      origin: origin || (intent === 'ai_automated' ? 'ai' : 'manual'),
       messageIntent: intent,
     });
     return event;
@@ -84,5 +84,23 @@ describe('outbound worker — enforcement C-003', () => {
     await processOutboundJob({ data: { outboundEventId: event._id } });
     expect((await OutboundEvent.findById(event._id)).status).toBe('sent');
     expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  test('una respuesta IA automática queda bloqueada con OPTED_OUT aunque sea posterior a un inbound', async () => {
+    const send = jest.spyOn(channelService, 'sendMessage').mockResolvedValue({ messageId: 'no-debe-salir' });
+    const event = await createEvent({ intent: 'ai_automated', status: 'OPTED_OUT' });
+    await processOutboundJob({ data: { outboundEventId: event._id } });
+    const stored = await OutboundEvent.findById(event._id);
+    expect(stored.status).toBe('skipped');
+    expect(stored.errorType).toBe('whatsapp_suppressed');
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  test('un evento IA legacy marcado reactive no hereda la excepción manual', async () => {
+    const send = jest.spyOn(channelService, 'sendMessage').mockResolvedValue({ messageId: 'no-debe-salir' });
+    const event = await createEvent({ intent: 'reactive', status: 'OPTED_OUT', origin: 'ai' });
+    await processOutboundJob({ data: { outboundEventId: event._id } });
+    expect((await OutboundEvent.findById(event._id)).errorType).toBe('whatsapp_suppressed');
+    expect(send).not.toHaveBeenCalled();
   });
 });

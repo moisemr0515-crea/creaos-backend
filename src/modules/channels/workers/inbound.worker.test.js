@@ -199,6 +199,53 @@ describe('inbound.worker#processInboundJob() — paridad con processGupshupMessa
     expect((await InboundEvent.findById(event._id)).status).toBe('processed');
   });
 
+  test('BAJA seguida de Hola mantiene OPTED_OUT y no genera IA ni OutboundEvent', async () => {
+    const replySpy = jest.spyOn(aiService, 'generateReply').mockResolvedValue({ reply: 'No debe salir', tokensUsed: 1 });
+    const baja = await crearInboundEvent({ text: 'BAJA' });
+    await processInboundJob({ data: { inboundEventId: baja._id } });
+
+    const hola = await crearInboundEvent({ text: 'Hola' });
+    await processInboundJob({ data: { inboundEventId: hola._id } });
+    const informacion = await crearInboundEvent({ text: 'Información' });
+    await processInboundJob({ data: { inboundEventId: informacion._id } });
+
+    const lead = await Lead.findOne({ business: business._id, phone: PHONE });
+    const conversation = await Conversation.findOne({ business: business._id, lead: lead._id });
+    const consent = await WhatsAppConsent.findOne({ tenantId: business._id, phone: PHONE });
+    expect(consent.status).toBe('OPTED_OUT');
+    expect(conversation.messages.map((message) => message.content)).toEqual(['BAJA', 'Hola', 'Información']);
+    expect(replySpy).not.toHaveBeenCalled();
+    expect(await OutboundEvent.countDocuments({ tenantId: business._id })).toBe(0);
+    expect((await InboundEvent.findById(hola._id)).status).toBe('processed');
+    expect((await InboundEvent.findById(informacion._id)).status).toBe('processed');
+  });
+
+  test('re-opt-in explícito vuelve a permitir IA y crea outbound clasificado como ai_automated', async () => {
+    const replySpy = jest.spyOn(aiService, 'generateReply').mockResolvedValue({ reply: 'Respuesta permitida', tokensUsed: 1 });
+    const baja = await crearInboundEvent({ text: 'BAJA' });
+    await processInboundJob({ data: { inboundEventId: baja._id } });
+
+    const lead = await Lead.findOne({ business: business._id, phone: PHONE });
+    await require('../../whatsappConsent/whatsappConsent.service').registerExplicitOptIn({
+      tenantId: business._id,
+      leadId: lead._id,
+      source: 'manual_authorized',
+      purpose: 'marketing',
+      evidenceReference: 'evidencia-nueva-controlada',
+      recordedBy: new mongoose.Types.ObjectId(),
+      confirmation: true,
+    });
+
+    const posterior = await crearInboundEvent({ text: 'Hola después de re-opt-in' });
+    await processInboundJob({ data: { inboundEventId: posterior._id } });
+
+    expect(replySpy).toHaveBeenCalledTimes(1);
+    const outbound = await OutboundEvent.findOne({ sourceInboundEvent: posterior._id });
+    expect(outbound).not.toBeNull();
+    expect(outbound.messageIntent).toBe('ai_automated');
+    expect(enqueueOutbound).toHaveBeenCalledWith(outbound._id);
+  });
+
   test('InboundEvent processed con OutboundEvent recuperable vuelve a encolar el mismo outbound sin recrearlo', async () => {
     const event = await crearInboundEvent({ status: 'processed', processedAt: new Date() });
     const outbound = await OutboundEvent.create({

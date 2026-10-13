@@ -206,8 +206,8 @@ async function processInboundJob(job) {
 
   // La baja no impide recibir/persistir el inbound. Solo corta la respuesta
   // automática de este turno; el lead y su conversación permanecen intactos.
-  if (consentResult.optedOut) {
-    logger.info('[inboundWorker] baja WhatsApp registrada; inbound persistido sin respuesta automática', {
+  if (consentResult.suppressed) {
+    logger.info('[inboundWorker] suppression WhatsApp activa; inbound persistido sin respuesta automática', {
       inboundEventId: String(event._id),
       tenantId: String(event.tenantId),
       conversationId: String(conversation._id),
@@ -305,7 +305,7 @@ async function processInboundJob(job) {
       tenantId: event.tenantId,
       conversation: conversation._id,
       sourceInboundEvent: event._id,
-      messageIntent: 'reactive',
+      messageIntent: 'ai_automated',
       to: event.from,
       text: output.reply,
       status: 'pending',

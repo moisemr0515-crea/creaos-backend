@@ -156,10 +156,17 @@ async function processOutboundJob(job) {
       return;
     }
 
+    // Compatibilidad defensiva: eventos IA creados antes de introducir
+    // `ai_automated` podían conservar el default legacy `reactive`. La
+    // excepción reactiva es exclusivamente humana; el origin real impide
+    // que una IA herede ese permiso durante una baja concurrente.
+    const effectiveMessageIntent = event.origin === 'ai' && event.messageIntent === 'reactive'
+      ? 'ai_automated'
+      : (event.messageIntent || 'reactive');
     const consentDecision = await whatsappConsentService.canSendWhatsAppMessage({
       tenantId: event.tenantId,
       phone: event.to,
-      messageIntent: event.messageIntent || 'reactive',
+      messageIntent: effectiveMessageIntent,
     });
     if (!consentDecision.allowed) {
       event.status = 'skipped';
@@ -173,7 +180,7 @@ async function processOutboundJob(job) {
       logger.info('[outboundWorker] envío comercial bloqueado por consentimiento/supresión', {
         outboundEventId: String(event._id),
         tenantId: String(event.tenantId),
-        messageIntent: event.messageIntent,
+        messageIntent: effectiveMessageIntent,
         reason: consentDecision.reason,
         finalState: 'skipped',
       });

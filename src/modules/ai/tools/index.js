@@ -549,6 +549,7 @@ const persistAndEnqueueAiMedia = async ({
           provider: channel.provider || 'gupshup',
           conversation: conversation._id,
           origin: 'ai',
+          messageIntent: 'ai_automated',
           messageType: 'media',
           payload: { media },
           idempotencyKey,

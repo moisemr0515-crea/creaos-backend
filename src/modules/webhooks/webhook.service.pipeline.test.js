@@ -14,6 +14,7 @@ const Pipeline = require('../pipeline/pipeline.model');
 const Lead = require('../leads/lead.model');
 const Conversation = require('../ai/conversation.model');
 const WebhookConfig = require('./webhookConfig.model');
+const WhatsAppConsent = require('../whatsappConsent/whatsappConsent.model');
 const aiService = require('../ai/ai.service');
 const channelService = require('../channels/channel.service');
 const subscriptionService = require('../subscriptions/subscription.service');
@@ -30,6 +31,7 @@ describe('webhook.service — leads de WhatsApp entrante quedan con pipeline set
 
   afterAll(async () => {
     await Conversation.deleteMany({});
+    await WhatsAppConsent.deleteMany({});
     await Lead.deleteMany({});
     await Pipeline.deleteMany({});
     await WebhookConfig.deleteMany({});
@@ -43,6 +45,7 @@ describe('webhook.service — leads de WhatsApp entrante quedan con pipeline set
       planName: 'closer', limits: { aiEnabled: true, whatsappEnabled: true, automationsEnabled: true },
     });
     await Conversation.deleteMany({});
+    await WhatsAppConsent.deleteMany({});
     await Lead.deleteMany({});
     await Pipeline.deleteMany({});
     await WebhookConfig.deleteMany({});
@@ -78,6 +81,19 @@ describe('webhook.service — leads de WhatsApp entrante quedan con pipeline set
 
     const leadActualizado = await Lead.findById(leadViejo._id);
     expect(leadActualizado.pipeline).toBeUndefined(); // sigue sin pipeline — lo resuelve el backfill (parte 2), no este fix
+  });
+
+  test('processGupshupMessage(): BAJA seguida de Hola mantiene suppression y no ejecuta IA', async () => {
+    const runAgentSpy = jest.spyOn(aiService, 'runAgent').mockResolvedValue({ outcome: 'reply', responseText: 'No debe salir' });
+    const phone = '+51900000004';
+
+    await processGupshupMessage({ phone, text: 'BAJA', providerMessageId: 'provider-baja' }, business._id.toString());
+    await processGupshupMessage({ phone, text: 'Hola', providerMessageId: 'provider-hola' }, business._id.toString());
+
+    const consent = await WhatsAppConsent.findOne({ tenantId: business._id, phone });
+    expect(consent.status).toBe('OPTED_OUT');
+    expect(runAgentSpy).not.toHaveBeenCalled();
+    expect(channelService.getChannelForConversation).not.toHaveBeenCalled();
   });
 
   test('processWhatsAppMessage(): un lead nuevo (canal Meta/Cloud API) queda con pipeline seteado al default del negocio', async () => {

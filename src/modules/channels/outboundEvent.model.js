@@ -35,7 +35,7 @@ const outboundEventSchema = new mongoose.Schema(
     origin: { type: String, enum: ['ai', 'manual'], default: 'ai' },
     messageIntent: {
       type: String,
-      enum: ['reactive', 'transactional', 'support', 'commercial', 'marketing', 'campaign', 'automation', 'proactive_ai'],
+      enum: ['reactive', 'ai_automated', 'transactional', 'support', 'commercial', 'marketing', 'campaign', 'automation', 'proactive_ai'],
       default: 'reactive',
     },
     messageType: { type: String, enum: ['text', 'template', 'media'], default: 'text' },

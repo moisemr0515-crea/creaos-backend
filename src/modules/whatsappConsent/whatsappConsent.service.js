@@ -12,6 +12,7 @@ const EXPLICIT_OPT_IN_SOURCES = new Set([
 ]);
 
 const COMMERCIAL_INTENTS = new Set(['commercial', 'marketing', 'campaign', 'automation', 'proactive_ai']);
+const AUTOMATED_RESPONSE_INTENTS = new Set(['ai_automated']);
 
 async function upsertConsent(selector, update) {
   try {
@@ -101,18 +102,20 @@ async function recordInboundConsent({ tenantId, leadId, phone, text, providerMes
         $setOnInsert: { grantedAt: null },
       }
     );
-    return { consent, optedOut: true };
+    return { consent, status: consent.status, optedOut: true, suppressed: true };
   }
 
   // Un inbound voluntario acredita consentimiento conversacional, pero jamás
   // reactiva automáticamente una baja previa ni habilita marketing.
-  if (existing?.status === 'OPTED_OUT') return { consent: existing, optedOut: false };
+  if (existing?.status === 'OPTED_OUT') {
+    return { consent: existing, status: existing.status, optedOut: false, suppressed: true };
+  }
   if (existing?.status === 'OPTED_IN') {
     if (!existing.leadId && leadId) {
       existing.leadId = leadId;
       await existing.save();
     }
-    return { consent: existing, optedOut: false };
+    return { consent: existing, status: existing.status, optedOut: false, suppressed: false };
   }
 
   const transition = {
@@ -137,7 +140,7 @@ async function recordInboundConsent({ tenantId, leadId, phone, text, providerMes
       $push: { history: transition },
     }
   );
-  return { consent, optedOut: false };
+  return { consent, status: consent.status, optedOut: false, suppressed: false };
 }
 
 async function resolveLeadForTenant(tenantId, leadId) {
@@ -191,7 +194,11 @@ async function registerExplicitOptIn({ tenantId, leadId, source, purpose = 'mark
 }
 
 async function canSendWhatsAppMessage({ tenantId, phone, leadId, messageIntent = 'reactive' }) {
-  if (!COMMERCIAL_INTENTS.has(messageIntent)) return { allowed: true, reason: null };
+  const isCommercial = COMMERCIAL_INTENTS.has(messageIntent);
+  const isAutomatedResponse = AUTOMATED_RESPONSE_INTENTS.has(messageIntent);
+  // Una respuesta humana reactiva/soporte conserva la excepción operativa.
+  // La IA automática debe consultar suppression aunque responda a un inbound.
+  if (!isCommercial && !isAutomatedResponse) return { allowed: true, reason: null };
   let normalizedPhone = normalizeToE164(phone);
   if (!normalizedPhone && leadId) {
     const lead = await resolveLeadForTenant(tenantId, leadId);
@@ -201,6 +208,7 @@ async function canSendWhatsAppMessage({ tenantId, phone, leadId, messageIntent =
 
   const consent = await WhatsAppConsent.findOne({ tenantId, channel: 'whatsapp', phone: normalizedPhone });
   if (consent?.status === 'OPTED_OUT') return { allowed: false, reason: 'whatsapp_suppressed' };
+  if (isAutomatedResponse) return { allowed: true, reason: null };
   if (consent?.status !== 'OPTED_IN' || consent.purpose !== 'marketing') {
     return { allowed: false, reason: 'whatsapp_consent_required' };
   }

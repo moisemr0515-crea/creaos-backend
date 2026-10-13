@@ -479,8 +479,8 @@ async function processGupshupMessage({ phone, text, name, mediaType, mediaSource
     providerMessageId,
   });
 
-  if (consentResult.optedOut) {
-    logger.info('[gupshup] baja WhatsApp registrada; inbound persistido sin respuesta automática', {
+  if (consentResult.suppressed) {
+    logger.info('[gupshup] suppression WhatsApp activa; inbound persistido sin respuesta automática', {
       businessId: String(businessId),
       leadId: String(lead._id),
       conversationId: String(conversation._id),
@@ -610,7 +610,7 @@ async function processGupshupMessage({ phone, text, name, mediaType, mediaSource
       tenantId: businessId,
       leadId: lead._id,
       phone,
-      messageIntent: 'reactive',
+      messageIntent: 'ai_automated',
     });
     await channelService.sendMessage(channel._id, phone, reply, businessId);
 

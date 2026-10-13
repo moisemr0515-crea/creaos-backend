@@ -57,8 +57,12 @@ describe('C-003 — consentimiento y suppression WhatsApp', () => {
 
   test('un inbound posterior a la baja no reactiva automáticamente', async () => {
     await service.recordInboundConsent({ tenantId: tenantA, leadId: leadA._id, phone: leadA.phone, text: 'STOP', providerMessageId: 'in-stop' });
-    await service.recordInboundConsent({ tenantId: tenantA, leadId: leadA._id, phone: leadA.phone, text: 'Necesito soporte', providerMessageId: 'in-help' });
+    const result = await service.recordInboundConsent({ tenantId: tenantA, leadId: leadA._id, phone: leadA.phone, text: 'Necesito soporte', providerMessageId: 'in-help' });
+    expect(result.status).toBe('OPTED_OUT');
+    expect(result.suppressed).toBe(true);
     expect((await WhatsAppConsent.findOne({ tenantId: tenantA })).status).toBe('OPTED_OUT');
+    expect(await service.canSendWhatsAppMessage({ tenantId: tenantA, phone: leadA.phone, messageIntent: 'ai_automated' }))
+      .toEqual({ allowed: false, reason: 'whatsapp_suppressed' });
   });
 
   test('bloquea comercial sin consentimiento y cuando está suprimido', async () => {
@@ -92,6 +96,7 @@ describe('C-003 — consentimiento y suppression WhatsApp', () => {
     });
     expect(consent.status).toBe('OPTED_IN');
     expect((await service.canSendWhatsAppMessage({ tenantId: tenantA, phone: leadA.phone, messageIntent: 'commercial' })).allowed).toBe(true);
+    expect((await service.canSendWhatsAppMessage({ tenantId: tenantA, phone: leadA.phone, messageIntent: 'ai_automated' })).allowed).toBe(true);
   });
 
   test('tenant isolation: el mismo teléfono mantiene estados independientes', async () => {
