@@ -16,6 +16,7 @@ const DefaultAgentRuntime = require('../defaultAgentRuntime');
 const { normalizeToE164 } = require('../../../utils/phone');
 const logger = require('../../../utils/logger');
 const channelRepository = require('../channel.repository');
+const whatsappConsentService = require('../../whatsappConsent/whatsappConsent.service');
 
 /**
  * inbound.worker.js — sub-fase 1.d. Consume whatsapp-inbound (solo cuando
@@ -195,6 +196,28 @@ async function processInboundJob(job) {
     { providerMessageId: event.providerMessageId, inboundEventId: event._id }
   );
 
+  const consentResult = await whatsappConsentService.recordInboundConsent({
+    tenantId: event.tenantId,
+    leadId: lead._id,
+    phone: event.from,
+    text: event.text,
+    providerMessageId: event.providerMessageId,
+  });
+
+  // La baja no impide recibir/persistir el inbound. Solo corta la respuesta
+  // automática de este turno; el lead y su conversación permanecen intactos.
+  if (consentResult.optedOut) {
+    logger.info('[inboundWorker] baja WhatsApp registrada; inbound persistido sin respuesta automática', {
+      inboundEventId: String(event._id),
+      tenantId: String(event.tenantId),
+      conversationId: String(conversation._id),
+    });
+    event.status = 'processed';
+    event.processedAt = new Date();
+    await event.save();
+    return;
+  }
+
   if (!conversation.aiEnabled) {
     logger.info('[inboundWorker] IA deshabilitada para esta conversación, no se responde', { conversationId: conversation._id.toString() });
 
@@ -282,6 +305,7 @@ async function processInboundJob(job) {
       tenantId: event.tenantId,
       conversation: conversation._id,
       sourceInboundEvent: event._id,
+      messageIntent: 'reactive',
       to: event.from,
       text: output.reply,
       status: 'pending',

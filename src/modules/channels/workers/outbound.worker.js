@@ -6,6 +6,7 @@ const Conversation = require('../../ai/conversation.model');
 const channelService = require('../channel.service');
 const subscriptionService = require('../../subscriptions/subscription.service');
 const logger = require('../../../utils/logger');
+const whatsappConsentService = require('../../whatsappConsent/whatsappConsent.service');
 
 const RETRYABLE_STATUS_CODES = new Set([408, 425, 429]);
 const PERMANENT_STATUS_CODES = new Set([400, 401, 403, 404, 409, 410, 422]);
@@ -152,6 +153,30 @@ async function processOutboundJob(job) {
       await event.save();
       await syncLinkedMessage(event, 'skipped', event.error);
       logger.info('[outboundWorker] envío cancelado, agente humano tomó control', { outboundEventId, tenantId: String(event.tenantId), channelId: String(event.channel), attempt, finalState: 'skipped' });
+      return;
+    }
+
+    const consentDecision = await whatsappConsentService.canSendWhatsAppMessage({
+      tenantId: event.tenantId,
+      phone: event.to,
+      messageIntent: event.messageIntent || 'reactive',
+    });
+    if (!consentDecision.allowed) {
+      event.status = 'skipped';
+      event.error = consentDecision.reason === 'whatsapp_suppressed'
+        ? 'El destinatario solicitó la baja de mensajes comerciales por WhatsApp'
+        : 'No existe consentimiento válido para este envío comercial por WhatsApp';
+      event.errorType = consentDecision.reason;
+      event.terminalAt = new Date();
+      await event.save();
+      await syncLinkedMessage(event, 'skipped', event.error);
+      logger.info('[outboundWorker] envío comercial bloqueado por consentimiento/supresión', {
+        outboundEventId: String(event._id),
+        tenantId: String(event.tenantId),
+        messageIntent: event.messageIntent,
+        reason: consentDecision.reason,
+        finalState: 'skipped',
+      });
       return;
     }
 

@@ -24,6 +24,8 @@ router.post('/bulk', checkPermission('leads:update'), controller.bulkAction);
 
 router.get('/', checkLeadsAccess, controller.listLeads);
 router.post('/', checkPermission('leads:create'), controller.createLead);
+router.get('/:id/whatsapp-consent', checkLeadsAccess, controller.getWhatsappConsent);
+router.post('/:id/whatsapp-consent', checkPermission('leads:update'), controller.registerWhatsappConsent);
 router.get('/:id', checkLeadsAccess, controller.getLead);
 router.put('/:id', checkPermission('leads:update'), controller.updateLead);
 router.delete('/:id', checkPermission('leads:delete'), controller.deleteLead);

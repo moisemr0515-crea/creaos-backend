@@ -8,9 +8,11 @@ const {
   assignLeadSchema,
   listLeadsSchema,
   bulkActionSchema,
+  registerWhatsappConsentSchema,
 } = require('./lead.validator');
 const { validateBody, validateQuery } = require('../../shared/utils/validate');
 const { respuestaExito, buildMeta } = require('../../utils/response');
+const whatsappConsentService = require('../whatsappConsent/whatsappConsent.service');
 
 const actor = (req) => ({ _id: req.user._id, name: req.user.name });
 
@@ -128,6 +130,30 @@ const bulkAction = async (req, res, next) => {
   }
 };
 
+const getWhatsappConsent = async (req, res, next) => {
+  try {
+    const consent = await whatsappConsentService.getConsentForLead(req.businessId, req.params.id);
+    return respuestaExito(res, { message: 'Estado de consentimiento obtenido', data: { consent } });
+  } catch (err) {
+    next(err);
+  }
+};
+
+const registerWhatsappConsent = async (req, res, next) => {
+  try {
+    const data = await validateBody(registerWhatsappConsentSchema, req.body);
+    const consent = await whatsappConsentService.registerExplicitOptIn({
+      tenantId: req.businessId,
+      leadId: req.params.id,
+      recordedBy: req.user._id,
+      ...data,
+    });
+    return respuestaExito(res, { message: 'Consentimiento WhatsApp registrado', data: { consent } });
+  } catch (err) {
+    next(err);
+  }
+};
+
 module.exports = {
   createLead,
   getLead,
@@ -139,4 +165,6 @@ module.exports = {
   closeSale,
   assignLead,
   bulkAction,
+  getWhatsappConsent,
+  registerWhatsappConsent,
 };

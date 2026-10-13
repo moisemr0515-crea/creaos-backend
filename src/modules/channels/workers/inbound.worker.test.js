@@ -33,6 +33,7 @@ const Conversation = require('../../ai/conversation.model');
 const InboundEvent = require('../inboundEvent.model');
 const WhatsAppChannel = require('../whatsappChannel.model');
 const OutboundEvent = require('../outboundEvent.model');
+const WhatsAppConsent = require('../../whatsappConsent/whatsappConsent.model');
 const Notification = require('../../admin/notification.model');
 const User = require('../../users/user.model');
 const Role = require('../../roles/role.model');
@@ -62,6 +63,7 @@ describe('inbound.worker#processInboundJob() — paridad con processGupshupMessa
   afterAll(async () => {
     await Notification.deleteMany({});
     await OutboundEvent.deleteMany({});
+    await WhatsAppConsent.deleteMany({});
     await InboundEvent.deleteMany({});
     await WhatsAppChannel.deleteMany({});
     await Conversation.deleteMany({});
@@ -81,6 +83,7 @@ describe('inbound.worker#processInboundJob() — paridad con processGupshupMessa
     });
     await Notification.deleteMany({});
     await OutboundEvent.deleteMany({});
+    await WhatsAppConsent.deleteMany({});
     await InboundEvent.deleteMany({});
     await WhatsAppChannel.deleteMany({});
     await Conversation.deleteMany({});
@@ -177,6 +180,23 @@ describe('inbound.worker#processInboundJob() — paridad con processGupshupMessa
     expect(await Conversation.countDocuments({ business: business._id })).toBe(before.conversations);
     expect(saveSpy).toHaveBeenCalledTimes(1);
     expect((await Conversation.findOne({ business: business._id })).messages).toHaveLength(1);
+  });
+
+  test('STOP persiste el inbound, activa suppression y no genera respuesta IA', async () => {
+    const replySpy = jest.spyOn(aiService, 'generateReply').mockResolvedValue({ reply: 'No debe salir', tokensUsed: 1 });
+    const event = await crearInboundEvent({ text: ' stop!!! ' });
+
+    await processInboundJob({ data: { inboundEventId: event._id } });
+
+    const lead = await Lead.findOne({ business: business._id, phone: PHONE });
+    const conversation = await Conversation.findOne({ business: business._id, lead: lead._id });
+    const consent = await WhatsAppConsent.findOne({ tenantId: business._id, phone: PHONE });
+    expect(conversation.messages).toHaveLength(1);
+    expect(conversation.messages[0].content.trim()).toBe('stop!!!');
+    expect(consent.status).toBe('OPTED_OUT');
+    expect(replySpy).not.toHaveBeenCalled();
+    expect(await OutboundEvent.countDocuments({ sourceInboundEvent: event._id })).toBe(0);
+    expect((await InboundEvent.findById(event._id)).status).toBe('processed');
   });
 
   test('InboundEvent processed con OutboundEvent recuperable vuelve a encolar el mismo outbound sin recrearlo', async () => {

@@ -17,6 +17,7 @@ const Business = require('../businesses/business.model');
 const Lead = require('../leads/lead.model');
 const Conversation = require('../ai/conversation.model');
 const channelService = require('../channels/channel.service');
+const WhatsAppConsent = require('../whatsappConsent/whatsappConsent.model');
 const { execSendTemplate, executeAction } = require('./automation.engine');
 
 const MONGO_URI = 'mongodb://localhost:27017/creaos_test_automation_send_template';
@@ -31,6 +32,7 @@ describe('automation.engine#execSendTemplate()', () => {
   });
 
   afterAll(async () => {
+    await WhatsAppConsent.deleteMany({});
     await Conversation.deleteMany({});
     await Lead.deleteMany({});
     await Business.deleteMany({});
@@ -42,8 +44,19 @@ describe('automation.engine#execSendTemplate()', () => {
     await Conversation.deleteMany({});
     await Lead.deleteMany({});
     await Business.deleteMany({});
+    await WhatsAppConsent.deleteMany({});
     business = await Business.create({ name: 'Negocio de prueba' });
     lead = await Lead.create({ business: business._id, name: 'Lead de prueba', phone: '+51999999999' });
+    await WhatsAppConsent.create({
+      tenantId: business._id,
+      leadId: lead._id,
+      phone: lead.phone,
+      status: 'OPTED_IN',
+      source: 'web_form',
+      purpose: 'marketing',
+      grantedAt: new Date(),
+      evidenceReference: 'test-form',
+    });
 
     channelService.getChannelForConversation.mockResolvedValue(FAKE_CHANNEL);
     channelService.sendMessage.mockResolvedValue({ messageId: 'msg-1' });
@@ -57,6 +70,13 @@ describe('automation.engine#execSendTemplate()', () => {
       /no tiene un número de teléfono/
     );
     expect(channelService.getChannelForConversation).not.toHaveBeenCalled();
+  });
+
+  test('sin opt-in comercial bloquea la automatización antes de tocar el proveedor', async () => {
+    await WhatsAppConsent.deleteMany({ tenantId: business._id });
+    await expect(execSendTemplate({ templateId: 'tpl_x' }, lead)).rejects.toThrow(/consentimiento válido/);
+    expect(channelService.sendTemplate).not.toHaveBeenCalled();
+    expect(channelService.sendMessage).not.toHaveBeenCalled();
   });
 
   test('ventana cerrada (lead sin conversación previa) + templateId → manda plantilla, no texto', async () => {

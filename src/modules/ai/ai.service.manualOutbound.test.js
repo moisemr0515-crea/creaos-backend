@@ -9,6 +9,7 @@ const Lead = require('../leads/lead.model');
 const Business = require('../businesses/business.model');
 const WhatsAppChannel = require('../channels/whatsappChannel.model');
 const OutboundEvent = require('../channels/outboundEvent.model');
+const WhatsAppConsent = require('../whatsappConsent/whatsappConsent.model');
 const channelService = require('../channels/channel.service');
 const subscriptionService = require('../subscriptions/subscription.service');
 const { enqueueOutbound } = require('../channels/queues/outbound.queue');
@@ -38,6 +39,16 @@ describe('mensajería manual durable por WhatsApp', () => {
     tenantId = business._id;
     actor = { _id: new mongoose.Types.ObjectId(), name: 'Agente', business: tenantId };
     lead = await Lead.create({ business: tenantId, name: 'Lead', phone: '+51900000000' });
+    await WhatsAppConsent.create({
+      tenantId,
+      leadId: lead._id,
+      phone: lead.phone,
+      status: 'OPTED_IN',
+      source: 'web_form',
+      purpose: 'marketing',
+      grantedAt: new Date(),
+      evidenceReference: 'test-form',
+    });
     channel = await WhatsAppChannel.create({
       tenantId,
       businessId: tenantId,
@@ -91,6 +102,23 @@ describe('mensajería manual durable por WhatsApp', () => {
     expect(event.payload.template).toEqual({ id: 'bienvenida', params: ['Ana'] });
     expect(enqueueOutbound).toHaveBeenCalledWith(event._id);
     expect(directSend).not.toHaveBeenCalled();
+  });
+
+  test('template MARKETING sin consentimiento no crea mensaje ni OutboundEvent', async () => {
+    await WhatsAppConsent.deleteMany({ tenantId });
+    jest.spyOn(channelService, 'getApprovedTemplate').mockResolvedValue({
+      providerTemplateId: 'promo', name: 'seguimiento_comercial', category: 'MARKETING', variablesRequired: 3,
+    });
+
+    await expect(aiService.sendTemplateMessage(
+      conversation._id,
+      { id: 'promo', params: ['Lead', 'Asesora CREA', 'CREA OS'] },
+      actor,
+      options('template-suppressed')
+    )).rejects.toThrow(/consentimiento válido/);
+
+    expect(await OutboundEvent.countDocuments({ conversation: conversation._id })).toBe(0);
+    expect((await Conversation.findById(conversation._id)).messages).toHaveLength(0);
   });
 
 

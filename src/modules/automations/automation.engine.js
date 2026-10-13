@@ -18,6 +18,7 @@ const notificationService = require('../admin/notification.service');
 const channelService = require('../channels/channel.service');
 const subscriptionService = require('../subscriptions/subscription.service');
 const logger = require('../../utils/logger');
+const whatsappConsentService = require('../whatsappConsent/whatsappConsent.service');
 
 // ─── Condition evaluation ─────────────────────────────────────────────────────
 
@@ -310,6 +311,13 @@ async function execSendTemplate(config, lead) {
   if (!channel) {
     throw new Error(`send_template: no hay un WhatsAppChannel activo para el negocio ${lead.business}`);
   }
+
+  await whatsappConsentService.assertCanSendWhatsAppMessage({
+    tenantId: lead.business,
+    leadId: lead._id,
+    phone: lead.phone,
+    messageIntent: 'automation',
+  });
 
   const mensaje = {
     role: 'assistant',

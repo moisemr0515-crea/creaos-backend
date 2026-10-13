@@ -13,6 +13,7 @@ const pipelineService = require('../pipeline/pipeline.service');
 const { normalizeToE164 } = require('../../utils/phone');
 const logger = require('../../utils/logger');
 const { readSecret } = require('./webhookConfigSecrets.service');
+const whatsappConsentService = require('../whatsappConsent/whatsappConsent.service');
 const {
   META_APP_SECRET,
   META_GRAPH_API_VERSION,
@@ -356,7 +357,7 @@ async function processWhatsAppMessage({ phoneNumberId, from, name, text, msgId }
 // de una Conversation sin whatsappChannel poblado (doc viejo, o creada por
 // otro camino — ver getChannelForConversation() más abajo), no un caller
 // legacy.
-async function processGupshupMessage({ phone, text, name, mediaType, mediaSourceUrl }, businessId, channelId = null) {
+async function processGupshupMessage({ phone, text, name, mediaType, mediaSourceUrl, providerMessageId }, businessId, channelId = null) {
   logger.info('[gupshup] processGupshupMessage: inicio', { phone, textPreview: text?.slice(0, 50), mediaType, businessId });
 
   // Un mensaje de imagen/video SIN caption llega con text:'' — antes este
@@ -469,6 +470,23 @@ async function processGupshupMessage({ phone, text, name, mediaType, mediaSource
     text,
     mediaSourceUrl ? { mediaType, sourceUrl: mediaSourceUrl } : undefined
   );
+
+  const consentResult = await whatsappConsentService.recordInboundConsent({
+    tenantId: businessId,
+    leadId: lead._id,
+    phone,
+    text,
+    providerMessageId,
+  });
+
+  if (consentResult.optedOut) {
+    logger.info('[gupshup] baja WhatsApp registrada; inbound persistido sin respuesta automática', {
+      businessId: String(businessId),
+      leadId: String(lead._id),
+      conversationId: String(conversation._id),
+    });
+    return { lead, conversation, optedOut: true };
+  }
 
   logger.info('[gupshup] conversación lista', {
     conversationId: conversation._id.toString(),
@@ -588,6 +606,12 @@ async function processGupshupMessage({ phone, text, name, mediaType, mediaSource
   if (!channel) {
     logger.warn('[gupshup] sin WhatsAppChannel activo para este tenant, no se pudo enviar la respuesta', { businessId, leadId: lead._id.toString() });
   } else {
+    await whatsappConsentService.assertCanSendWhatsAppMessage({
+      tenantId: businessId,
+      leadId: lead._id,
+      phone,
+      messageIntent: 'reactive',
+    });
     await channelService.sendMessage(channel._id, phone, reply, businessId);
 
     // PR36 del blueprint de Fase 2 — scoring automático (Buyer Profile +

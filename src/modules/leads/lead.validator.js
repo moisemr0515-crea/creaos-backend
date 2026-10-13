@@ -150,6 +150,15 @@ const bulkActionSchema = Joi.object({
   }),
 });
 
+const registerWhatsappConsentSchema = Joi.object({
+  confirmation: Joi.boolean().valid(true).required(),
+  source: Joi.string()
+    .valid('manual_authorized', 'web_form', 'checkbox', 'qr', 'import_with_evidence')
+    .required(),
+  purpose: Joi.string().valid('marketing', 'transactional', 'support').default('marketing'),
+  evidenceReference: Joi.string().trim().min(3).max(300).required(),
+});
+
 module.exports = {
   createLeadSchema,
   updateLeadSchema,
@@ -159,6 +168,7 @@ module.exports = {
   assignLeadSchema,
   listLeadsSchema,
   bulkActionSchema,
+  registerWhatsappConsentSchema,
   TEMPERATURES,
   SOURCES,
 };

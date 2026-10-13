@@ -33,6 +33,11 @@ const outboundEventSchema = new mongoose.Schema(
     provider: { type: String, default: 'gupshup' },
     conversation: { type: mongoose.Schema.Types.ObjectId, ref: 'Conversation', required: true },
     origin: { type: String, enum: ['ai', 'manual'], default: 'ai' },
+    messageIntent: {
+      type: String,
+      enum: ['reactive', 'transactional', 'support', 'commercial', 'marketing', 'campaign', 'automation', 'proactive_ai'],
+      default: 'reactive',
+    },
     messageType: { type: String, enum: ['text', 'template', 'media'], default: 'text' },
     payload: { type: mongoose.Schema.Types.Mixed, default: null },
     requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },

@@ -11,6 +11,7 @@ const channelService = require('../channels/channel.service');
 const OutboundEvent = require('../channels/outboundEvent.model');
 const { enqueueOutbound } = require('../channels/queues/outbound.queue');
 const { assertActiveUserInBusiness } = require('../users/userScope.service');
+const whatsappConsentService = require('../whatsappConsent/whatsappConsent.service');
 // Se requiere el módulo completo (no se destructura subirBuffer acá) para
 // que la llamada use siempre la referencia viva del export — mismo motivo
 // que gupshupProvider.js con gupshup.client.js: permite mockearlo en tests
@@ -1269,12 +1270,19 @@ async function persistAndEnqueueManualOutbound({
   payload,
   message,
   suppliedIdempotencyKey,
+  messageIntent = 'reactive',
 }) {
   if (String(conversation.business) !== String(tenantId) || String(lead.business) !== String(tenantId)) {
     throw new AppError('Conversación o lead fuera del negocio actual', 403);
   }
   await assertActiveUserInBusiness(conversation.assignedTo, tenantId);
   const channel = await channelService.getChannelForConversation(conversation, tenantId);
+  await whatsappConsentService.assertCanSendWhatsAppMessage({
+    tenantId,
+    leadId: lead._id,
+    phone: lead.phone,
+    messageIntent,
+  });
 
   const idempotencyKey = buildManualIdempotency({
     tenantId: String(tenantId),
@@ -1314,6 +1322,7 @@ async function persistAndEnqueueManualOutbound({
         provider: channel.provider,
         conversation: conversation._id,
         origin: 'manual',
+        messageIntent,
         messageType,
         payload,
         requestedBy: actor?._id || null,
@@ -1502,6 +1511,12 @@ const sendTemplateMessage = async (conversationId, template, actor, options = {}
     payload: { template: canonicalTemplate },
     message: mensaje,
     suppliedIdempotencyKey: options.idempotencyKey,
+    // Solo las categorías explícitamente transaccionales del proveedor se
+    // excluyen del guard comercial. Una categoría ausente/desconocida falla
+    // de forma conservadora como comercial, nunca como permiso implícito.
+    messageIntent: ['UTILITY', 'AUTHENTICATION'].includes(String(approvedTemplate.category || '').toUpperCase())
+      ? 'transactional'
+      : 'commercial',
   });
 };
 
