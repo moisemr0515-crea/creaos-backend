@@ -5,6 +5,33 @@ const createNotification = async ({ business, user = null, type = 'info', catego
   return Notification.create({ business, user, type, category, title, message, meta });
 };
 
+const createNotificationOnce = async ({ deduplicationKey, ...data }) => {
+  if (!deduplicationKey) {
+    return { notification: await createNotification(data), created: true };
+  }
+
+  const filter = {
+    business: data.business,
+    user: data.user ?? null,
+    deduplicationKey,
+  };
+  const existing = await Notification.findOne(filter);
+  if (existing) return { notification: existing, created: false };
+
+  try {
+    const notification = await Notification.create({ ...data, deduplicationKey });
+    return { notification, created: true };
+  } catch (err) {
+    // La consulta previa evita el caso normal; el índice único resuelve la
+    // carrera si dos workers intentan crear el mismo evento a la vez.
+    if (err?.code === 11000) {
+      const notification = await Notification.findOne(filter);
+      if (notification) return { notification, created: false };
+    }
+    throw err;
+  }
+};
+
 const buildRecipientFilter = (userId, businessId, category) => {
   const filter = { business: businessId, $or: [{ user: userId }, { user: null }] };
   if (category?.length) filter.category = { $in: category };
@@ -76,6 +103,7 @@ const deleteNotification = async (notificationId, userId, businessId) => {
 
 module.exports = {
   createNotification,
+  createNotificationOnce,
   getNotifications,
   markAsRead,
   markAllAsRead,

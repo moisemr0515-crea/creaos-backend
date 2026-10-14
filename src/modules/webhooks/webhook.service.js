@@ -6,8 +6,7 @@ const Business = require('../businesses/business.model');
 const aiService = require('../ai/ai.service');
 const subscriptionService = require('../subscriptions/subscription.service');
 const channelService = require('../channels/channel.service');
-const notificationService = require('../admin/notification.service');
-const pushService = require('../push/push.service');
+const { notifyInboundLeadMessage } = require('../channels/inboundNotification.service');
 const leadService = require('../leads/lead.service');
 const pipelineService = require('../pipeline/pipeline.service');
 const { normalizeToE164 } = require('../../utils/phone');
@@ -471,6 +470,20 @@ async function processGupshupMessage({ phone, text, name, mediaType, mediaSource
     mediaSourceUrl ? { mediaType, sourceUrl: mediaSourceUrl } : undefined
   );
 
+  // El aviso de un inbound real es independiente de IA, suppression y del
+  // resultado del agente. providerMessageId actúa como correlación estable
+  // en este camino síncrono de compatibilidad.
+  const destinatarios = await leadService.resolveNotificationRecipients(lead);
+  await notifyInboundLeadMessage({
+    businessId,
+    lead,
+    conversation,
+    text,
+    mediaType,
+    providerMessageId,
+    recipientUserIds: destinatarios,
+  });
+
   const consentResult = await whatsappConsentService.recordInboundConsent({
     tenantId: businessId,
     leadId: lead._id,
@@ -497,60 +510,6 @@ async function processGupshupMessage({ phone, text, name, mediaType, mediaSource
     logger.info('[gupshup] IA deshabilitada para esta conversación, no se responde', {
       conversationId: conversation._id.toString(),
     });
-
-    // PR-C (roadmap de push/notificaciones) — disparador "lead_message": con
-    // la IA apagada, generateReply() no corre (ver el `return` de abajo), así
-    // que nadie le contesta al lead salvo que un humano lo vea. Se avisa por
-    // los 2 canales (campanita + push) a lead.assignedTo si existe, o si no,
-    // a todos los admins/dueños del negocio (leadService.resolveNotificationRecipients()
-    // — ver ese archivo para el criterio completo). Antes de este fallback,
-    // un lead sin assignedTo nunca notificaba a nadie, en silencio — crítico
-    // para multi-tenant: un negocio nuevo no debe perder mensajes reales de
-    // clientes solo porque nadie asignó el lead todavía.
-    //
-    // Cada destinatario y cada canal en su propio try/catch, fail-soft — un
-    // fallo acá (ej. Firebase sin configurar todavía, o un destinatario con
-    // datos inválidos) nunca debe hacer perder el mensaje ya guardado arriba
-    // (saveInboundMessage), tumbar este webhook, ni impedir que se avise al
-    // resto de los destinatarios.
-    const destinatarios = await leadService.resolveNotificationRecipients(lead);
-    if (destinatarios.length > 0) {
-      const previewTexto = text.slice(0, 150);
-
-      for (const userId of destinatarios) {
-        try {
-          await notificationService.createNotification({
-            business: businessId,
-            user: userId,
-            type: 'info',
-            category: 'lead',
-            title: `Nuevo mensaje de ${lead.name}`,
-            message: previewTexto,
-            meta: { leadId: lead._id, conversationId: conversation._id, event: 'lead_message' },
-          });
-        } catch (err) {
-          logger.error('[gupshup] createNotification() falló para lead_message (no afecta el mensaje ya guardado)', {
-            leadId: lead._id.toString(),
-            userId: userId.toString(),
-            error: err.message,
-          });
-        }
-
-        try {
-          await pushService.sendToUser(userId, {
-            title: `Nuevo mensaje de ${lead.name}`,
-            body: previewTexto,
-            data: { type: 'lead_message', leadId: String(lead._id), conversationId: String(conversation._id) },
-          });
-        } catch (err) {
-          logger.error('[gupshup] sendToUser() falló para lead_message (no afecta el mensaje ya guardado)', {
-            leadId: lead._id.toString(),
-            userId: userId.toString(),
-            error: err.message,
-          });
-        }
-      }
-    }
 
     return { lead, conversation };
   }

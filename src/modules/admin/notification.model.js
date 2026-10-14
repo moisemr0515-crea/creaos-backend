@@ -13,6 +13,11 @@ const notificationSchema = new mongoose.Schema(
     message:   { type: String, required: true, maxlength: 1000 },
     isRead:    { type: Boolean, default: false },
     readAt:    { type: Date, default: null },
+    // Clave estable para eventos externos reintentables (por ejemplo un
+    // InboundEvent de WhatsApp). Permite crear la notificación in-app una
+    // sola vez y usar esa misma creación como compuerta del push, evitando
+    // duplicados cuando BullMQ reentrega el job.
+    deduplicationKey: { type: String, default: null, maxlength: 300 },
     meta:      { type: mongoose.Schema.Types.Mixed, default: {} },
   },
   { timestamps: true }
@@ -20,6 +25,10 @@ const notificationSchema = new mongoose.Schema(
 
 notificationSchema.index({ business: 1, user: 1, isRead: 1, createdAt: -1 });
 notificationSchema.index({ business: 1, createdAt: -1 });
+notificationSchema.index(
+  { business: 1, user: 1, deduplicationKey: 1 },
+  { unique: true, partialFilterExpression: { deduplicationKey: { $type: 'string' } } }
+);
 
 module.exports = mongoose.model('Notification', notificationSchema);
 module.exports.NOTIFICATION_TYPES      = NOTIFICATION_TYPES;

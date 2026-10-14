@@ -10,8 +10,7 @@ const leadService = require('../../leads/lead.service');
 const pipelineService = require('../../pipeline/pipeline.service');
 const Conversation = require('../../ai/conversation.model');
 const aiService = require('../../ai/ai.service');
-const notificationService = require('../../admin/notification.service');
-const pushService = require('../../push/push.service');
+const { notifyInboundLeadMessage } = require('../inboundNotification.service');
 const DefaultAgentRuntime = require('../defaultAgentRuntime');
 const { normalizeToE164 } = require('../../../utils/phone');
 const logger = require('../../../utils/logger');
@@ -196,6 +195,21 @@ async function processInboundJob(job) {
     { providerMessageId: event.providerMessageId, inboundEventId: event._id }
   );
 
+  // Un inbound real siempre genera la misma evidencia persistida y el
+  // mismo intento push, antes de decidir IA/consentimiento. Así el aviso no
+  // depende de aiEnabled, de suppression ni de que la IA llegue a responder.
+  const destinatarios = await leadService.resolveNotificationRecipients(lead);
+  await notifyInboundLeadMessage({
+    businessId: business._id,
+    lead,
+    conversation,
+    text: event.text,
+    mediaType: event.mediaType,
+    inboundEventId: event._id,
+    providerMessageId: event.providerMessageId,
+    recipientUserIds: destinatarios,
+  });
+
   const consentResult = await whatsappConsentService.recordInboundConsent({
     tenantId: event.tenantId,
     leadId: lead._id,
@@ -220,54 +234,6 @@ async function processInboundJob(job) {
 
   if (!conversation.aiEnabled) {
     logger.info('[inboundWorker] IA deshabilitada para esta conversación, no se responde', { conversationId: conversation._id.toString() });
-
-    // PR-C — mismo disparador ("lead_message") que
-    // webhook.service.js#processGupshupMessage(). Portado (Track 1 #5,
-    // auditoría de pricing del 24/ago/2026) — antes solo notificaba a
-    // lead.assignedTo, en silencio si estaba vacío (el caso más común para
-    // un lead nuevo de WhatsApp). Mismo fallback ya validado en producción
-    // del lado legacy: leadService.resolveNotificationRecipients(lead) —
-    // assignedTo si existe, si no, todos los owner/admin activos del
-    // negocio. Cada destinatario y cada canal en su propio try/catch,
-    // fail-soft — un fallo acá nunca debe impedir que se avise al resto.
-    const destinatarios = await leadService.resolveNotificationRecipients(lead);
-    if (destinatarios.length > 0) {
-      const previewTexto = event.text.slice(0, 150);
-
-      for (const userId of destinatarios) {
-        try {
-          await notificationService.createNotification({
-            business: business._id,
-            user: userId,
-            type: 'info',
-            category: 'lead',
-            title: `Nuevo mensaje de ${lead.name}`,
-            message: previewTexto,
-            meta: { leadId: lead._id, conversationId: conversation._id, event: 'lead_message' },
-          });
-        } catch (err) {
-          logger.error('[inboundWorker] createNotification() falló para lead_message', {
-            leadId: lead._id.toString(),
-            userId: userId.toString(),
-            error: err.message,
-          });
-        }
-
-        try {
-          await pushService.sendToUser(userId, {
-            title: `Nuevo mensaje de ${lead.name}`,
-            body: previewTexto,
-            data: { type: 'lead_message', leadId: String(lead._id), conversationId: String(conversation._id) },
-          });
-        } catch (err) {
-          logger.error('[inboundWorker] sendToUser() falló para lead_message', {
-            leadId: lead._id.toString(),
-            userId: userId.toString(),
-            error: err.message,
-          });
-        }
-      }
-    }
 
     event.status = 'processed';
     event.processedAt = new Date();

@@ -40,6 +40,7 @@ const Role = require('../../roles/role.model');
 const aiService = require('../../ai/ai.service');
 const subscriptionService = require('../../subscriptions/subscription.service');
 const pushService = require('../../push/push.service');
+const { notifyInboundLeadMessage } = require('../inboundNotification.service');
 const { enqueueOutbound } = require('../queues/outbound.queue');
 const { processInboundJob } = require('./inbound.worker');
 
@@ -132,15 +133,17 @@ describe('inbound.worker#processInboundJob() — paridad con processGupshupMessa
     return { lead, conversation };
   };
 
+  const crearOwner = () => User.create({
+    business: business._id,
+    name: 'Dueño',
+    email: `owner-${new mongoose.Types.ObjectId()}@test.com`,
+    password: 'hash-de-prueba',
+    role: roleOwner._id,
+    isActive: true,
+  });
+
   test('fallback owner/admin: sin lead.assignedTo, notifica al owner del negocio (antes no notificaba a nadie)', async () => {
-    const owner = await User.create({
-      business: business._id,
-      name: 'Dueño',
-      email: `owner-${new mongoose.Types.ObjectId()}@test.com`,
-      password: 'hash-de-prueba',
-      role: roleOwner._id,
-      isActive: true,
-    });
+    const owner = await crearOwner();
     await crearLeadYConversacionSinIA();
 
     const pushSpy = jest.spyOn(pushService, 'sendToUser').mockResolvedValue({ sent: 1, failed: 0, tokens: 1 });
@@ -163,6 +166,64 @@ describe('inbound.worker#processInboundJob() — paridad con processGupshupMessa
 
     const updatedEvent = await InboundEvent.findById(event._id);
     expect(updatedEvent.status).toBe('processed');
+  });
+
+  test('IA ON también crea Notification y push desde el mismo InboundEvent', async () => {
+    const owner = await crearOwner();
+    const pushSpy = jest.spyOn(pushService, 'sendToUser').mockResolvedValue({ sent: 1, failed: 0, tokens: 1 });
+    jest.spyOn(aiService, 'generateReply').mockResolvedValue({ reply: 'Respuesta IA', tokensUsed: 5 });
+    jest.spyOn(aiService, 'qualifyLead').mockResolvedValue({});
+
+    const event = await crearInboundEvent({ text: 'Mensaje con IA activa' });
+    await processInboundJob({ data: { inboundEventId: event._id } });
+
+    const notification = await Notification.findOne({ business: business._id, user: owner._id });
+    expect(notification).not.toBeNull();
+    expect(notification.meta.inboundEventId.toString()).toBe(event._id.toString());
+    expect(notification.meta.correlationId).toBe(`inbound:${event._id}`);
+    expect(pushSpy).toHaveBeenCalledTimes(1);
+    expect(pushSpy).toHaveBeenCalledWith(owner._id, expect.objectContaining({
+      tenantId: business._id,
+      correlationId: `inbound:${event._id}`,
+      eventType: 'lead_message',
+    }));
+    expect(await OutboundEvent.countDocuments({ sourceInboundEvent: event._id })).toBe(1);
+  });
+
+  test('suppression/OPTED_OUT conserva el aviso inbound pero bloquea solo la respuesta IA', async () => {
+    await crearOwner();
+    const pushSpy = jest.spyOn(pushService, 'sendToUser').mockResolvedValue({ sent: 1, failed: 0, tokens: 1 });
+    const replySpy = jest.spyOn(aiService, 'generateReply').mockResolvedValue({ reply: 'No debe salir', tokensUsed: 1 });
+
+    const event = await crearInboundEvent({ text: 'BAJA' });
+    await processInboundJob({ data: { inboundEventId: event._id } });
+
+    expect(await Notification.countDocuments({ business: business._id, 'meta.inboundEventId': event._id })).toBe(1);
+    expect(pushSpy).toHaveBeenCalledTimes(1);
+    expect(replySpy).not.toHaveBeenCalled();
+    expect(await OutboundEvent.countDocuments({ sourceInboundEvent: event._id })).toBe(0);
+  });
+
+  test('un retry antes de finalizar el job no duplica Notification ni push', async () => {
+    const owner = await crearOwner();
+    const { lead, conversation } = await crearLeadYConversacionSinIA();
+    const event = await crearInboundEvent({ text: 'Mensaje reintentable' });
+    const pushSpy = jest.spyOn(pushService, 'sendToUser').mockResolvedValue({ sent: 1, failed: 0, tokens: 1 });
+    const input = {
+      businessId: business._id,
+      lead,
+      conversation,
+      text: event.text,
+      inboundEventId: event._id,
+      providerMessageId: event.providerMessageId,
+      recipientUserIds: [owner._id],
+    };
+
+    await notifyInboundLeadMessage(input);
+    await notifyInboundLeadMessage(input);
+
+    expect(await Notification.countDocuments({ business: business._id, 'meta.inboundEventId': event._id })).toBe(1);
+    expect(pushSpy).toHaveBeenCalledTimes(1);
   });
 
   test('reentrega de un InboundEvent ya processed no duplica lead, conversación ni mensaje', async () => {

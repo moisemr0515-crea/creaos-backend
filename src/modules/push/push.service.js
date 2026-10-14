@@ -1,4 +1,5 @@
 const PushToken = require('./push.model');
+const crypto = require('crypto');
 const { getMessaging, isConfigured } = require('../../utils/firebase');
 const logger = require('../../utils/logger');
 
@@ -10,6 +11,13 @@ const TOKEN_DEAD_ERROR_CODES = [
   'messaging/registration-token-not-registered',
   'messaging/invalid-registration-token',
 ];
+
+// La app 1.6.1 usa el canal fallback oficial de Firebase/Android. No se
+// inventa un channelId nativo nuevo en este fix backend-only; FCM crea/usa
+// este canal cuando la app no declara otro canal por defecto.
+const DEFAULT_ANDROID_CHANNEL_ID = 'fcm_fallback_notification_channel';
+
+const tokenFingerprint = (token) => crypto.createHash('sha256').update(token).digest('hex').slice(0, 12);
 
 /**
  * Registra o actualiza un token FCM para el usuario autenticado — upsert
@@ -92,31 +100,63 @@ const desregistrarToken = async (userId, token) => {
  * indefinidamente. Se reactivan solos si el mismo dispositivo vuelve a
  * llamar POST /push/register (ver registrarToken() arriba).
  */
-const sendToUser = async (userId, { title, body, data = {} }) => {
+const sendToUser = async (userId, {
+  title,
+  body,
+  data = {},
+  tenantId = null,
+  correlationId = null,
+  eventType = 'generic',
+  channelId = DEFAULT_ANDROID_CHANNEL_ID,
+}) => {
   if (!isConfigured()) {
     logger.warn('[push] Firebase no configurado (faltan FIREBASE_PROJECT_ID/CLIENT_EMAIL/PRIVATE_KEY) — envío omitido', { userId });
     return { sent: 0, failed: 0, tokens: 0 };
   }
 
-  const pushTokens = await PushToken.find({ user: userId, isActive: true });
+  const tokenFilter = { user: userId, isActive: true };
+  if (tenantId) tokenFilter.business = tenantId;
+  const pushTokens = await PushToken.find(tokenFilter);
   if (pushTokens.length === 0) {
+    logger.info('[push] sin dispositivos activos para destinatario', {
+      correlationId,
+      tenantId: tenantId ? String(tenantId) : null,
+      userId: String(userId),
+      eventType,
+    });
     return { sent: 0, failed: 0, tokens: 0 };
   }
 
   const messaging = getMessaging();
-  const response = await messaging.sendEachForMulticast({
+  const serializedData = Object.fromEntries(
+    Object.entries({ ...data, ...(correlationId ? { correlationId } : {}) }).map(([key, value]) => [
+      key,
+      typeof value === 'string' ? value : JSON.stringify(value),
+    ])
+  );
+  const payload = {
     tokens: pushTokens.map((pt) => pt.token),
     notification: { title, body },
-    // El payload "data" de FCM solo admite valores string — se serializan
-    // acá para no imponerle esa restricción al llamador (mismo criterio
-    // que Notification.meta, que sí acepta cualquier tipo).
-    data: Object.fromEntries(
-      Object.entries(data).map(([key, value]) => [
-        key,
-        typeof value === 'string' ? value : JSON.stringify(value),
-      ])
-    ),
+    data: serializedData,
+    android: {
+      priority: 'high',
+      notification: { channelId },
+    },
+  };
+
+  logger.info('[push] envío FCM iniciado', {
+    correlationId,
+    tenantId: tenantId ? String(tenantId) : null,
+    userId: String(userId),
+    eventType,
+    devices: pushTokens.length,
+    tokenFingerprints: pushTokens.map((pt) => tokenFingerprint(pt.token)),
+    payloadType: 'notification+data',
+    channelId,
+    priority: 'high',
   });
+
+  const response = await messaging.sendEachForMulticast(payload);
 
   const tokensAMarcarInactivos = response.responses
     .map((result, i) => ({ result, pushToken: pushTokens[i] }))
@@ -130,11 +170,33 @@ const sendToUser = async (userId, { title, body, data = {} }) => {
     );
   }
 
+  const messageIds = response.responses
+    .filter((result) => result.success && result.messageId)
+    .map((result) => result.messageId);
+  const errorCodes = response.responses
+    .filter((result) => !result.success)
+    .map((result) => result.error?.code || 'unknown');
+
+  logger.info('[push] envío FCM completado', {
+    correlationId,
+    tenantId: tenantId ? String(tenantId) : null,
+    userId: String(userId),
+    eventType,
+    sent: response.successCount,
+    failed: response.failureCount,
+    messageIds,
+    errorCodes,
+    invalidTokensDeactivated: tokensAMarcarInactivos.length,
+  });
+
   return {
     sent: response.successCount,
     failed: response.failureCount,
     tokens: pushTokens.length,
+    messageIds,
+    errorCodes,
+    channelId,
   };
 };
 
-module.exports = { registrarToken, desregistrarToken, sendToUser };
+module.exports = { registrarToken, desregistrarToken, sendToUser, DEFAULT_ANDROID_CHANNEL_ID };
