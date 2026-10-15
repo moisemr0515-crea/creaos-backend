@@ -532,6 +532,11 @@ function nombreAppGupshup(tenantId) {
   return `${APP_NAME_PREFIX}${tenantId}`;
 }
 
+function isExpiredEmbedSignupLinkError(err) {
+  const message = err instanceof Error ? err.message : String(err || '');
+  return /link has expired,? please regenerate link/i.test(message);
+}
+
 const completeGupshupEmbeddedSignup = async (req, res, next) => {
   try {
     const { sessionId } = req.body || {};
@@ -553,6 +558,13 @@ const completeGupshupEmbeddedSignup = async (req, res, next) => {
       // Falló en un paso anterior (Meta) — ese SÍ requiere reiniciar desde
       // /init, no es este endpoint el que lo puede resolver.
       return responderEstadoInvalido(res, new InvalidSessionStateError('failed'));
+    }
+
+    // Un retry de Gupshup debe continuar la autorización Meta ya resuelta,
+    // nunca iniciar silenciosamente otra incorporación con una sesión
+    // incompleta o datos de otra ejecución.
+    if (!session.meta?.wabaId || !session.meta?.phoneNumberId || !session.meta?.phoneNumber) {
+      throw new AppError('La sesión no conserva una autorización Meta completa para continuar el onboarding', 409);
     }
 
     let token;
@@ -760,7 +772,32 @@ const completeGupshupEmbeddedSignup = async (req, res, next) => {
         token
       );
 
-      const { link } = await partnerApps.getEmbedSignupLink(session.gupshup.appId, { user: req.user.email, lang: 'es' }, token);
+      let link;
+      try {
+        ({ link } = await partnerApps.getEmbedSignupLink(
+          session.gupshup.appId,
+          { user: req.user.email, lang: 'es' },
+          token
+        ));
+      } catch (err) {
+        if (!isExpiredEmbedSignupLinkError(err)) throw err;
+
+        // Gupshup conserva un único link por app y, al reutilizar el appId
+        // determinístico del tenant, regenerate:false puede devolver el link
+        // vencido de un onboarding anterior. Se permite UNA regeneración
+        // explícita; si también falla, el catch exterior detiene el flujo y
+        // deja el error recuperable, sin loops ni una tercera solicitud.
+        logger.info('[channel.controller] Embed signup link vencido; se solicita una única regeneración', {
+          tenantId: String(req.businessId),
+          sessionId: String(session._id),
+          appId: session.gupshup.appId,
+        });
+        ({ link } = await partnerApps.getEmbedSignupLink(
+          session.gupshup.appId,
+          { user: req.user.email, lang: 'es', regenerate: true },
+          token
+        ));
+      }
       session.gupshup.embedSignupUrl = link;
       session.gupshup.embedSignupUrlGeneratedAt = new Date();
 

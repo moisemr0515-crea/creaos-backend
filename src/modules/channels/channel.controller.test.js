@@ -1334,6 +1334,129 @@ describe('channel.controller#completeGupshupEmbeddedSignup()', () => {
     expect(refrescada.gupshup.embedSignupUrl).toBe('https://embed.gupshup.io/reintento');
   });
 
+  test('link vigente: conserva el comportamiento anterior y no solicita regeneración', async () => {
+    const session = await crearSesionGupshupRegistering({
+      gupshup: {
+        appId: 'gs-app-link-vigente',
+        webhookReference: 'gupshup:account-subscribed',
+        messagesWebhookReference: 'gupshup:messages-subscribed',
+      },
+    });
+    partnerAuth.getValidToken.mockResolvedValue('token');
+    partnerApps.setContactDetails.mockResolvedValue({ status: 'success' });
+    partnerApps.getEmbedSignupLink.mockResolvedValue({ link: 'https://embed.gupshup.io/vigente' });
+
+    const res = mockRes();
+    const next = jest.fn();
+    await completeGupshupEmbeddedSignup(
+      { businessId: business._id, user: requester, body: { sessionId: String(session._id) } },
+      res,
+      next
+    );
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(partnerApps.getEmbedSignupLink).toHaveBeenCalledTimes(1);
+    expect(partnerApps.getEmbedSignupLink).toHaveBeenCalledWith(
+      'gs-app-link-vigente',
+      { user: 'ana@creaos.test', lang: 'es' },
+      'token'
+    );
+  });
+
+  test('link caducado: regenera una sola vez y conserva los identificadores Meta de la sesión', async () => {
+    const session = await crearSesionGupshupRegistering({
+      gupshup: {
+        appId: 'gs-app-link-vencido',
+        webhookReference: 'gupshup:account-subscribed',
+        messagesWebhookReference: 'gupshup:messages-subscribed',
+      },
+    });
+    partnerAuth.getValidToken.mockResolvedValue('token');
+    partnerApps.setContactDetails.mockResolvedValue({ status: 'success' });
+    partnerApps.getEmbedSignupLink
+      .mockRejectedValueOnce(Object.assign(new Error('getEmbedSignupLink: "Link has expired, please regenerate link"'), { statusCode: 400 }))
+      .mockResolvedValueOnce({ link: 'https://embed.gupshup.io/regenerado' });
+
+    const res = mockRes();
+    const next = jest.fn();
+    await completeGupshupEmbeddedSignup(
+      { businessId: business._id, user: requester, body: { sessionId: String(session._id) } },
+      res,
+      next
+    );
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(partnerApps.getEmbedSignupLink).toHaveBeenCalledTimes(2);
+    expect(partnerApps.getEmbedSignupLink).toHaveBeenNthCalledWith(
+      2,
+      'gs-app-link-vencido',
+      { user: 'ana@creaos.test', lang: 'es', regenerate: true },
+      'token'
+    );
+
+    const refrescada = await ChannelOnboardingSession.findById(session._id);
+    expect(refrescada.status).toBe('gupshup_registering');
+    expect(refrescada.meta.wabaId).toBe('waba-real');
+    expect(refrescada.meta.phoneNumberId).toBe('pnid-real');
+    expect(refrescada.meta.phoneNumber).toBe('+16315555556');
+    expect(refrescada.gupshup.appId).toBe('gs-app-link-vencido');
+    expect(refrescada.gupshup.embedSignupUrl).toBe('https://embed.gupshup.io/regenerado');
+    expect(refrescada.gupshup.embedSignupUrlGeneratedAt).toBeInstanceOf(Date);
+  });
+
+  test('regeneración también fallida: se detiene tras dos solicitudes y conserva la autorización Meta', async () => {
+    const session = await crearSesionGupshupRegistering({
+      gupshup: {
+        appId: 'gs-app-error-persistente',
+        webhookReference: 'gupshup:account-subscribed',
+        messagesWebhookReference: 'gupshup:messages-subscribed',
+      },
+    });
+    partnerAuth.getValidToken.mockResolvedValue('token');
+    partnerApps.setContactDetails.mockResolvedValue({ status: 'success' });
+    const expired = Object.assign(new Error('getEmbedSignupLink: "Link has expired, please regenerate link"'), { statusCode: 400 });
+    const persistent = Object.assign(new Error('Gupshup no pudo regenerar el link'), { statusCode: 502 });
+    partnerApps.getEmbedSignupLink.mockRejectedValueOnce(expired).mockRejectedValueOnce(persistent);
+
+    const next = jest.fn();
+    await completeGupshupEmbeddedSignup(
+      { businessId: business._id, user: requester, body: { sessionId: String(session._id) } },
+      mockRes(),
+      next
+    );
+
+    expect(next).toHaveBeenCalledWith(persistent);
+    expect(partnerApps.getEmbedSignupLink).toHaveBeenCalledTimes(2);
+
+    const refrescada = await ChannelOnboardingSession.findById(session._id);
+    expect(refrescada.status).toBe('failed');
+    expect(refrescada.error.step).toBe('gupshup_registration');
+    expect(refrescada.meta.wabaId).toBe('waba-real');
+    expect(refrescada.meta.phoneNumberId).toBe('pnid-real');
+    expect(refrescada.gupshup.appId).toBe('gs-app-error-persistente');
+    expect(refrescada.gupshup.embedSignupUrl).toBeNull();
+  });
+
+  test('sesión sin identificadores Meta completos: no toca Gupshup ni intenta reiniciar el onboarding', async () => {
+    const session = await crearSesionGupshupRegistering({
+      meta: { wabaId: 'waba-real', phoneNumberId: null, phoneNumber: '+16315555556' },
+      gupshup: { appId: 'gs-app-incompleta' },
+    });
+
+    const next = jest.fn();
+    await completeGupshupEmbeddedSignup(
+      { businessId: business._id, user: requester, body: { sessionId: String(session._id) } },
+      mockRes(),
+      next
+    );
+
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 409 }));
+    expect(partnerAuth.getValidToken).not.toHaveBeenCalled();
+    expect(partnerApps.getEmbedSignupLink).not.toHaveBeenCalled();
+  });
+
   test('sesión "failed" de un paso ANTERIOR (Meta, no Gupshup): NO se puede reintentar acá, 409 INVALID_SESSION_STATE', async () => {
     const session = await crearSesionGupshupRegistering({
       status: 'failed',
