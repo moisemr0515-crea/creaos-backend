@@ -32,6 +32,10 @@ const { recoverStuckBusinessDocuments } = require('./src/modules/business-knowle
 // Bloque 4 de la auditoría Business Brain (§59, 20/sep/2026) — reservas de stock.
 const { scheduleStockReservationSweep } = require('./src/modules/products/queues/stockReservationSweep.queue');
 const { startStockReservationSweepWorker } = require('./src/modules/products/workers/stockReservationSweep.worker');
+// Incidente de Nutriva (14/oct/2026) — conciliación automática del onboarding de
+// WhatsApp contra el estado real de Gupshup, respaldo del webhook ACCOUNT_VERIFIED.
+const { scheduleOnboardingReconcileSweep } = require('./src/modules/channels/queues/onboardingReconcileSweep.queue');
+const { startOnboardingReconcileSweepWorker } = require('./src/modules/channels/workers/onboardingReconcileSweep.worker');
 
 // Puerto propio, distinto del de la API — Railway lo usa solo para su
 // healthcheck de este servicio, no queda expuesto públicamente salvo que se
@@ -45,6 +49,7 @@ let automationSweepWorker;
 let automationExecuteWorker;
 let indexBusinessDocumentWorker;
 let stockReservationSweepWorker;
+let onboardingReconcileSweepWorker;
 let httpServer;
 
 const iniciar = async () => {
@@ -58,6 +63,7 @@ const iniciar = async () => {
     automationExecuteWorker = startAutomationExecuteWorker();
     indexBusinessDocumentWorker = startIndexBusinessDocumentWorker();
     stockReservationSweepWorker = startStockReservationSweepWorker();
+    onboardingReconcileSweepWorker = startOnboardingReconcileSweepWorker();
     await recoverPendingOutboundEvents();
     await recoverStuckBusinessDocuments();
     // Idempotente (upsertJobScheduler) — seguro de llamar en cada boot,
@@ -65,6 +71,7 @@ const iniciar = async () => {
     // (rolling restart de Railway).
     await scheduleAutomationSweep();
     await scheduleStockReservationSweep();
+    await scheduleOnboardingReconcileSweep();
 
     httpServer = http.createServer(async (req, res) => {
       if (req.url === '/health/live') {
@@ -81,6 +88,7 @@ const iniciar = async () => {
             automationExecute: automationExecuteWorker,
             indexBusinessDocument: indexBusinessDocumentWorker,
             stockReservationSweep: stockReservationSweepWorker,
+            onboardingReconcileSweep: onboardingReconcileSweepWorker,
           } });
           res.writeHead(health.ok ? 200 : 503, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
@@ -108,7 +116,8 @@ const iniciar = async () => {
 ║  Entorno : ${process.env.NODE_ENV}
 ║  Colas   : ${QUEUE_NAMES.INBOUND}, ${QUEUE_NAMES.OUTBOUND}, ${QUEUE_NAMES.DEAD_LETTER},
 ║            ${QUEUE_NAMES.AUTOMATION_SWEEP}, ${QUEUE_NAMES.AUTOMATION_EXECUTE},
-║            ${QUEUE_NAMES.INDEX_BUSINESS_DOCUMENT}, ${QUEUE_NAMES.STOCK_RESERVATION_SWEEP}
+║            ${QUEUE_NAMES.INDEX_BUSINESS_DOCUMENT}, ${QUEUE_NAMES.STOCK_RESERVATION_SWEEP},
+║            ${QUEUE_NAMES.ONBOARDING_RECONCILE_SWEEP}
 ╚════════════════════════════════════════╝
       `);
     });
@@ -128,6 +137,7 @@ const apagar = async (señal) => {
     if (automationExecuteWorker) await automationExecuteWorker.close();
     if (indexBusinessDocumentWorker) await indexBusinessDocumentWorker.close();
     if (stockReservationSweepWorker) await stockReservationSweepWorker.close();
+    if (onboardingReconcileSweepWorker) await onboardingReconcileSweepWorker.close();
     await disconnectQueueConnection();
     await disconnectRedis();
     await disconnectMongoDB();

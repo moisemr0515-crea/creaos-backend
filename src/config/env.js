@@ -413,4 +413,18 @@ module.exports = {
   // tardar en liberar es stock real bloqueado de más, no solo un mensaje
   // demorado).
   STOCK_RESERVATION_SWEEP_INTERVAL_MS: parseInt(process.env.STOCK_RESERVATION_SWEEP_INTERVAL_MS, 10) || 5 * 60 * 1000,
+
+  // Incidente de Nutriva (14/oct/2026) — barrido automático de conciliación del
+  // onboarding de WhatsApp (channelOnboardingReconcileSweep.service.js): respaldo
+  // del webhook ACCOUNT_VERIFIED, corre en el worker existente. Todas con default.
+  //
+  // Interruptor de emergencia: "false" deja el job registrado pero sin hacer nada.
+  ONBOARDING_RECONCILE_ENABLED: process.env.ONBOARDING_RECONCILE_ENABLED !== 'false',
+  // Cada cuánto despierta el barrido. Cada sesión tiene además su propio backoff,
+  // así que esto es solo la resolución del reloj, no la frecuencia por sesión.
+  ONBOARDING_RECONCILE_INTERVAL_MS: parseInt(process.env.ONBOARDING_RECONCILE_INTERVAL_MS, 10) || 60 * 1000,
+  // Tope de sesiones consultadas por despertar. El Partner API de Gupshup permite
+  // 10 req/60s EN TOTAL (compartido con el flujo de onboarding de la API): cada
+  // sesión cuesta ~2 llamadas (apikey de la app + waba/info), así que 3 deja margen.
+  ONBOARDING_RECONCILE_BATCH_SIZE: parseInt(process.env.ONBOARDING_RECONCILE_BATCH_SIZE, 10) || 3,
 };

@@ -53,6 +53,11 @@ const QUEUE_NAMES = {
   // stock. Mismo patrón que AUTOMATION_SWEEP: un job repetible que libera
   // las reservas vencidas (ver stockReservationSweep.worker.js).
   STOCK_RESERVATION_SWEEP: 'stock-reservation-sweep',
+  // Incidente de Nutriva (14/oct/2026) — conciliación automática del onboarding
+  // de WhatsApp contra el estado real de Gupshup, como respaldo del webhook
+  // ACCOUNT_VERIFIED (ver channelOnboardingReconcileSweep.service.js). Mismo
+  // patrón que AUTOMATION_SWEEP / STOCK_RESERVATION_SWEEP.
+  ONBOARDING_RECONCILE_SWEEP: 'onboarding-reconcile-sweep',
 };
 
 // Config compartida de reintentos — 3 intentos con backoff exponencial

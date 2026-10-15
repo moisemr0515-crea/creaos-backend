@@ -16,6 +16,7 @@
 // detalle exacto por endpoint. Forzar un header uniforme acá sería asumir
 // justo lo que no se puede asumir.
 const logger = require('../../../../utils/logger');
+const { acquirePartnerSlot, currentPriority, PRIORITY } = require('./partnerRateLimit');
 
 const BASE_URL = 'https://partner.gupshup.io';
 const DEFAULT_TIMEOUT_MS = 15000;
@@ -115,8 +116,19 @@ async function request({
     bodyToSend = params.toString();
   }
 
+  // Cuota global del Partner API (10 req/60s compartidos entre API y Worker, ver
+  // partnerRateLimit.js). Solo el host del Partner API: la Subscription API vive en
+  // otro host. En segundo plano (barrido de conciliación) no hay reintentos del
+  // cliente: cada intento extra gastaría cupo; el barrido reprograma por su cuenta.
+  const limitado = baseUrl === BASE_URL;
+  const reintentosMaximos = currentPriority() === PRIORITY.BACKGROUND ? 0 : maxRetries;
+
   let lastNetworkError;
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+  for (let attempt = 0; attempt <= reintentosMaximos; attempt++) {
+    // Fuera del try a propósito: un error de cuota local no es un error de red ni de
+    // Gupshup, no debe reintentarse ni mapearse como tal. Cada intento consume cupo.
+    if (limitado) await acquirePartnerSlot();
+
     const controller = new AbortController();
     const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -140,7 +152,7 @@ async function request({
       logger.info('[gupshup.http.client] response', { requestId, method, path, statusCode: response.status });
 
       // 429: siempre se reintenta, sin importar idempotent (ver JSDoc).
-      if (response.status === 429 && attempt < maxRetries) {
+      if (response.status === 429 && attempt < reintentosMaximos) {
         const retryAfterHeader = response.headers.get('retry-after');
         const delayMs = retryAfterHeader ? Number(retryAfterHeader) * 1000 : RETRY_BASE_DELAY_MS * 2 ** attempt;
         logger.warn('[gupshup.http.client] 429 rate limit, reintentando', { requestId, path, attempt, delayMs });
@@ -148,7 +160,7 @@ async function request({
         continue;
       }
 
-      if (response.status >= 500 && idempotent && attempt < maxRetries) {
+      if (response.status >= 500 && idempotent && attempt < reintentosMaximos) {
         const delayMs = RETRY_BASE_DELAY_MS * 2 ** attempt;
         logger.warn('[gupshup.http.client] error 5xx, reintentando (idempotente)', {
           requestId, path, statusCode: response.status, attempt, delayMs,
@@ -173,7 +185,7 @@ async function request({
 
       lastNetworkError = err;
       const esTimeout = err.name === 'AbortError';
-      if (idempotent && attempt < maxRetries) {
+      if (idempotent && attempt < reintentosMaximos) {
         const delayMs = RETRY_BASE_DELAY_MS * 2 ** attempt;
         logger.warn('[gupshup.http.client] error de red, reintentando (idempotente)', {
           requestId, path, attempt, delayMs, error: esTimeout ? 'timeout' : err.message,
@@ -193,7 +205,7 @@ async function request({
   }
 
   throw new GupshupHttpError(
-    `Gupshup Partner API: no se pudo completar ${method} ${path} tras ${maxRetries + 1} intento(s) (${lastNetworkError?.message})`,
+    `Gupshup Partner API: no se pudo completar ${method} ${path} tras ${reintentosMaximos + 1} intento(s) (${lastNetworkError?.message})`,
     { status: 'network_error', requestId }
   );
 }

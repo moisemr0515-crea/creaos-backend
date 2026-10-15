@@ -268,7 +268,7 @@ describe('channelOnboardingCompletion#handleGupshupAccountVerified()', () => {
     const vieja = await crearSesionListaParaWebhook({
       displayName: 'Intento viejo (abandonado)',
       meta: {
-        wabaId: 'waba-viejo', phoneNumberId: 'pnid-viejo', phoneNumber: '+51940766276',
+        wabaId: 'waba-viejo', phoneNumberId: 'pnid-viejo', phoneNumber: '+51900000101',
         accessTokenCipher: channelCrypto.encrypt('token-viejo', 'onboarding:placeholder'),
       },
     });
@@ -280,7 +280,7 @@ describe('channelOnboardingCompletion#handleGupshupAccountVerified()', () => {
     const reciente = await crearSesionListaParaWebhook({
       displayName: 'Intento reciente (el que sí se verificó)',
       meta: {
-        wabaId: 'waba-provisional-meta', phoneNumberId: 'pnid-provisional', phoneNumber: '+51967424911',
+        wabaId: 'waba-provisional-meta', phoneNumberId: 'pnid-provisional', phoneNumber: '+51900000202',
         accessTokenCipher: channelCrypto.encrypt('token-reciente', 'onboarding:placeholder'),
       },
     });
@@ -288,6 +288,12 @@ describe('channelOnboardingCompletion#handleGupshupAccountVerified()', () => {
 
     partnerAuth.getValidToken.mockResolvedValue('partner-token-real');
     partnerApps.getAppAccessToken.mockResolvedValue({ apikey: 'apikey-real-de-la-app' });
+    // Lo que Gupshup realmente verificó en el caso real: +51900000202, el
+    // número de la sesión RECIENTE (contrato 14/oct/2026: el canal solo se
+    // activa si el número verificado coincide con el de la sesión reclamada).
+    partnerApps.getWabaInfo.mockResolvedValue({
+      phone: '51900000202', phoneId: 'pnid-provisional', wabaId: 'waba-provisional-meta', wabaName: null, accountStatus: 'ACTIVE',
+    });
 
     await handleGupshupAccountVerified('gs-app-real');
 
@@ -305,14 +311,15 @@ describe('channelOnboardingCompletion#handleGupshupAccountVerified()', () => {
     expect(channel.displayName).toBe('Intento reciente (el que sí se verificó)');
   });
 
-  test('PR-11 (known-issues.md): el canal usa el WABA REAL de Gupshup (getWabaInfo), no session.meta, aunque session.meta tenga datos distintos/obsoletos', async () => {
-    // Reproduce el bug reportado en producción para "Negocio Prueba 3": la
-    // sesión reclamada trae en su meta un número/WABA provisorio de Meta
-    // (`session.meta`), pero el verificado y REAL según Gupshup es otro
-    // (mockeado acá vía getWabaInfo) — el canal debe usar el de Gupshup.
+  test('PR-11 (known-issues.md): el canal usa el WABA/phoneId REALES de Gupshup (getWabaInfo), no los provisorios de session.meta, cuando el número coincide', async () => {
+    // Meta entrega un WABA/phoneNumberId PROVISORIO en el popup y Gupshup
+    // confirma los definitivos al completar (caso real de "Negocio Prueba 3").
+    // El número es el mismo; los IDs difieren — el canal debe usar los de Gupshup.
+    // (Contrato 14/oct/2026: si el NÚMERO no coincide no se activa nada, ver el
+    // test siguiente.)
     await crearSesionListaParaWebhook({
       meta: {
-        wabaId: 'waba-provisional-de-meta', phoneNumberId: 'pnid-provisional', phoneNumber: '+51940766276',
+        wabaId: 'waba-provisional-de-meta', phoneNumberId: 'pnid-provisional', phoneNumber: '+51900000202',
         accessTokenCipher: channelCrypto.encrypt('token', 'onboarding:placeholder'),
       },
     });
@@ -322,7 +329,7 @@ describe('channelOnboardingCompletion#handleGupshupAccountVerified()', () => {
     // "Negocio Prueba 3": phone SIN "+" y el campo es "phoneId", no
     // "phoneNumberId" — el mismo gotcha documentado en partner.apps.js.
     partnerApps.getWabaInfo.mockResolvedValue({
-      phone: '51967424911', phoneId: '1261899130346864', wabaId: '1709122084547289',
+      phone: '51900000202', phoneId: '1000000000000601', wabaId: '1000000000000301',
       wabaName: 'Negocio Prueba 3', accountStatus: 'ACTIVE',
     });
 
@@ -332,9 +339,44 @@ describe('channelOnboardingCompletion#handleGupshupAccountVerified()', () => {
     expect(channel).not.toBeNull();
     expect(partnerApps.getWabaInfo).toHaveBeenCalledWith('gs-app-real', 'apikey-real-de-la-app');
     // Viene de getWabaInfo(), NO de session.meta (que tenía el número viejo).
-    expect(channel.phoneNumber).toBe('+51967424911');
-    expect(channel.phoneNumberId).toBe('1261899130346864');
-    expect(channel.wabaId).toBe('1709122084547289');
+    expect(channel.phoneNumber).toBe('+51900000202');
+    expect(channel.phoneNumberId).toBe('1000000000000601');
+    expect(channel.wabaId).toBe('1000000000000301');
+  });
+
+  test('INCIDENTE NUTRIVA (14/oct/2026): la app está Live con OTRO número que el autorizado en Meta — NO se crea ni reactiva ningún canal y la sesión sigue recuperable con sus datos de Meta intactos', async () => {
+    // Antes de este contrato el webhook adoptaba el número que informara
+    // Gupshup: con la app aún Live con +51900000202, una sesión autorizada para
+    // +51900000101 habría reconectado en silencio el número anterior.
+    const session = await crearSesionListaParaWebhook({
+      meta: {
+        wabaId: '1000000000000101', phoneNumberId: '1000000000000501', phoneNumber: '+51900000101',
+        accessTokenCipher: channelCrypto.encrypt('token-meta-nutriva', 'onboarding:placeholder'),
+      },
+    });
+    partnerAuth.getValidToken.mockResolvedValue('partner-token-real');
+    partnerApps.getAppAccessToken.mockResolvedValue({ apikey: 'apikey-real-de-la-app' });
+    partnerApps.getWabaInfo.mockResolvedValue({
+      phone: '51900000202', phoneId: '1000000000000601', wabaId: '1000000000000301', wabaName: 'Negocio Prueba 3', accountStatus: 'ACTIVE',
+    });
+    const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    await expect(handleGupshupAccountVerified('gs-app-real')).resolves.toBeUndefined();
+
+    expect(await WhatsAppChannel.countDocuments({})).toBe(0);
+    expect(await ChannelCredentials.countDocuments({})).toBe(0);
+    const refrescada = await ChannelOnboardingSession.findById(session._id);
+    expect(refrescada.status).toBe('gupshup_registering'); // liberada del reclamo, sigue recuperable
+    expect(refrescada.error.step).toBeNull();
+    expect(refrescada.channel).toBeUndefined();
+    expect(refrescada.meta.wabaId).toBe('1000000000000101');
+    expect(refrescada.meta.phoneNumberId).toBe('1000000000000501');
+    expect(refrescada.meta.accessTokenCipher).not.toBeNull(); // token de Meta conservado
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('no coincide con el autorizado en Meta'),
+      expect.objectContaining({ expected: '+51900000101', found: '+51900000202' })
+    );
+    warnSpy.mockRestore();
   });
 
   test('error de Gupshup al pedir el apikey de la app: la sesión queda failed con error.step:"channel_creation", no crea ningún canal', async () => {

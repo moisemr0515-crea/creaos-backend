@@ -4,6 +4,7 @@
 // endpoint de init del Embedded Signup. El callback de Meta (§21, PR-04) y
 // cualquier llamada real a Gupshup Partner API (createApp() y el resto,
 // PR-05+) todavía no existen — esta sesión se completa recién en esos PRs.
+const mongoose = require('mongoose');
 const ChannelOnboardingSession = require('./channelOnboardingSession.model');
 const channelCrypto = require('./channelCrypto');
 const metaEmbeddedSignup = require('./providers/meta/metaEmbeddedSignup.service');
@@ -15,6 +16,9 @@ const { respuestaExito, respuestaError } = require('../../utils/response');
 const logger = require('../../utils/logger');
 const channelService = require('./channel.service');
 const channelCredentialsService = require('./channelCredentials.service');
+const channelOnboardingApp = require('./channelOnboardingApp.service');
+const completionService = require('./channelOnboardingCompletion.service');
+const { GUPSHUP_PHASE_WINDOW_MS, RECONCILE_INITIAL_STATE } = ChannelOnboardingSession;
 const { META_APP_ID, META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID, BACKEND_PUBLIC_URL, GUPSHUP_ONBOARDING_WEBHOOK_TOKEN, GUPSHUP_WEBHOOK_HEADER, GUPSHUP_WEBHOOK_TOKEN } = require('../../config/env');
 // Constante compartida vía un archivo sin dependencias propias — NO se
 // importa directo de channelOnboardingWebhook.controller.js acá (ese módulo
@@ -434,10 +438,15 @@ const codeEmbeddedSignup = async (req, res, next) => {
 
 const callbackEmbeddedSignup = async (req, res, next) => {
   try {
-    const { sessionId, wabaId, phoneNumberId } = req.body || {};
+    const { sessionId, wabaId, phoneNumberId, businessId } = req.body || {};
     if (!sessionId || typeof sessionId !== 'string') throw new AppError('sessionId es requerido', 400);
     if (!wabaId || typeof wabaId !== 'string') throw new AppError('wabaId es requerido', 400);
     if (!phoneNumberId || typeof phoneNumberId !== 'string') throw new AppError('phoneNumberId es requerido', 400);
+    // Business Manager (portafolio) elegido en el popup de Meta — OPCIONAL: el
+    // evento FINISH del Embedded Signup lo trae, pero el frontend actual no lo
+    // reenvía todavía. Si viene y es un ID numérico válido se conserva; si no, la
+    // sesión sigue igual (nunca bloquea el onboarding por un dato informativo).
+    const metaBusinessId = typeof businessId === 'string' && /^\d{5,30}$/.test(businessId) ? businessId : null;
 
     let session;
     try {
@@ -477,7 +486,11 @@ const callbackEmbeddedSignup = async (req, res, next) => {
     session.meta.wabaId = wabaId;
     session.meta.phoneNumberId = phoneNumberId;
     session.meta.phoneNumber = resolved.phoneNumber;
+    if (metaBusinessId) session.meta.metaBusinessId = metaBusinessId;
     session.status = 'gupshup_registering';
+    // Pasó el popup de Meta: la ventana de 30 min del init() ya cumplió su
+    // función. Desde acá corre la fase de Gupshup (link válido 5 días).
+    session.expiresAt = new Date(Date.now() + GUPSHUP_PHASE_WINDOW_MS);
     await session.save();
 
     logger.info('[channel.controller] WABA/número resueltos, sesión pasa a gupshup_registering', {
@@ -509,28 +522,12 @@ const callbackEmbeddedSignup = async (req, res, next) => {
 // (obotoembed/whitelist+verify) NO se usan acá — quedan reservados para un
 // futuro caso de migración.
 
-const APP_NAME_PREFIX = 'creaos';
-
-// Determinístico: el mismo tenant siempre pide el mismo nombre de app — un
-// retry de createApp() choca con 409 "Bot Already Exists" en vez de crear
-// una app duplicada. Puro alfanumérico a propósito: el guion cuenta como
-// "carácter especial" y Gupshup lo rechaza (confirmado en vivo en PR-02) —
-// el tenantId (ObjectId, 24 hex) ya lo garantiza sin necesitar separadores.
-//
-// LIMITACIÓN CONOCIDA (identificada en el diseño de PR-06, no arreglada a
-// propósito — decisión explícita, no un descuido): el nombre depende SOLO de
-// tenantId, no de la sesión. initEmbeddedSignup() permite a propósito varias
-// ChannelOnboardingSession concurrentes sin terminar por tenant (Decisión 8
-// del blueprint). Si el mismo tenant tiene 2 sesiones concurrentes que
-// ambas llegan a este paso, la segunda en llamar createApp() va a chocar con
-// 409 "Bot Already Exists" (mapeado normalmente por partner.errors.js) —
-// solo la primera puede completar el registro de Gupshup para ese tenant a
-// la vez. No bloqueante para PR-06 (una sola sesión activa por tenant es el
-// caso normal), pero documentado para no reintroducir esta pregunta más
-// adelante sin contexto.
-function nombreAppGupshup(tenantId) {
-  return `${APP_NAME_PREFIX}${tenantId}`;
-}
+// Nombre determinístico de la PRIMERA app del tenant — vive en
+// channelOnboardingApp.service.js junto con el resto de la selección de apps
+// (una app independiente por conexión, ver ese archivo). Se re-exporta desde
+// acá porque channelOnboardingCompletion.service.js y los tests ya lo importan
+// de este módulo.
+const nombreAppGupshup = channelOnboardingApp.nombreAppGupshup;
 
 function isExpiredEmbedSignupLinkError(err) {
   const message = err instanceof Error ? err.message : String(err || '');
@@ -571,52 +568,34 @@ const completeGupshupEmbeddedSignup = async (req, res, next) => {
     try {
       token = await partnerAuth.getValidToken();
 
-      if (!session.gupshup.appId) {
-        // Incidente PR-11 (docs/implementation/known-issues.md): antes de
-        // crear una app nueva, buscar si YA existe una de OTRA sesión del
-        // mismo tenant — el nombre de la app es determinístico por
-        // tenantId (nombreAppGupshup), así que perder el sessionId del
-        // lado del frontend (reload, error previo, lo que sea) y reiniciar
-        // desde /init NO debe volver a intentar createApp() a ciegas. Se
-        // toma la sesión MÁS RECIENTE con appId poblado, sin importar su
-        // status final (failed/expired/completed) — el appId en Gupshup
-        // sigue siendo válido independientemente de cómo haya terminado la
-        // sesión de CREA OS que lo creó en su momento.
-        const sesionConAppExistente = await ChannelOnboardingSession.findOne({
-          tenantId: req.businessId,
-          _id: { $ne: session._id },
-          'gupshup.appId': { $ne: null },
-        }).sort({ createdAt: -1 }).select('gupshup.appId');
-
-        if (sesionConAppExistente) {
-          session.gupshup.appId = sesionConAppExistente.gupshup.appId;
-          await session.save();
-        } else {
-          try {
-            const { appId } = await partnerApps.createApp({ name: nombreAppGupshup(req.businessId) }, token);
-            session.gupshup.appId = appId;
-            // Se guarda ANTES de seguir — si algo de acá para abajo falla,
-            // un retry no vuelve a crear la app (ver el chequeo `if` de
-            // más arriba, y el fallback de acá abajo cubren ambos lados).
-            await session.save();
-          } catch (err) {
-            if (err.statusCode === 409) {
-              // Fallback: ninguna sesión en Mongo tenía el appId guardado
-              // (ej. el guardado falló después de crear la app en Gupshup
-              // pero antes de persistir — mismo patrón "creado afuera, no
-              // persistido adentro" ya visto en otros pasos) — resolver el
-              // appId real por nombre en vez de fallar.
-              const apps = await partnerApps.getPartnerApps(token);
-              const nombreEsperado = nombreAppGupshup(req.businessId);
-              const appExistente = apps.find((a) => a.name === nombreEsperado);
-              if (!appExistente) throw err; // no se pudo resolver — se propaga el 409 real
-              session.gupshup.appId = appExistente.id;
-              await session.save();
-            } else {
-              throw err;
-            }
-          }
+      // Una sesión que ya trae appId (retry, o sesión de código anterior) solo lo
+      // conserva si sigue siendo seguro para ESTA conexión: una app ligada a
+      // otro número, a un canal de otro número o a otro tenant se desvincula de
+      // la sesión (la app en Gupshup no se toca) y se re-selecciona abajo.
+      // Chequeo solo local (Mongo) — el estado remoto lo valida la selección de
+      // una app NUEVA y, antes de activar nada, la conciliación/webhook (que exige
+      // coincidencia de número).
+      if (session.gupshup.appId) {
+        const evaluacion = await channelOnboardingApp.evaluarAppLocal({
+          appId: session.gupshup.appId, session, tenantId: req.businessId,
+        });
+        if (!evaluacion.seguro) {
+          logger.warn('[channel.controller] App de la sesión no es segura para esta conexión — se desvincula y se selecciona otra', {
+            tenantId: String(req.businessId),
+            sessionId: String(session._id),
+            appId: session.gupshup.appId,
+            motivo: evaluacion.motivo,
+          });
+          await channelOnboardingApp.desvincularApp(session);
         }
+      }
+
+      if (!session.gupshup.appId) {
+        // Incidente PR-11 (known-issues.md) + incidente de Nutriva (14/oct/2026):
+        // reutiliza una app previa del mismo tenant SOLO si no está ligada a otro
+        // número/tenant (local + GET waba/info); si no hay ninguna segura, crea una
+        // app independiente para esta conexión. Ver channelOnboardingApp.service.js.
+        await channelOnboardingApp.seleccionarOCrearApp({ session, tenantId: req.businessId, token });
       }
 
       if (!session.gupshup.webhookReference) {
@@ -808,6 +787,14 @@ const completeGupshupEmbeddedSignup = async (req, res, next) => {
       // sesión marcada 'failed' para siempre a pesar de haber funcionado.
       session.status = 'gupshup_registering';
       session.error = { step: null, message: null };
+      // La ventana de 30 min del init() era solo para el popup de Meta; desde acá
+      // la sesión vive lo que dura el link de Gupshup (5 días). Sin esto, la
+      // expiración perezosa la marcaba `expired` (irrecuperable) en la próxima
+      // lectura aunque la autorización de Meta y el link siguieran vigentes.
+      session.expiresAt = new Date(Date.now() + GUPSHUP_PHASE_WINDOW_MS);
+      // Link nuevo: el barrido automático de conciliación (worker) arranca su
+      // calendario de reintentos de cero para esta sesión.
+      session.reconcile = { ...RECONCILE_INITIAL_STATE };
       await session.save();
     } catch (err) {
       await markSessionFailed(session, 'gupshup_registration', err.message);
@@ -830,11 +817,50 @@ const completeGupshupEmbeddedSignup = async (req, res, next) => {
   }
 };
 
+// ─── POST /api/v1/channels/whatsapp/embedded-signup/reconcile ────────────────
+// Conciliación contra el estado REAL de Gupshup (GET waba/info, solo lectura),
+// para cuando el webhook ACCOUNT_VERIFIED no llega — ver
+// channelOnboardingCompletion.service.js#reconcileOnboardingSession(). Un HTTP 200
+// de ESTE endpoint NO significa canal activo: el estado lo dice `data.outcome`
+// ('completed' | 'already_completed' son los únicos con canal conectado).
+const MENSAJES_RECONCILE = {
+  completed: 'Canal de WhatsApp conectado',
+  already_completed: 'La sesión ya estaba completada',
+  in_progress: 'Otra operación está terminando de configurar el canal — esperá un momento',
+  pending: 'Gupshup todavía no confirma el número como activo',
+  mismatch: 'La app de Gupshup está activa con un número distinto al autorizado — no se conectó ningún canal',
+  not_ready: 'La sesión todavía no está lista para conciliarse',
+  invalid_state: 'La sesión no está en un estado conciliable',
+  stale: 'El link de Gupshup de esta sesión ya venció — hay que recuperarla o reiniciar el onboarding',
+  app_unsafe: 'La app de Gupshup de esta sesión no es segura para este número — hay que recuperar la sesión',
+  error: 'No se pudo consultar el estado en Gupshup — reintentá en unos minutos',
+};
+
+const reconcileEmbeddedSignup = async (req, res, next) => {
+  try {
+    const { sessionId } = req.body || {};
+    if (!sessionId || typeof sessionId !== 'string') throw new AppError('sessionId es requerido', 400);
+    if (!mongoose.isValidObjectId(sessionId)) throw new AppError('sessionId inválido', 400);
+
+    const result = await completionService.reconcileOnboardingSession({ sessionId, tenantId: req.businessId });
+    if (result.outcome === 'not_found') throw new AppError('Sesión de onboarding no encontrada', 404);
+
+    return respuestaExito(res, {
+      statusCode: 200,
+      message: MENSAJES_RECONCILE[result.outcome] || 'Conciliación ejecutada',
+      data: { sessionId, ...result },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 module.exports = {
   initEmbeddedSignup,
   codeEmbeddedSignup,
   callbackEmbeddedSignup,
   completeGupshupEmbeddedSignup,
+  reconcileEmbeddedSignup,
   // Exportada para PR-07a (channelOnboardingCompletion.service.js) — es la
   // MISMA función determinística usada acá para crear la app en Gupshup
   // (PR-05), reutilizada para poblar WhatsAppChannel.providerAccountId al

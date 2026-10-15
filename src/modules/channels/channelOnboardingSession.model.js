@@ -43,6 +43,28 @@ const PROVIDERS = ['gupshup'];
 
 const EXPIRACION_MS = 30 * 60 * 1000; // 30 minutos — ventana esperada para completar el popup de Meta
 
+// Ventana de la fase Gupshup (post-popup de Meta): el link de embed signup de
+// Gupshup es válido 5 días (docs/integrations/gupshup-registration-contract.md
+// §7.3). Incidente de Nutriva (14/oct/2026): `expiresAt` nunca se renovaba, así
+// que una sesión que ya había pasado el popup de Meta quedaba atada a la ventana
+// de 30 min del init() — la expiración perezosa de channel.controller.js la
+// marcaba `expired` (irrecuperable) en la siguiente lectura, aunque la
+// autorización de Meta siguiera intacta y el link de Gupshup vigente.
+const GUPSHUP_PHASE_WINDOW_MS = 5 * 24 * 60 * 60 * 1000;
+
+// Estado inicial del barrido de conciliación — se restablece cada vez que la
+// sesión recibe una app/link nuevo o se recupera, para que el calendario de
+// reintentos arranque de cero.
+const RECONCILE_INITIAL_STATE = Object.freeze({
+  attempts: 0,
+  lastAttemptAt: null,
+  nextAttemptAt: null,
+  lastOutcome: null,
+  lastDiagnostic: null,
+  stoppedAt: null,
+  stoppedReason: null,
+});
+
 // Mismo shape que cipherFieldSchema (channelCredentials.model.js) — se
 // duplica acá, no se importa, porque channelCredentials.model.js no lo
 // exporta (es intencionalmente privado a ese archivo) y este modelo no
@@ -112,6 +134,13 @@ const channelOnboardingSessionSchema = new mongoose.Schema(
 
     gupshup: {
       appId: { type: String, default: null }, // -> WhatsAppChannel.providerAppId al completar
+      // Nombre REAL de la app en Gupshup (-> WhatsAppChannel.providerAccountId al
+      // completar). Antes se asumía `creaos${tenantId}` para todo el tenant (una
+      // app por tenant); con una app independiente por conexión (ver
+      // channelOnboardingApp.service.js) el nombre es por-sesión, así que se
+      // persiste acá. null en sesiones legacy: ahí el fallback sigue siendo el
+      // nombre determinístico por tenant, que es con el que se crearon.
+      appName: { type: String, default: null },
       webhookReference: { type: String, default: null }, // -> WhatsAppChannel.webhookReference al completar
       // 06/sep/2026 (docs/implementation/known-issues.md): suscripción
       // INDEPENDIENTE de `webhookReference` (arriba, modo ACCOUNT) — sin
@@ -137,6 +166,30 @@ const channelOnboardingSessionSchema = new mongoose.Schema(
       message: { type: String, default: null },
     },
 
+    // Qué camino completó la sesión: el webhook ACCOUNT_VERIFIED o la
+    // conciliación contra el estado real de Gupshup. Solo auditoría.
+    completedVia: { type: String, enum: ['webhook', 'reconcile'], default: null },
+
+    // Estado del barrido automático de conciliación (worker, ver
+    // channelOnboardingReconcileSweep.service.js). Es el respaldo del webhook
+    // ACCOUNT_VERIFIED: el barrido consulta a Gupshup con backoff por sesión y
+    // nunca activa un canal sin verificación (ver reconcileOnboardingSession()).
+    // `nextAttemptAt` hace además de arrendamiento (lease): al tomar una sesión se
+    // adelanta unos minutos, así dos instancias del worker nunca la procesan a la vez.
+    reconcile: {
+      attempts: { type: Number, default: 0 },
+      lastAttemptAt: { type: Date, default: null },
+      nextAttemptAt: { type: Date, default: null },
+      lastOutcome: { type: String, default: null },
+      // Diagnóstico corto y sin secretos de por qué sigue pendiente / se detuvo.
+      lastDiagnostic: { type: String, default: null, maxlength: 400 },
+      // Se llena cuando el barrido ya no debe volver a tocar esta sesión (terminó,
+      // o necesita intervención humana). Volver a registrar la app o recuperar la
+      // sesión lo limpia.
+      stoppedAt: { type: Date, default: null },
+      stoppedReason: { type: String, default: null },
+    },
+
     // Ventana esperada para que el usuario complete el popup de Meta tras
     // init(). NO es un índice TTL (ver nota arriba) — es un dato que un
     // chequeo perezoso usa para decidir si transicionar a 'expired'.
@@ -157,3 +210,5 @@ channelOnboardingSessionSchema.index({ channel: 1 }, { unique: true, sparse: tru
 module.exports = mongoose.model('ChannelOnboardingSession', channelOnboardingSessionSchema);
 module.exports.STATUSES = STATUSES;
 module.exports.PROVIDERS = PROVIDERS;
+module.exports.GUPSHUP_PHASE_WINDOW_MS = GUPSHUP_PHASE_WINDOW_MS;
+module.exports.RECONCILE_INITIAL_STATE = RECONCILE_INITIAL_STATE;
