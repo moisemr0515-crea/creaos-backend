@@ -22,6 +22,8 @@ router.post('/whatsapp/embedded-signup/init', checkPermission('businesses:settin
 router.post('/whatsapp/embedded-signup/code', checkPermission('businesses:settings'), requireCapability('whatsappEnabled'), controller.codeEmbeddedSignup);
 router.post('/whatsapp/embedded-signup/callback', checkPermission('businesses:settings'), requireCapability('whatsappEnabled'), controller.callbackEmbeddedSignup);
 router.post('/whatsapp/embedded-signup/complete-gupshup', checkPermission('businesses:settings'), requireCapability('whatsappEnabled'), controller.completeGupshupEmbeddedSignup);
+router.get('/whatsapp/embedded-signup/current', checkPermission('businesses:settings'), requireCapability('whatsappEnabled'), controller.getCurrentEmbeddedSignup);
+router.post('/whatsapp/embedded-signup/recover', checkPermission('businesses:settings'), requireCapability('whatsappEnabled'), controller.recoverEmbeddedSignup);
 router.post('/whatsapp/embedded-signup/reconcile', checkPermission('businesses:settings'), requireCapability('whatsappEnabled'), controller.reconcileEmbeddedSignup);
 router.patch('/whatsapp/conversations/:conversationId/channel', checkPermission('leads:update'), requireCapability('whatsappEnabled'), controller.reassignConversationChannel);
 router.post('/whatsapp/:channelId/disconnect', checkPermission('businesses:settings'), requireCapability('whatsappEnabled'), controller.disconnectChannel);

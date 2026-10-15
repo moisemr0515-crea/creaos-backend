@@ -36,6 +36,7 @@ const {
 } = require('./channelOnboardingApp.service');
 const logger = require('../../utils/logger');
 const standardTemplateService = require('./standardTemplate.service');
+const Conversation = require('../ai/conversation.model');
 
 // El link de embed de Gupshup vale 5 días (contrato §7.3) — pasado eso la sesión
 // ya no puede completarse sola y hay que recuperarla/reiniciarla. Margen de 2 días.
@@ -145,10 +146,30 @@ async function finalizarSesionReclamada(session, { via, token: tokenPrevio, apik
     if (channel && (String(channel.tenantId) !== String(session.tenantId) || String(channel.businessId) !== String(session.tenantId))) {
       throw new Error('El número verificado ya pertenece a otro tenant');
     }
-    if (channel && channel.providerAppId && channel.providerAppId !== session.gupshup.appId) {
-      // El número ya tiene un canal de este tenant servido por OTRA app: las
-      // credenciales guardadas son de esa app, no de esta. No se reasigna solo.
+
+    // Reconexión del MISMO número del MISMO tenant (autoservicio: el cliente lo
+    // desconectó y lo vuelve a conectar). Como cada conexión usa su propia app de
+    // Gupshup, el canal existente (disconnected/error/pending) puede estar ligado a
+    // la app anterior: se RE-LIGA a la app nueva y se reemplazan sus credenciales
+    // (las viejas pertenecen a la app anterior). Un canal ACTIVO servido por otra app
+    // sí es un conflicto real y no se reasigna solo.
+    const reconexion = Boolean(channel) && channel.status !== 'active';
+    const cambiaDeApp = Boolean(channel && channel.providerAppId && channel.providerAppId !== session.gupshup.appId);
+    if (cambiaDeApp && !reconexion) {
       throw new Error('El número verificado ya está asociado a otra aplicación de Gupshup de este tenant — no se reasigna automáticamente');
+    }
+    if (channel && reconexion) {
+      channel.providerAppId = session.gupshup.appId;
+      channel.providerAccountId = session.gupshup.appName || nombreAppGupshup(session.tenantId);
+      channel.wabaId = wabaInfo.wabaId;
+      channel.phoneNumber = `+${wabaInfo.phone}`;
+      channel.webhookReference = session.gupshup.webhookReference;
+      if (session.displayName) channel.displayName = session.displayName;
+      // Provisorio igual que en un canal nuevo: recién se confirma 'partner' abajo.
+      channel.outboundApi = 'legacy';
+      channel.status = 'pending';
+      channel.onboardingStatus = 'in_progress';
+      await channel.save();
     }
     if (!channel) {
       channel = await WhatsAppChannel.create({
@@ -191,6 +212,21 @@ async function finalizarSesionReclamada(session, { via, token: tokenPrevio, apik
         provider: 'gupshup',
         apiKeys: [{ value: channelCrypto.encrypt(apikey, String(channel._id)) }],
       });
+    } else if (cambiaDeApp || !credentials.apiKeys.some((entry) => !entry.revokedAt)) {
+      // Reconexión: las keys vigentes (si quedaba alguna) son de la app anterior, y
+      // las revocadas al desconectar no sirven — sin una key activa, resolveCredentials()
+      // falla y el canal "conectado" no podría enviar. Se agrega la de la app actual.
+      const ahora = new Date();
+      if (cambiaDeApp) {
+        for (const entry of credentials.apiKeys) {
+          if (!entry.revokedAt) {
+            entry.revokedAt = ahora;
+            entry.revokedReason = 'channel_rebound_to_new_app';
+          }
+        }
+      }
+      credentials.apiKeys.push({ value: channelCrypto.encrypt(apikey, String(channel._id)) });
+      await credentials.save();
     }
 
     channel.credentialsReference = credentials._id;
@@ -204,7 +240,20 @@ async function finalizarSesionReclamada(session, { via, token: tokenPrevio, apik
     channel.onboardingStatus = 'completed';
     await channel.save();
 
-    session.channel = channel._id;
+    if (reconexion) {
+      // Al desconectar se marcaron las conversaciones del canal como "requieren
+      // reasignación"; al reconectar el MISMO canal vuelven a estar operativas.
+      await Conversation.updateMany(
+        { business: session.tenantId, whatsappChannel: channel._id, whatsappChannelStatus: 'reassignment_required' },
+        { $set: { whatsappChannelStatus: 'ready' } }
+      );
+    }
+
+    // Un canal reutilizado en una reconexión ya está referenciado por la sesión de la primera
+    // conexión (índice único en `channel`): esta sesión lo registra en `reusedChannel`.
+    const yaReferenciado = reconexion && await ChannelOnboardingSession.exists({ channel: channel._id, _id: { $ne: session._id } });
+    if (yaReferenciado) session.reusedChannel = channel._id;
+    else session.channel = channel._id;
     session.status = 'completed';
     session.completedVia = via || null;
     session.error = { step: null, message: null };
@@ -322,7 +371,7 @@ async function reconcileOnboardingSession({ sessionId, tenantId }) {
   const session = await ChannelOnboardingSession.findOne({ _id: sessionId, tenantId });
   if (!session) return { outcome: 'not_found' };
 
-  if (session.status === 'completed') return { outcome: 'already_completed', channelId: session.channel || null };
+  if (session.status === 'completed') return { outcome: 'already_completed', channelId: session.channel || session.reusedChannel || null };
 
   // 'completing' = otro actor (el webhook ACCOUNT_VERIFIED u otra conciliación) ya
   // reclamó la sesión y la está terminando. No es un estado inválido ni terminal: es

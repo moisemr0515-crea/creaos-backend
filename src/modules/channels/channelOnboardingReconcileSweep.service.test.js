@@ -309,9 +309,9 @@ describe('channelOnboardingReconcileSweep — barrido automático de conciliaci�
       expect(partnerApps.getWabaInfo).not.toHaveBeenCalled();
     });
 
-    test('DETIENE — falla al ACTIVAR (el número ya tiene un canal del tenant en otra app): excepción registrada, sesión failed/channel_creation, el barrido no insiste', async () => {
+    test('DETIENE — falla al ACTIVAR (el número ya tiene un canal ACTIVO del tenant en otra app): excepción registrada, sesión failed/channel_creation, el barrido no insiste', async () => {
       await WhatsAppChannel.create({
-        tenantId: tenantA._id, businessId: tenantA._id, connectionType: 'DEDICATED', status: 'disconnected', onboardingStatus: 'completed',
+        tenantId: tenantA._id, businessId: tenantA._id, connectionType: 'DEDICATED', status: 'active', onboardingStatus: 'completed',
         outboundApi: 'partner', phoneNumber: TEL_NUEVO, phoneNumberId: 'pnid-definitivo', providerAppId: 'app-anterior-del-mismo-numero',
       });
       const sesion = await sesionPendiente(tenantA);

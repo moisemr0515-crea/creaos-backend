@@ -22,6 +22,10 @@ const logger = require('../../utils/logger');
 
 const { GUPSHUP_PHASE_WINDOW_MS, RECONCILE_INITIAL_STATE } = ChannelOnboardingSession;
 
+// La autorización de Meta (token de la sesión) no se reabre indefinidamente: pasado este
+// tiempo desde que se creó la sesión hay que repetir el popup de Meta.
+const RECOVERY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
 // Pasos cuyo fallo SÍ se puede reintentar sin rehacer el popup de Meta.
 const PASOS_FALLIDOS_RECUPERABLES = ['gupshup_registration', 'channel_creation'];
 
@@ -41,13 +45,17 @@ async function recoverPendingSession({ sessionId, tenantId }) {
   const session = await ChannelOnboardingSession.findOne({ _id: sessionId, tenantId });
   if (!session) throw new AppError('Sesión de onboarding no encontrada', 404);
 
-  if (session.status === 'completed' || session.channel) {
-    return { outcome: 'already_completed', sessionId: String(session._id), channelId: session.channel || null };
+  if (session.status === 'completed' || session.channel || session.reusedChannel) {
+    return { outcome: 'already_completed', sessionId: String(session._id), channelId: session.channel || session.reusedChannel || null };
   }
 
   const meta = session.meta || {};
   if (!meta.wabaId || !meta.phoneNumberId || !meta.phoneNumber || !meta.accessTokenCipher) {
     throw new AppError('La sesión no conserva una autorización Meta completa — no es recuperable, hay que reiniciar el onboarding desde /init', 409);
+  }
+
+  if (session.createdAt && Date.now() - new Date(session.createdAt).getTime() > RECOVERY_MAX_AGE_MS) {
+    throw new AppError('La autorización de Meta de esta sesión es demasiado antigua — hay que reiniciar el onboarding desde /init', 409);
   }
 
   const estadoRecuperable = session.status === 'gupshup_registering'
@@ -121,4 +129,4 @@ async function recoverPendingSession({ sessionId, tenantId }) {
   };
 }
 
-module.exports = { recoverPendingSession };
+module.exports = { recoverPendingSession, RECOVERY_MAX_AGE_MS };

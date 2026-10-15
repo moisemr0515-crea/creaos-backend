@@ -116,6 +116,11 @@ const channelOnboardingSessionSchema = new mongoose.Schema(
     // channel asignado chocarían entre sí como si fuera un duplicado real.
     channel: { type: mongoose.Schema.Types.ObjectId, ref: 'WhatsAppChannel' },
 
+    // Reconexión del MISMO número: el canal ya existía y lo referencia la sesión de la primera
+    // conexión. El índice único de `channel` (1 canal <-> 1 sesión) impide apuntarlo de nuevo, así
+    // que la sesión de la reconexión deja constancia acá (sin índice único).
+    reusedChannel: { type: mongoose.Schema.Types.ObjectId, ref: 'WhatsAppChannel' },
+
     // Nombre elegido por el usuario en el paso de init (PR-03, blueprint
     // maestro §19) — se persiste acá porque WhatsAppChannel todavía no
     // existe en ese momento; pasa a WhatsAppChannel.displayName recién al

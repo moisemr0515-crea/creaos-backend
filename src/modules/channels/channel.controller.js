@@ -18,6 +18,8 @@ const channelService = require('./channel.service');
 const channelCredentialsService = require('./channelCredentials.service');
 const channelOnboardingApp = require('./channelOnboardingApp.service');
 const completionService = require('./channelOnboardingCompletion.service');
+const channelOnboardingStatus = require('./channelOnboardingStatus.service');
+const channelOnboardingRecovery = require('./channelOnboardingRecovery.service');
 const { GUPSHUP_PHASE_WINDOW_MS, RECONCILE_INITIAL_STATE } = ChannelOnboardingSession;
 const { META_APP_ID, META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID, BACKEND_PUBLIC_URL, GUPSHUP_ONBOARDING_WEBHOOK_TOKEN, GUPSHUP_WEBHOOK_HEADER, GUPSHUP_WEBHOOK_TOKEN } = require('../../config/env');
 // Constante compartida vía un archivo sin dependencias propias — NO se
@@ -855,7 +857,47 @@ const reconcileEmbeddedSignup = async (req, res, next) => {
   }
 };
 
+// ─── GET /api/v1/channels/whatsapp/embedded-signup/current ───────────────────
+// Conexión de WhatsApp EN CURSO del tenant (autoservicio): fase + acción siguiente, para
+// que el frontend la muestre y la retome tras recargar/cerrar la pestaña. Solo lectura y
+// acotado por tenant. `data.onboarding` es null si no hay nada pendiente.
+const getCurrentEmbeddedSignup = async (req, res, next) => {
+  try {
+    const onboarding = await channelOnboardingStatus.getCurrentOnboarding({ tenantId: req.businessId });
+    return respuestaExito(res, {
+      statusCode: 200,
+      message: onboarding ? 'Conexión de WhatsApp en curso' : 'No hay una conexión de WhatsApp en curso',
+      data: { onboarding },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─── POST /api/v1/channels/whatsapp/embedded-signup/recover ──────────────────
+// Reabre una sesión vencida o con la app insegura SIN repetir el popup de Meta (conserva
+// la autorización ya otorgada). No llama a Meta ni a Gupshup: después el frontend vuelve
+// a llamar a /complete-gupshup, que elige o crea una app segura y genera un enlace nuevo.
+const recoverEmbeddedSignup = async (req, res, next) => {
+  try {
+    const { sessionId } = req.body || {};
+    if (!sessionId || typeof sessionId !== 'string') throw new AppError('sessionId es requerido', 400);
+    if (!mongoose.isValidObjectId(sessionId)) throw new AppError('sessionId inválido', 400);
+
+    const result = await channelOnboardingRecovery.recoverPendingSession({ sessionId, tenantId: req.businessId });
+    return respuestaExito(res, {
+      statusCode: 200,
+      message: result.outcome === 'already_completed' ? 'La sesión ya estaba completada' : 'Sesión lista para continuar',
+      data: result,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 module.exports = {
+  getCurrentEmbeddedSignup,
+  recoverEmbeddedSignup,
   initEmbeddedSignup,
   codeEmbeddedSignup,
   callbackEmbeddedSignup,

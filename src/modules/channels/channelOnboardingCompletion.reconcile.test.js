@@ -13,6 +13,7 @@ jest.mock('./standardTemplate.service');
 const mongoose = require('mongoose');
 const Business = require('../businesses/business.model');
 const ChannelOnboardingSession = require('./channelOnboardingSession.model');
+const Conversation = require('../ai/conversation.model');
 const WhatsAppChannel = require('./whatsappChannel.model');
 const ChannelCredentials = require('./channelCredentials.model');
 const channelCrypto = require('./channelCrypto');
@@ -47,6 +48,7 @@ describe('channelOnboardingCompletion — conciliación y finalización comparti
     await ChannelOnboardingSession.deleteMany({});
     await WhatsAppChannel.deleteMany({});
     await ChannelCredentials.deleteMany({});
+    await Conversation.deleteMany({});
     await Business.deleteMany({});
     await mongoose.disconnect();
   });
@@ -55,6 +57,7 @@ describe('channelOnboardingCompletion — conciliación y finalización comparti
     await ChannelOnboardingSession.deleteMany({});
     await WhatsAppChannel.deleteMany({});
     await ChannelCredentials.deleteMany({});
+    await Conversation.deleteMany({});
     await Business.deleteMany({});
     tenantA = await Business.create({ name: 'Tenant A (Nutriva)' });
     tenantB = await Business.create({ name: 'Tenant B (otro cliente)' });
@@ -507,8 +510,8 @@ describe('channelOnboardingCompletion — conciliación y finalización comparti
       expect((await WhatsAppChannel.findById(activoDelTenant._id)).status).toBe('active');
     });
 
-    test('el número ya tiene un canal del tenant servido por OTRA app: no se reasigna solo (credenciales son de la otra app), canal intacto', async () => {
-      const existente = await canalExistente(tenantA, { phoneNumber: TEL_NUEVO, phoneNumberId: 'pnid-definitivo', providerAppId: 'app-anterior-del-mismo-numero', status: 'disconnected' });
+    test('un canal ACTIVO del tenant servido por OTRA app es un conflicto real: no se reasigna solo y queda intacto', async () => {
+      const existente = await canalExistente(tenantA, { phoneNumber: TEL_NUEVO, phoneNumberId: 'pnid-definitivo', providerAppId: 'app-anterior-del-mismo-numero', status: 'active' });
       const sesion = await sesionLista(tenantA);
       const antes = await instantanea();
 
@@ -516,7 +519,121 @@ describe('channelOnboardingCompletion — conciliación y finalización comparti
         .rejects.toThrow('otra aplicación de Gupshup');
 
       expect(await instantanea()).toBe(antes);
-      expect((await WhatsAppChannel.findById(existente._id)).status).toBe('disconnected');
+      expect((await WhatsAppChannel.findById(existente._id)).status).toBe('active');
+    });
+
+    describe('reconexión del MISMO número del MISMO tenant (autoservicio: desconectó y vuelve a conectar)', () => {
+      const credencialesRevocadas = async (canal, apikey = 'apikey-vieja-de-la-app-anterior') => ChannelCredentials.create({
+        channel: canal._id, tenantId: canal.tenantId, provider: 'gupshup',
+        apiKeys: [{ value: channelCrypto.encrypt(apikey, String(canal._id)), revokedAt: new Date(), revokedReason: 'channel_disconnected' }],
+      });
+      const conversacion = (canal, tenant, extra = {}) => Conversation.create({
+        business: tenant._id, tenantId: tenant._id, lead: new mongoose.Types.ObjectId(), channel: 'whatsapp',
+        whatsappChannel: canal._id, whatsappChannelStatus: 'reassignment_required', ...extra,
+      });
+
+      test('canal desconectado en la app ANTERIOR: se reutiliza el mismo canal (sin duplicar), se re-liga a la app nueva y se activa con credenciales nuevas', async () => {
+        const existente = await canalExistente(tenantA, { phoneNumber: TEL_NUEVO, phoneNumberId: 'pnid-definitivo', providerAppId: 'app-anterior-del-mismo-numero', providerAccountId: 'creaos-app-anterior', wabaId: 'waba-anterior', status: 'disconnected' });
+        const credsViejas = await credencialesRevocadas(existente);
+        const convDelCanal = await conversacion(existente, tenantA);
+        const sesion = await sesionLista(tenantA);
+
+        const res = await reconcileOnboardingSession({ sessionId: sesion._id, tenantId: tenantA._id });
+
+        expect(res.outcome).toBe('completed');
+        expect(await WhatsAppChannel.countDocuments({ tenantId: tenantA._id, phoneNumberId: 'pnid-definitivo' })).toBe(1);
+        const canal = await WhatsAppChannel.findById(existente._id);
+        expect(canal.status).toBe('active');
+        expect(canal.onboardingStatus).toBe('completed');
+        expect(canal.outboundApi).toBe('partner');
+        expect(canal.providerAppId).toBe('app-nueva');
+        expect(canal.providerAccountId).toBe(`creaos${tenantA._id}xabcdef12`);
+        expect(canal.wabaId).toBe('waba-definitiva');
+        // credenciales: la key vieja queda revocada (historial) y hay UNA activa, de la app actual
+        const creds = await ChannelCredentials.findById(credsViejas._id);
+        expect(await ChannelCredentials.countDocuments({ channel: existente._id })).toBe(1);
+        expect(creds.apiKeys).toHaveLength(2);
+        expect(creds.apiKeys.filter((k) => !k.revokedAt)).toHaveLength(1);
+        const { resolveCredentials } = require('./channelCredentials.service');
+        expect((await resolveCredentials(canal)).apiKey).toBe('apikey-de-la-app');
+        // las conversaciones del canal vuelven a estar operativas
+        expect((await Conversation.findById(convDelCanal._id)).whatsappChannelStatus).toBe('ready');
+        expect((await ChannelOnboardingSession.findById(sesion._id)).channel.toString()).toBe(existente._id.toString());
+      });
+
+      test('misma app pero con todas las keys revocadas al desconectar: se agrega una key activa nueva y el canal puede enviar', async () => {
+        const existente = await canalExistente(tenantA, { phoneNumber: TEL_NUEVO, phoneNumberId: 'pnid-definitivo', providerAppId: 'app-nueva', status: 'disconnected' });
+        await credencialesRevocadas(existente);
+        const sesion = await sesionLista(tenantA);
+
+        const res = await reconcileOnboardingSession({ sessionId: sesion._id, tenantId: tenantA._id });
+
+        expect(res.outcome).toBe('completed');
+        const canal = await WhatsAppChannel.findById(existente._id);
+        expect(canal.status).toBe('active');
+        const { resolveCredentials } = require('./channelCredentials.service');
+        expect((await resolveCredentials(canal)).apiKey).toBe('apikey-de-la-app'); // antes: "todas las apiKeys están revocadas"
+      });
+
+      test('canal en estado "error" (activación fallida previa) también se reutiliza', async () => {
+        const existente = await canalExistente(tenantA, { phoneNumber: TEL_NUEVO, phoneNumberId: 'pnid-definitivo', providerAppId: 'app-anterior-del-mismo-numero', status: 'error', onboardingStatus: 'failed' });
+        await credencialesRevocadas(existente);
+        const sesion = await sesionLista(tenantA);
+
+        expect((await reconcileOnboardingSession({ sessionId: sesion._id, tenantId: tenantA._id })).outcome).toBe('completed');
+        expect((await WhatsAppChannel.findById(existente._id)).status).toBe('active');
+      });
+
+      test('aislamiento: no toca el canal ni las conversaciones de otro tenant, ni otros canales del mismo tenant', async () => {
+        const existente = await canalExistente(tenantA, { phoneNumber: TEL_NUEVO, phoneNumberId: 'pnid-definitivo', providerAppId: 'app-anterior-del-mismo-numero', status: 'disconnected' });
+        await credencialesRevocadas(existente);
+        const otroDelTenant = await canalExistente(tenantA, { phoneNumberId: 'pnid-otro-del-tenant', providerAppId: 'app-activa-A', status: 'active' });
+        const canalB = await canalExistente(tenantB, { phoneNumberId: 'pnid-de-B', providerAppId: 'app-de-B', status: 'disconnected' });
+        const convB = await conversacion(canalB, tenantB);
+        const convOtroCanal = await conversacion(otroDelTenant, tenantA);
+        const snapB = JSON.stringify(await WhatsAppChannel.findById(canalB._id).lean());
+        const snapOtro = JSON.stringify(await WhatsAppChannel.findById(otroDelTenant._id).lean());
+        const sesion = await sesionLista(tenantA);
+
+        await reconcileOnboardingSession({ sessionId: sesion._id, tenantId: tenantA._id });
+
+        expect(JSON.stringify(await WhatsAppChannel.findById(canalB._id).lean())).toBe(snapB);
+        expect(JSON.stringify(await WhatsAppChannel.findById(otroDelTenant._id).lean())).toBe(snapOtro);
+        expect((await Conversation.findById(convB._id)).whatsappChannelStatus).toBe('reassignment_required');
+        expect((await Conversation.findById(convOtroCanal._id)).whatsappChannelStatus).toBe('reassignment_required');
+      });
+
+      test('el canal reutilizado ya lo referencia la sesión de la PRIMERA conexión (índice único): la reconexión se completa y deja constancia en reusedChannel', async () => {
+        const existente = await canalExistente(tenantA, { phoneNumber: TEL_NUEVO, phoneNumberId: 'pnid-definitivo', providerAppId: 'app-anterior-del-mismo-numero', status: 'disconnected' });
+        await credencialesRevocadas(existente);
+        const primera = await sesionLista(tenantA, { status: 'completed', channel: existente._id, gupshup: { appId: 'app-anterior-del-mismo-numero' } });
+        const nueva = await sesionLista(tenantA);
+
+        const res = await reconcileOnboardingSession({ sessionId: nueva._id, tenantId: tenantA._id });
+
+        expect(res.outcome).toBe('completed');
+        const n = await ChannelOnboardingSession.findById(nueva._id);
+        expect(n.status).toBe('completed');
+        expect(n.channel).toBeUndefined();
+        expect(String(n.reusedChannel)).toBe(String(existente._id));
+        expect(String((await ChannelOnboardingSession.findById(primera._id)).channel)).toBe(String(existente._id)); // la primera sesión no se toca
+        expect(await WhatsAppChannel.countDocuments({ tenantId: tenantA._id })).toBe(1);
+        // y reconciliar otra vez informa el canal correcto
+        expect(String((await reconcileOnboardingSession({ sessionId: nueva._id, tenantId: tenantA._id })).channelId)).toBe(String(existente._id));
+      });
+
+      test('idempotencia: reconciliar de nuevo la sesión ya completada no agrega keys ni duplica nada', async () => {
+        const existente = await canalExistente(tenantA, { phoneNumber: TEL_NUEVO, phoneNumberId: 'pnid-definitivo', providerAppId: 'app-anterior-del-mismo-numero', status: 'disconnected' });
+        const creds = await credencialesRevocadas(existente);
+        const sesion = await sesionLista(tenantA);
+        await reconcileOnboardingSession({ sessionId: sesion._id, tenantId: tenantA._id });
+
+        const otra = await reconcileOnboardingSession({ sessionId: sesion._id, tenantId: tenantA._id });
+
+        expect(otra.outcome).toBe('already_completed');
+        expect((await ChannelCredentials.findById(creds._id)).apiKeys).toHaveLength(2);
+        expect(await WhatsAppChannel.countDocuments({ tenantId: tenantA._id })).toBe(1);
+      });
     });
 
     test('la sesión de onboarding previamente completada de otra conexión no se toca', async () => {
