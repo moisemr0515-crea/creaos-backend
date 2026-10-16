@@ -124,24 +124,44 @@ const selectModel = (conversation, leadQualification, recentMessages) => {
 const construirVentanaDeMensajes = (messages, cantidad = 10) => {
   const ventana = messages.slice(-cantidad).map((m) => {
     const mensaje = { role: m.role, content: m.content };
-    if (m.role === 'assistant' && m.toolCalls) mensaje.tool_calls = m.toolCalls;
+    if (m.role === 'assistant' && Array.isArray(m.toolCalls) && m.toolCalls.length > 0) mensaje.tool_calls = m.toolCalls;
     if (m.role === 'tool') mensaje.tool_call_id = m.toolCallId;
     return mensaje;
   });
 
-  const idsConToolCallEnVentana = new Set(
-    ventana.filter((m) => m.tool_calls).flatMap((m) => m.tool_calls.map((tc) => tc.id))
-  );
+  // SANEADOR ÚNICO del historial que va al modelo (hotfix 'tool_calls huérfanos'). OpenAI rechaza con 400 un assistant
+  // con tool_calls que no esté seguido, JUSTO después, por un mensaje 'tool' por cada tool_call_id, y un 'tool' sin su
+  // llamada. Un historial que lo incumple (datos ya guardados, corte de la ventana, un mensaje intercalado) dejaba la
+  // conversación sin respuesta para siempre. Se reconstruye así, sin migrar datos:
+  //  - cada resultado se emite pegado a SU llamada (aunque en la base esté más abajo);
+  //  - la llamada sin resultado se quita (si el assistant traía texto, se conserva como mensaje normal);
+  //  - el resultado sin llamada en la ventana se descarta.
+  const resultados = new Map();
+  for (const m of ventana) {
+    if (m.role === 'tool' && m.tool_call_id && !resultados.has(m.tool_call_id)) resultados.set(m.tool_call_id, m);
+  }
 
-  // Nota sobre esTurnoSimple() (arriba): si el mensaje 'tool' descartado acá
-  // era la única señal de actividad de tools dentro de la ventana,
-  // esTurnoSimple() puede clasificar el turno como "simple" aunque hubo una
-  // tool call reciente. Inofensivo: esa actividad quedó justo en el borde
-  // de los últimos `cantidad` mensajes (efectivamente "vieja" para este
-  // turno), y el peor caso de una mala clasificación ahí es responder con
-  // el modelo barato para ESE turno puntual (ver el comentario de
-  // esTurnoSimple() más arriba), no una falla real.
-  return ventana.filter((m) => m.role !== 'tool' || idsConToolCallEnVentana.has(m.tool_call_id));
+  const saneada = [];
+  for (const m of ventana) {
+    if (m.role === 'tool') continue; // solo se emiten junto a su llamada; los demás son huérfanos
+    if (!m.tool_calls) { saneada.push(m); continue; }
+
+    const respondidas = m.tool_calls.filter((tc) => resultados.has(tc.id));
+    if (respondidas.length === 0) {
+      if (String(m.content || '').trim()) saneada.push({ role: m.role, content: m.content });
+      continue;
+    }
+    saneada.push({ ...m, tool_calls: respondidas });
+    for (const tc of respondidas) {
+      saneada.push(resultados.get(tc.id));
+      resultados.delete(tc.id); // un resultado respalda una sola llamada
+    }
+  }
+
+  // Nota sobre esTurnoSimple() (arriba): si un mensaje 'tool' descartado era la única señal de actividad de tools de
+  // la ventana, el turno puede clasificarse como "simple" aunque hubo una tool reciente. Inofensivo: esa actividad
+  // quedó en el borde de la ventana y el peor caso es responder ESE turno con el modelo barato.
+  return saneada;
 };
 
 const textoDeMensajesParaResumen = (messages) => messages
@@ -862,6 +882,7 @@ const generateReply = async (conversationId, business, lead) => {
       metadata: { promptTokens, completionTokens, model: selectedModel },
     });
 
+    const inicioDelTramo = conversation.messages.length;
     for (const toolCall of message.tool_calls) {
       // eslint-disable-next-line no-await-in-loop -- cada tool call depende
       // del estado que dejó la anterior (ej. conversation.status), deben
@@ -887,6 +908,11 @@ const generateReply = async (conversationId, business, lead) => {
         name: toolCall.function?.name,
       });
     }
+    // Algunas tools agregan su PROPIO mensaje a la conversación mientras corren (el adjunto de send_media /
+    // send_product_photos, la nota de sistema de escalate_to_human). OpenAI exige que los resultados 'tool' vayan
+    // JUSTO después del assistant con tool_calls: se reordena el tramo — primero los resultados, después esos efectos.
+    const tramo = conversation.messages.splice(inicioDelTramo);
+    conversation.messages.push(...tramo.filter((m) => m.role === 'tool'), ...tramo.filter((m) => m.role !== 'tool'));
     // No hay save acá a propósito — sigue al siguiente `for` con el
     // resultado de la tool ya en apiMessages, hasta que el modelo responda
     // con texto final (arriba) o se agoten las iteraciones.
@@ -1001,6 +1027,16 @@ const logAgentRunTrace = ({ correlationId, tenantId, conversationId, leadId, too
  * @param {{ conversationId: string, business: object, lead: object, correlationId?: string }} input
  * @returns {Promise<{ outcome: 'answer'|'clarify'|'action'|'handoff'|'error', responseText: string|null, toolsUsed: string[], knowledgeSources: string[], correlationId: string, tokensUsed: number, errorCode?: string }>}
  */
+// Descripción de un fallo del agente SIN datos personales: nunca el mensaje crudo (podría citar texto o teléfonos del
+// contacto). Solo clase/estado/código del proveedor y un detalle truncado con las secuencias largas de dígitos tapadas.
+const describirFalloDelAgente = (error) => ({
+  errorName: error?.name,
+  status: error?.status,
+  code: error?.code,
+  type: error?.type,
+  detail: String(error?.message || '').replace(/\+?\d[\d\s-]{6,}\d/g, '[num]').slice(0, 200),
+});
+
 const runAgent = async ({ conversationId, business, lead, correlationId } = {}) => {
   const runId = correlationId || uuidv4();
   const startedAt = Date.now();
@@ -1050,7 +1086,10 @@ const runAgent = async ({ conversationId, business, lead, correlationId } = {}) 
       tokensUsed,
     };
   } catch (error) {
-    logger.error(`runAgent(): generateReply() falló, se normaliza a outcome:'error' (correlationId=${runId}): ${error.message}`);
+    const fallo = describirFalloDelAgente(error);
+    logger.error('[ai.service] runAgent: generateReply() falló, se normaliza a outcome:"error" (el mensaje del contacto ya está guardado)', {
+      correlationId: runId, tenantId, conversationId: conversationIdStr, leadId: leadIdStr, ...fallo,
+    });
 
     logAgentRunTrace({
       correlationId: runId,
@@ -1060,7 +1099,7 @@ const runAgent = async ({ conversationId, business, lead, correlationId } = {}) 
       toolsUsed: [],
       outcome: 'error',
       durationMs: Date.now() - startedAt,
-      errorCode: error.message,
+      errorCode: fallo.detail,
     });
 
     return {
@@ -1070,7 +1109,7 @@ const runAgent = async ({ conversationId, business, lead, correlationId } = {}) 
       knowledgeSources: [],
       correlationId: runId,
       tokensUsed: 0,
-      errorCode: error.message,
+      errorCode: fallo.detail,
     };
   }
 };
@@ -1616,7 +1655,7 @@ const sendMediaMessage = async (conversationId, media, actor, options = {}) => {
 };
 
 module.exports = {
-  buildSystemPrompt, chat, saveInboundMessage, generateReply, runAgent, qualifyLead, generateSummary,
+  buildSystemPrompt, construirVentanaDeMensajes, chat, saveInboundMessage, generateReply, runAgent, qualifyLead, generateSummary,
   suggestResponse, sendAgentMessage, sendTemplateMessage, sendMediaMessage,
   // Exportado únicamente para tests: este repo no tiene un framework de
   // mocks (ver convención de "referencia viva" en los comentarios de
