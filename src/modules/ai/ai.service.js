@@ -19,6 +19,7 @@ const whatsappConsentService = require('../whatsappConsent/whatsappConsent.servi
 const cloudinaryUtil = require('../../utils/cloudinary');
 const logger = require('../../utils/logger');
 const { TOOL_SCHEMAS, executeToolCall } = require('./tools');
+const { aWhatsApp } = require('../../utils/whatsappFormat');
 // C.3 — Architecture & Agent Runtime V1, Etapa C3.1 (Runtime Contract) —
 // mismo paquete que ya usa webhook.controller.js para generar
 // correlationId, ver runAgent() más abajo.
@@ -353,7 +354,9 @@ const OBJECTION_MICROCLOSING_BY_MODE = {
 const PRODUCT_INTELLIGENCE_GUIDANCE = `CATÁLOGO DE PRODUCTOS (search_products / check_stock / get_price):
 Este negocio puede tener un catálogo real de productos con precio y stock. Consulta estas herramientas SIEMPRE que el lead pregunte o dé a entender algo sobre: si tienen un producto (existencia), su precio, si hay stock/disponibilidad, un producto específico, presentaciones o variantes, la cantidad que quiere comprar, o esté comparando opciones. Empieza por search_products con las palabras del lead; usa el productId que te devuelve para check_stock/get_price antes de confirmar disponibilidad o precio. Si ya identificaste un producto antes en esta conversación y el lead sigue preguntando sobre "eso" sin nombrarlo de nuevo, podés omitir el productId en check_stock/get_price.
 
-REGLA ANTI-ALUCINACIÓN (nunca la rompas): nunca afirmes que un producto existe, tiene precio, o tiene stock/disponibilidad sin haber consultado la herramienta correspondiente primero. Si la herramienta falla, no encuentra el producto, o no devuelve un dato confiable (ej. priceAvailable:false, o no hay match en la búsqueda), decilo de forma natural ("no puedo confirmar el precio ahora mismo", "no encontré ese producto en el catálogo", "dejame verificar el stock y te aviso") — nunca inventes, redondees ni estimes un número o una disponibilidad que la herramienta no confirmó. Si el lead pregunta por variantes/presentaciones y la búsqueda te devuelve varias coincidencias parecidas, pedile que aclare cuál antes de afirmar precio o stock de una en particular. Si después de intentarlo seguís sin poder confirmar el dato y el lead necesita una respuesta real, ofrecé tomar sus datos para que el equipo lo confirme (podés usar escalate_to_human si corresponde) en vez de forzar una respuesta.`;
+REGLA ANTI-ALUCINACIÓN (nunca la rompas): nunca afirmes que un producto existe, tiene precio, o tiene stock/disponibilidad sin haber consultado la herramienta correspondiente primero. Si la herramienta falla, no encuentra el producto, o no devuelve un dato confiable (ej. priceAvailable:false, o no hay match en la búsqueda), mirá primero si search_products te devolvió documentFallback (el texto del documento informativo del negocio): si el documento respalda lo que el lead pregunta, respondé con esa información diciendo que sale del documento del negocio; si no hay documentFallback o no cubre la pregunta, decilo de forma natural ("no puedo confirmar el precio ahora mismo", "no encontré ese producto en el catálogo", "dejame verificar el stock y te aviso") — nunca inventes, redondees ni estimes un número o una disponibilidad que la herramienta no confirmó. Si el lead pregunta por variantes/presentaciones y la búsqueda te devuelve varias coincidencias parecidas, pedile que aclare cuál antes de afirmar precio o stock de una en particular. Si después de intentarlo seguís sin poder confirmar el dato y el lead necesita una respuesta real, ofrecé tomar sus datos para que el equipo lo confirme (podés usar escalate_to_human si corresponde) en vez de forzar una respuesta.
+
+PRECEDENCIA ENTRE CATÁLOGO Y DOCUMENTO: si el producto EXISTE en el catálogo, el catálogo manda en precio y stock (get_price/check_stock) aunque el documento diga otra cosa. Si el producto NO existe en el catálogo (o el catálogo está vacío), podés usar el documento informativo del negocio (documentFallback o documentChunks) para decir qué ofrece, sus características y, si el documento lo indica, su precio o disponibilidad, aclarando que es información del documento y que el equipo puede confirmarla.`;
 
 // CREA SALES AI™ C.2 — Business Brain: Policies + FAQ V1, Etapa 6/11.
 // Dominio hermano de CATÁLOGO DE PRODUCTOS de arriba (documento §1.2: se
@@ -371,7 +374,8 @@ CÓMO INTERPRETAR EL RESULTADO (nunca lo ignores):
 - Si una policy tiene responseMode:"handoff", no intentes resolver el tema vos — usa escalate_to_human con el handoffReason que te llegó.
 - Si una policy tiene responseMode:"deny_action", comunicá con claridad que eso no está permitido, sin ofrecer alternativas que no hayas confirmado.
 - Preferí customerFacingText sobre statement cuando venga presente — statement es el texto operativo interno, customerFacingText ya está redactado para el cliente.
-- documentChunks son fragmentos del PDF del negocio — úsalos SOLO para información general/descriptiva (qué vende, diferenciadores, condiciones generales). NUNCA para precio o stock de un producto puntual, aunque el fragmento lo mencione — para eso siempre get_price/check_stock, que reflejan el dato real y actual del catálogo.
+- documentChunks son fragmentos del PDF del negocio — úsalos para información general/descriptiva (qué vende, diferenciadores, condiciones generales) y también para productos que NO están en el catálogo. NUNCA para precio o stock de un producto que SÍ existe en el catálogo, aunque el fragmento lo mencione — para eso siempre get_price/check_stock, que reflejan el dato real y actual del catálogo.
+- Si no llegan documentChunks pero sí documentFallback (o documentStatus:"indice_no_disponible"), el buscador del documento no está disponible: usá el texto de documentFallback igual que si fueran fragmentos y respondé con normalidad, sin mencionar ningún error técnico al lead.
 - Si la búsqueda no devuelve ninguna policy, FAQ, ni fragmento de documento relevante, decilo con honestidad ("no tengo esa información ahora mismo, dejame confirmarlo con el equipo") en vez de inventar algo — podés usar escalate_to_human si el lead necesita una respuesta segura ya mismo.`;
 
 // Bloque 2 de la auditoría Business Brain (§40/§41, 20/sep/2026) — "motor
@@ -387,11 +391,15 @@ CÓMO INTERPRETAR EL RESULTADO (nunca lo ignores):
 // las 2 guidances de arriba.
 const MEDIA_GUIDANCE = `ARCHIVOS Y MEDIA QUE PODÉS ENVIAR (send_media / send_product_photos):
 - ¿Piden el catálogo o si tienen tal producto? → search_products.
-- ¿Piden ver/una foto de UN producto puntual? → send_product_photos.
+- ¿Piden ver/una foto de UN producto puntual del catálogo? → send_product_photos; si ese producto no tiene foto cargada (asset_missing), probá send_media(resource:"business_photos").
+- ¿Piden fotos o imágenes del negocio o de sus productos en general (sin un producto puntual del catálogo)? → send_media(resource:"business_photos") (photo:1; si piden varias, llamala otra vez con photo:2).
 - ¿Piden el folleto/catálogo en PDF? → send_media(resource:"brochure").
 - ¿Piden un video de presentación? → send_media(resource:"presentation_video").
 - ¿Piden el logo del negocio? → send_media(resource:"logo").
+- El PDF informativo (la base de conocimiento) NUNCA se envía: es para que vos aprendas de él y respondas. Si el lead pide información, respondé con ella; si pide un folleto/catálogo para descargar, enviá el brochure.
 - Cualquier otra pregunta general → respondé vos directo, o search_business_knowledge si es sobre una política/regla.
+
+FORMATO DE TUS RESPUESTAS (WhatsApp no lee Markdown): negrita con UN asterisco (*así*), nunca **así**; sin enlaces [texto](url) — escribí la URL completa tal cual; sin encabezados con # ; listas con "- " al inicio de línea.
 
 REGLAS (nunca las rompas): nunca envíes un archivo de forma proactiva ni para "acompañar" una respuesta que el lead no pidió explícitamente — cada archivo consume la ventana de sesión igual que un mensaje de texto. Nunca envíes el logo o el video "porque sí" en medio de una conversación de precio/stock — el lead tiene que haberlo pedido. Si el lead solo pregunta precio o disponibilidad, respondé eso (get_price/check_stock) y no aproveches para mandar ningún archivo extra.`;
 
@@ -841,7 +849,8 @@ const generateReply = async (conversationId, business, lead) => {
     // cambio: se guarda como único mensaje assistant del turno y se
     // retorna igual que siempre.
     if (!message.tool_calls || message.tool_calls.length === 0) {
-      const reply = message.content;
+      // WhatsApp no lee Markdown: se convierte UNA vez aquí, así lo guardado, lo enviado y lo devuelto son el mismo texto.
+      const reply = aWhatsApp(message.content);
 
       conversation.messages.push({
         role: 'assistant',

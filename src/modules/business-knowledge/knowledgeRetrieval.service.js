@@ -362,11 +362,24 @@ const detectarConflictoConFAQIndependiente = (policyGanadora, faqsRankeadas) => 
  */
 const resolverConocimiento = async (businessId, texto, contexto = {}) => {
   const traceId = `kb_${new mongoose.Types.ObjectId().toHexString()}`;
+  // Fase 3 / etapa C: si falta el índice vectorial del PDF, el RAG documental se DEGRADA (sin chunks y con el aviso
+  // `documentIndexAvailable:false`) en vez de tumbar toda la búsqueda: políticas y FAQ siguen funcionando y la tool
+  // ofrece el respaldo directo del documento (documentFallback.service.js). `buscarChunksDocumento` sigue fallando
+  // cerrado por sí misma: solo este punto decide degradar.
+  let documentIndexAvailable = true;
   const [{ policies, faqs }, documentChunksCrudos] = await Promise.all([
     buscarConocimiento(businessId, texto, contexto),
     // Bloque 3 (§45-51, 20/sep/2026) — RAG del PDF, mismo punto único de
     // resolución que Policy/FAQ.
-    buscarChunksDocumento(businessId, texto),
+    buscarChunksDocumento(businessId, texto).catch((error) => {
+      if (error?.code !== 'RAG_VECTOR_INDEX_UNAVAILABLE') throw error;
+      documentIndexAvailable = false;
+      logger.warn('[knowledgeRetrieval] RAG documental degradado: se responde sin fragmentos del PDF (usar respaldo directo)', {
+        businessId: String(businessId),
+        code: error.code,
+      });
+      return [];
+    }),
   ]);
 
   // Fase 2, punto 5 (§52/§54, 20/sep/2026) — barrera de código, no de
@@ -403,6 +416,7 @@ const resolverConocimiento = async (businessId, texto, contexto = {}) => {
     // no hay un concepto de "prioridad" declarada por el dueño del
     // negocio, solo relevancia semántica).
     documentChunks: documentChunks.map((c) => ({ text: c.text, page: c.page, score: c.score })),
+    documentIndexAvailable,
     conflictDetected,
     needsClarification,
     traceId,

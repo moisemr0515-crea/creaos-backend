@@ -19,6 +19,7 @@ const productService = require('../../products/product.service');
 // duplicar sus hard filters de tenant/status/vigencia ni su lógica de
 // precedencia/conflicto.
 const knowledgeRetrievalService = require('../../business-knowledge/knowledgeRetrieval.service');
+const { obtenerRespaldoDocumento } = require('../../business-knowledge/documentFallback.service');
 // La tool solo resuelve el canal original. El envío real nunca ocurre en el
 // loop de OpenAI: se persiste como OutboundEvent y lo ejecuta el worker.
 const channelService = require('../../channels/channel.service');
@@ -27,7 +28,7 @@ const channelService = require('../../channels/channel.service');
 // brochureUrl directo (URL pública permanente) — pide un acceso firmado
 // con propósito 'send' (TTL largo, ver businessAssetAccess.service.js:
 // Meta/Gupshup buscan el archivo de forma asíncrona, no al instante).
-const { obtenerUrlDeAcceso } = require('../../businesses/businessAssetAccess.service');
+const businessAssets = require('../../businesses/businessAssets.registry');
 // Bloque 2 de la auditoría Business Brain (§37-44, 20/sep/2026) — mismo
 // mecanismo de acceso firmado que businessAssetAccess.service.js de
 // arriba, pero para fotos de Product.mediaAssets (ver send_product_photos()
@@ -327,9 +328,20 @@ const searchProducts = async (args, { conversation, business }) => {
       lastSearchQuery: query,
       updatedAt: new Date(),
     };
+    return { success: true, matches };
   }
 
-  return { success: true, matches };
+  // Sin coincidencias (producto que no existe en el catálogo, o catálogo vacío): la IA puede apoyarse en el PDF
+  // informativo del negocio. Nunca lanza ni cambia `success`: degradar es responder con lo que haya.
+  // La forma anterior ({success, matches}) solo cambia cuando hay algo que avisar: catálogo vacío y/o respaldo del PDF.
+  const documentFallback = await obtenerRespaldoDocumento(business, query);
+  const catalogEmpty = (await productService.contarProductosActivos(business._id)) === 0;
+  return {
+    success: true,
+    matches,
+    ...(catalogEmpty ? { catalogEmpty } : {}),
+    ...(documentFallback ? { documentFallback } : {}),
+  };
 };
 
 /**
@@ -411,6 +423,16 @@ const searchBusinessKnowledge = async (args, { conversation, business }) => {
 
   const resultado = await knowledgeRetrievalService.resolverConocimiento(business._id, query, { productIds, channelId });
 
+  // Sin fragmentos (índice no disponible, sin resultados o sin documento indexado): respaldo directo del PDF.
+  const sinFragmentos = resultado.documentChunks.length === 0;
+  const documentFallback = sinFragmentos ? await obtenerRespaldoDocumento(business, query) : null;
+  // `documentStatus` solo aparece cuando aporta algo (índice caído o respaldo en uso): sin documento la forma es la de siempre.
+  const documentStatus = !sinFragmentos
+    ? null
+    : resultado.documentIndexAvailable === false
+      ? 'indice_no_disponible'
+      : (documentFallback ? 'sin_resultados' : null);
+
   return {
     success: true,
     policies: resultado.policies.map((p) => ({
@@ -431,6 +453,8 @@ const searchBusinessKnowledge = async (args, { conversation, business }) => {
     // arriba. `page` viaja para que el modelo pueda citar "según la
     // página X del documento" si hace falta — best-effort, puede ser null.
     documentChunks: resultado.documentChunks.map((c) => ({ text: c.text, page: c.page })),
+    ...(documentStatus ? { documentStatus } : {}),
+    ...(documentFallback ? { documentFallback } : {}),
     conflictDetected: resultado.conflictDetected,
     needsClarification: resultado.needsClarification,
   };
@@ -444,27 +468,6 @@ const searchBusinessKnowledge = async (args, { conversation, business }) => {
  * `business._id` en el resto de este archivo). Devuelve `null` si el
  * negocio todavía no cargó ese archivo — nunca un string vacío/roto.
  */
-const RECURSOS_MEDIA_ENVIABLES = {
-  logo: async (business) => {
-    const url = await obtenerUrlDeAcceso(business, 'logo', 'send');
-    return url ? { url, type: 'image' } : null;
-  },
-  presentation_video: async (business) => {
-    const url = await obtenerUrlDeAcceso(business, 'presentationVideo', 'send');
-    return url ? { url, type: 'video' } : null;
-  },
-  brochure: async (business) => {
-    const url = await obtenerUrlDeAcceso(business, 'brochure', 'send');
-    return url ? { url, type: 'document', filename: business.brochureFilename || undefined } : null;
-  },
-};
-
-const NOMBRES_LEGIBLES_RECURSO = {
-  logo: 'logo',
-  presentation_video: 'video de presentación',
-  brochure: 'brochure',
-};
-
 /**
  * Chequeos compartidos por send_media() y send_product_photos() (Bloque 2,
  * §37-44, 20/sep/2026) — antes vivían solo dentro de send_media(), se
@@ -628,26 +631,26 @@ const persistAndEnqueueAiMedia = async ({
  */
 const sendMedia = async (args, { conversation, business, lead, toolCallId }) => {
   const resource = typeof args?.resource === 'string' ? args.resource.trim() : '';
-  const resolver = RECURSOS_MEDIA_ENVIABLES[resource];
-  if (!resolver) {
+  // ÚNICO punto que convierte un recurso en media enviable (businessAssets.registry.js): ningún `if` por tipo acá.
+  const resuelto = await businessAssets.resolverEnviable(business, resource, { photo: args?.photo });
+  if (resuelto.unknown) {
     return {
       success: false,
-      error: `Recurso desconocido: "${resource}". Debe ser uno de: ${Object.keys(RECURSOS_MEDIA_ENVIABLES).join(', ')}.`,
+      error: `Recurso desconocido: "${resource}". Debe ser uno de: ${businessAssets.RESOURCES_ENVIABLES.join(', ')}.`,
     };
   }
 
-  const media = await resolver(business);
-  if (!media) {
+  const { entry, media, mediaKey } = resuelto;
+  if (resuelto.missing) {
     return {
       success: false,
       status: 'asset_missing',
-      error: `Este negocio todavía no cargó su ${NOMBRES_LEGIBLES_RECURSO[resource]} — no hay nada que enviar.`,
+      error: `Este negocio todavía no cargó su ${entry.label} — no hay nada que enviar.`,
     };
   }
 
-  const mediaKey = `business:${resource}`;
   if (yaEnviadoRecientemente(conversation, mediaKey)) {
-    return { success: false, error: `Ya se envió ${NOMBRES_LEGIBLES_RECURSO[resource]} recientemente en esta conversación — no lo repitas salvo que el lead lo pida de nuevo explícitamente.` };
+    return { success: false, error: `Ya se envió ${entry.label} recientemente en esta conversación — no lo repitas salvo que el lead lo pida de nuevo explícitamente.` };
   }
 
   const validacion = await validarPuedeEnviarMedia(conversation, lead, business);
@@ -669,7 +672,7 @@ const sendMedia = async (args, { conversation, business, lead, toolCallId }) => 
 
   return {
     ...queued,
-    message: `El envío de ${NOMBRES_LEGIBLES_RECURSO[resource]} quedó encolado para WhatsApp.`,
+    message: `El envío de ${entry.label} quedó encolado para WhatsApp.`,
   };
 };
 
@@ -923,9 +926,10 @@ const TOOL_REGISTRY = [
   {
     name: 'send_media',
     description:
-      'Envía por WhatsApp un archivo real de este negocio: el logo, el video de presentación, o el brochure/folleto ' +
-      'en PDF. Úsala SOLO cuando el lead lo pide explícitamente (ej. "¿tienen un video?", "mándame el brochure", ' +
-      '"pásame el catálogo en PDF") — NUNCA de forma proactiva ni para "acompañar" una respuesta que el lead no ' +
+      'Envía por WhatsApp un archivo real de este negocio. Hay 4 tipos: el logo ("logo"), las fotos del negocio y de sus ' +
+      'productos ("business_photos"), el video de presentación ("presentation_video") y el brochure/folleto en PDF ("brochure"). ' +
+      'Úsala cuando el lead lo pide explícitamente (ej. "mándame el logo", "¿tienen fotos?", "¿tienen un video?", ' +
+      '"mándame el brochure", "pásame el catálogo en PDF") — NUNCA de forma proactiva ni para "acompañar" una respuesta que el lead no ' +
       'pidió, cada archivo pesa varios MB y consume la ventana de sesión igual que un mensaje de texto. Si el ' +
       'negocio no cargó ese archivo todavía, la tool te lo va a decir — en ese caso indicáselo al lead de forma ' +
       'natural en vez de insistir o inventar que sí se envió. NO uses esta tool para la foto de un producto ' +
@@ -935,10 +939,19 @@ const TOOL_REGISTRY = [
       properties: {
         resource: {
           type: 'string',
-          enum: ['logo', 'presentation_video', 'brochure'],
+          enum: [...businessAssets.RESOURCES_ENVIABLES],
           description:
-            'Qué archivo enviar. "logo" = logo del negocio, "presentation_video" = video de presentación, ' +
-            '"brochure" = folleto/catálogo en PDF. Nunca inventes ni pidas una URL — solo elegís cuál de estos 3.',
+            'Qué archivo enviar. "logo" = logo del negocio, "business_photos" = foto del negocio/de sus productos (1 o 2), ' +
+            '"presentation_video" = video de presentación, "brochure" = folleto/catálogo en PDF. ' +
+            'Nunca inventes ni pidas una URL — solo elegís cuál de estos 4.',
+        },
+        photo: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 2,
+          description:
+            'Solo para "business_photos": cuál foto enviar (1 o 2). Por defecto la 1; si el lead pide "fotos" en plural, ' +
+            'llama a la tool otra vez con photo:2 después de la primera.',
         },
       },
       required: ['resource'],

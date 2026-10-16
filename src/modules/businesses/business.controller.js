@@ -1,5 +1,6 @@
 const businessService = require('./business.service');
 const businessAssetAccess = require('./businessAssetAccess.service');
+const businessReadiness = require('./businessReadiness.service');
 const { respuestaExito } = require('../../utils/response');
 const { AppError } = require('../../middleware/error.middleware');
 
@@ -211,7 +212,23 @@ const getAssetAccess = async (req, res, next) => {
   }
 };
 
+/**
+ * GET /api/v1/businesses/current/ai-readiness
+ * Estado «conocimiento y material listo» del negocio (qué está cargado y conectado, qué falta). Solo lectura; la
+ * pantalla «Mi negocio» podrá mostrarlo más adelante. El negocio sale de `req.businessId`, nunca de la URL.
+ */
+const getAiReadiness = async (req, res, next) => {
+  try {
+    const estado = await businessReadiness.evaluar(req.businessId);
+    if (!estado) throw new AppError('Negocio no encontrado', 404);
+    return respuestaExito(res, { message: 'Estado de conocimiento y material', data: { readiness: estado } });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
+  getAiReadiness,
   getNegocioActual,
   updateNegocioActual,
   updateSettings,
