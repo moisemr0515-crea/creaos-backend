@@ -19,6 +19,7 @@ const whatsappConsentService = require('../whatsappConsent/whatsappConsent.servi
 const cloudinaryUtil = require('../../utils/cloudinary');
 const logger = require('../../utils/logger');
 const { TOOL_SCHEMAS, executeToolCall } = require('./tools');
+const { aWhatsApp } = require('../../utils/whatsappFormat');
 // C.3 — Architecture & Agent Runtime V1, Etapa C3.1 (Runtime Contract) —
 // mismo paquete que ya usa webhook.controller.js para generar
 // correlationId, ver runAgent() más abajo.
@@ -397,6 +398,8 @@ const MEDIA_GUIDANCE = `ARCHIVOS Y MEDIA QUE PODÉS ENVIAR (send_media / send_pr
 - ¿Piden el logo del negocio? → send_media(resource:"logo").
 - El PDF informativo (la base de conocimiento) NUNCA se envía: es para que vos aprendas de él y respondas. Si el lead pide información, respondé con ella; si pide un folleto/catálogo para descargar, enviá el brochure.
 - Cualquier otra pregunta general → respondé vos directo, o search_business_knowledge si es sobre una política/regla.
+
+FORMATO DE TUS RESPUESTAS (WhatsApp no lee Markdown): negrita con UN asterisco (*así*), nunca **así**; sin enlaces [texto](url) — escribí la URL completa tal cual; sin encabezados con # ; listas con "- " al inicio de línea.
 
 REGLAS (nunca las rompas): nunca envíes un archivo de forma proactiva ni para "acompañar" una respuesta que el lead no pidió explícitamente — cada archivo consume la ventana de sesión igual que un mensaje de texto. Nunca envíes el logo o el video "porque sí" en medio de una conversación de precio/stock — el lead tiene que haberlo pedido. Si el lead solo pregunta precio o disponibilidad, respondé eso (get_price/check_stock) y no aproveches para mandar ningún archivo extra.`;
 
@@ -846,7 +849,8 @@ const generateReply = async (conversationId, business, lead) => {
     // cambio: se guarda como único mensaje assistant del turno y se
     // retorna igual que siempre.
     if (!message.tool_calls || message.tool_calls.length === 0) {
-      const reply = message.content;
+      // WhatsApp no lee Markdown: se convierte UNA vez aquí, así lo guardado, lo enviado y lo devuelto son el mismo texto.
+      const reply = aWhatsApp(message.content);
 
       conversation.messages.push({
         role: 'assistant',

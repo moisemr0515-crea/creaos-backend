@@ -210,21 +210,22 @@ describe.each(TENANTS)('Fase 3 — diagnóstico ($nombre)', ({ nombre, from, e16
   });
 
   describe('C) Formato para WhatsApp', () => {
-    test.failing('los enlaces Markdown y las negritas ** no llegan crudos a WhatsApp ni al historial', async () => {
+    test('ETAPA B/P1: los enlaces Markdown y las negritas ** no llegan crudos a WhatsApp ni al historial', async () => {
       createSpy.mockResolvedValueOnce(completionTexto('Mira [nuestra web](https://creaosapp.com) y la **oferta** de hoy.'));
       await entrante('¿Dónde veo más?');
       const evento = await OutboundEvent.findOne({ tenantId: business._id, messageType: 'text' });
-      expect(evento.text).not.toMatch(/\]\(|\*\*/); // hoy: se envía tal cual
+      expect(evento.text).not.toMatch(/\]\(|\*\*/);
+      expect(evento.text).toBe('Mira nuestra web: https://creaosapp.com y la *oferta* de hoy.');
       expect(evento.text).toContain('https://creaosapp.com');
       const conv = await conversacion();
       expect(conv.messages.find((m) => m.role === 'assistant').content).not.toMatch(/\]\(|\*\*/);
     });
 
-    test('CARACTERIZACIÓN: hoy el texto de la IA sale tal cual lo escribió el modelo (sin ninguna conversión)', async () => {
+    test('ETAPA B/P1: el texto de la IA se convierte a formato WhatsApp una sola vez (lo enviado es lo guardado)', async () => {
       createSpy.mockResolvedValueOnce(completionTexto('Mira [nuestra web](https://creaosapp.com)'));
       await entrante('¿Dónde veo más?');
       expect(channelService.sendMessage).toHaveBeenCalledTimes(1);
-      expect(channelService.sendMessage.mock.calls[0][2]).toBe('Mira [nuestra web](https://creaosapp.com)');
+      expect(channelService.sendMessage.mock.calls[0][2]).toBe('Mira nuestra web: https://creaosapp.com');
     });
   });
 
@@ -303,7 +304,7 @@ describe.each(TENANTS)('Fase 3 — diagnóstico ($nombre)', ({ nombre, from, e16
       expect(prompt).toContain('Información adicional del negocio (de su documento):\nResumen del PDF del negocio.');
       expect(prompt).toMatch(/documentChunks son fragmentos del PDF del negocio — úsalos para información general/);
       expect(prompt).toMatch(/NUNCA para precio o stock de un producto que SÍ existe en el catálogo/);
-      expect(prompt).not.toMatch(/markdown|negrita|enlaces? en formato/i); // C: ninguna instrucción de formato para WhatsApp
+      expect(prompt).toMatch(/FORMATO DE TUS RESPUESTAS \(WhatsApp no lee Markdown\)/); // Etapa B/P1: instrucción de formato
     });
   });
 });
