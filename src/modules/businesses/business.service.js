@@ -144,9 +144,13 @@ const actualizarNegocio = async (businessId, datos) => {
 
   camposPermitidos.forEach((campo) => {
     if (datos[campo] === undefined) return;
-    // Un nombre o una moneda vacíos no son un valor: «Mi negocio» los reenvía tal cual cuando aún no se cargaron. Se
-    // IGNORAN (el campo conserva su valor) para que no tumben ni borren el resto del bloque de identidad.
-    if (CAMPOS_QUE_IGNORAN_VACIO.includes(campo) && typeof datos[campo] === 'string' && !datos[campo].trim()) return;
+    // Un nombre o una moneda null, vacíos o con solo espacios no son un valor: «Mi negocio» los reenvía tal cual cuando
+    // aún no se cargaron. Se IGNORAN (el campo conserva su valor) para que no tumben ni borren el resto del bloque de
+    // identidad. `null` incluido: el validador de la ruta (checkFalsy) lo deja pasar y guardarlo borraría la moneda.
+    if (
+      CAMPOS_QUE_IGNORAN_VACIO.includes(campo)
+      && (datos[campo] === null || (typeof datos[campo] === 'string' && !datos[campo].trim()))
+    ) return;
     actualizacion[campo] = datos[campo];
   });
 

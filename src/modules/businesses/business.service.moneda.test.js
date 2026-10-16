@@ -37,6 +37,23 @@ describe('business.service#actualizarNegocio() — moneda y vacíos', () => {
     expect(r.agentName).toBe('Alex');
   });
 
+  test('currency:null y name:null también se ignoran (no borran la moneda ni tumban el PUT) y el resto SÍ se guarda', async () => {
+    await actualizarNegocio(negocio._id, { currency: 'COP' });
+    const r = await actualizarNegocio(negocio._id, { name: null, currency: null, agentName: 'Marina' });
+    expect(r.name).toBe('Negocio de prueba');
+    expect(r.currency).toBe('COP');
+    expect(r.agentName).toBe('Marina');
+    expect((await Business.findById(negocio._id).lean()).currency).toBe('COP');
+  });
+
+  test('un PUT SIN currency ni name (omitidos) conserva los valores que ya tenía el negocio', async () => {
+    await actualizarNegocio(negocio._id, { currency: 'COP' });
+    const r = await actualizarNegocio(negocio._id, { agentName: 'Marina', averageTicket: 80 });
+    expect(r.currency).toBe('COP');
+    expect(r.name).toBe('Negocio de prueba');
+    expect((await Business.findById(negocio._id).lean()).currency).toBe('COP');
+  });
+
   test('una moneda real se guarda (ida y vuelta con la base) y se normaliza a mayúsculas', async () => {
     await actualizarNegocio(negocio._id, { currency: 'mxn' });
     expect((await Business.findById(negocio._id).lean()).currency).toBe('MXN');
