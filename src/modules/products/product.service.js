@@ -374,7 +374,11 @@ const eliminarFotoProducto = async (businessId, productId, mediaId) => {
   return producto;
 };
 
+/** Cantidad de productos ACTIVOS de un negocio (catálogo vacío ⇒ 0). */
+const contarProductosActivos = (businessId) => Product.countDocuments({ business: businessId, active: true });
+
 module.exports = {
+  contarProductosActivos,
   crearProducto,
   obtenerProducto,
   obtenerProductoActivo,
