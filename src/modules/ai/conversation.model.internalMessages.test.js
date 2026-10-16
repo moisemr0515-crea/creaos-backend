@@ -2,6 +2,7 @@
 // que solo piden herramientas). Un solo punto: el toJSON del modelo. El historial guardado no cambia.
 const mongoose = require('mongoose');
 const Conversation = require('./conversation.model');
+const { construirVentanaDeMensajes } = require('./ai.service');
 const { esMensajeInterno } = Conversation;
 
 const tool = { role: 'tool', content: '{"success":true}', toolCallId: 'c1', name: 'search_products' };
@@ -37,5 +38,14 @@ describe('Conversation#toJSON', () => {
     const conv = crear([]);
     conv.messages = undefined;
     expect(() => JSON.parse(JSON.stringify(conv))).not.toThrow();
+  });
+
+  test('el filtro es SOLO de la API: el historial que va al modelo conserva las herramientas (si no, todas las conversaciones se romperían)', () => {
+    const conv = crear([{ role: 'user', content: 'hola' }, pideTool, tool, respuesta]);
+    expect(JSON.parse(JSON.stringify(conv)).messages).toHaveLength(2); // API del chat
+    const alModelo = construirVentanaDeMensajes(conv.messages, 10); // lo que recibe OpenAI
+    expect(alModelo.map((m) => m.role)).toEqual(['user', 'assistant', 'tool', 'assistant']);
+    expect(alModelo[1].tool_calls).toHaveLength(1);
+    expect(alModelo[2]).toMatchObject({ role: 'tool', tool_call_id: 'c1' });
   });
 });
