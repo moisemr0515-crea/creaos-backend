@@ -263,6 +263,32 @@ describe.each(NEGOCIOS)('generateReply tras enviar media ($nombre)', ({ nombre, 
     });
   });
 
+  test('un resultado de herramienta de más de 4000 caracteres no tumba el guardado del turno', async () => {
+    const Product = require('../products/product.model');
+    await Promise.all(Array.from({ length: 5 }, (_, i) => Product.create({
+      business: business._id, name: `Granola especial ${i}`, sku: `SKU-LARGO-${i}`, price: 10, stock: 5, keywords: ['granola'],
+      description: 'Descripción muy larga. '.repeat(40),
+    })));
+    await Product.syncIndexes();
+    // Resultado enorme simulado por la propia tool de búsqueda.
+    const productService = require('../products/product.service');
+    jest.spyOn(productService, 'buscarProductos').mockResolvedValue(Array.from({ length: 5 }, (_, i) => ({
+      productId: String(new mongoose.Types.ObjectId()), name: `Granola ${i}`, description: 'x'.repeat(1200),
+    })));
+    guion(pideTool(llamadaATool('c_largo', 'search_products', { query: 'granola' })), responde('Tenemos varias granolas'));
+    expect((await turno('¿Qué granolas tienen?')).reply).toBe('Tenemos varias granolas');
+
+    const guardado = (await Conversation.findById(conversation._id)).messages.find((m) => m.role === 'tool');
+    expect(guardado.content.length).toBeLessThanOrEqual(4000);
+    expect(guardado.content).toMatch(/\[recortado\]$/);
+    // El modelo SÍ vio el resultado completo durante el turno.
+    const vistoEnElTurno = enviado[1].find((m) => m.role === 'tool').content;
+    expect(vistoEnElTurno.length).toBeGreaterThan(4000);
+
+    guion(responde('Claro'));
+    expect((await turno('Gracias')).reply).toBe('Claro');
+  });
+
   test('cuando generateReply falla, el log NO lleva teléfono ni texto del contacto y el mensaje queda guardado', async () => {
     const errores = jest.spyOn(logger, 'error').mockImplementation(() => {});
     createSpy.mockRestore();

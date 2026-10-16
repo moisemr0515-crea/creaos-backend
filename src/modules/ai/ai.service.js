@@ -31,6 +31,8 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 // (un lead real no dispara 5 tool calls encadenadas en un solo turno).
 const MAX_TOOL_ITERATIONS = 5;
 const RECENT_MESSAGES_LIMIT = 10;
+// Debe coincidir con el `maxlength` de `content` en conversation.model.js.
+const MAX_CONTENIDO_GUARDADO = 4000;
 const MEMORY_REFRESH_BATCH_SIZE = 10;
 
 /**
@@ -902,7 +904,9 @@ const generateReply = async (conversationId, business, lead) => {
       apiMessages.push({ role: 'tool', tool_call_id: toolCall.id, content: resultContent });
       conversation.messages.push({
         role: 'tool',
-        content: resultContent,
+        // El esquema limita `content` a 4000: un resultado más largo (p. ej. 5 fragmentos del PDF) hacía fallar el guardado
+        // del turno ENTERO y se perdía la respuesta. El modelo ya vio el resultado completo en este turno (apiMessages).
+        content: resultContent.length > MAX_CONTENIDO_GUARDADO ? `${resultContent.slice(0, MAX_CONTENIDO_GUARDADO - 15)}…[recortado]` : resultContent,
         timestamp: new Date(),
         toolCallId: toolCall.id,
         name: toolCall.function?.name,
