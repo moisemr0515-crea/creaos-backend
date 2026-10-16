@@ -91,7 +91,7 @@ const ENVIA_DE_PRODUCTO = Object.freeze({
   productScoped: true,
   origin: { collection: 'products', fields: ['mediaAssets'] },
   consumer: { kind: 'tool', name: 'send_product_photos' },
-  limits: { mimeTypes: ['image/jpeg', 'image/png', 'image/webp'], maxBytes: 5 * MB, maxItems: 8 },
+  limits: { mimeTypes: ['image/jpeg', 'image/png', 'image/webp'], maxBytes: 5 * MB, perSend: 1 }, // send_product_photos manda solo la principal
 });
 
 const ENVIA_POR_RESOURCE = Object.freeze(Object.fromEntries(ENVIA.map((e) => [e.resource, e])));
