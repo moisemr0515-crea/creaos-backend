@@ -126,6 +126,12 @@ router.get('/current/assets/:campo/access',
   controller.getAssetAccess
 );
 
+// GET /api/v1/businesses/current/ai-readiness — qué conoce y qué puede enviar la IA (solo lectura)
+router.get('/current/ai-readiness',
+  checkPermission('businesses:read'),
+  controller.getAiReadiness
+);
+
 // POST /api/v1/businesses/current/logo
 router.post('/current/logo',
   checkPermission('businesses:update'),
