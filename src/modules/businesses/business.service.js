@@ -122,6 +122,9 @@ const obtenerNegocioActual = async (businessId) => {
   return negocio;
 };
 
+// Campos obligatorios por naturaleza (no se pueden «limpiar»): un valor vacío significa «no cambiar».
+const CAMPOS_QUE_IGNORAN_VACIO = ['name', 'currency'];
+
 // Campos del wizard de onboarding — cuando los 4 quedan llenos, se marca onboardingCompleted
 const CAMPOS_ONBOARDING = ['productDescription', 'averageTicket', 'targetCustomer', 'whatsappNumber'];
 
@@ -140,7 +143,15 @@ const actualizarNegocio = async (businessId, datos) => {
   const actualizacion = {};
 
   camposPermitidos.forEach((campo) => {
-    if (datos[campo] !== undefined) actualizacion[campo] = datos[campo];
+    if (datos[campo] === undefined) return;
+    // Un nombre o una moneda null, vacíos o con solo espacios no son un valor: «Mi negocio» los reenvía tal cual cuando
+    // aún no se cargaron. Se IGNORAN (el campo conserva su valor) para que no tumben ni borren el resto del bloque de
+    // identidad. `null` incluido: el validador de la ruta (checkFalsy) lo deja pasar y guardarlo borraría la moneda.
+    if (
+      CAMPOS_QUE_IGNORAN_VACIO.includes(campo)
+      && (datos[campo] === null || (typeof datos[campo] === 'string' && !datos[campo].trim()))
+    ) return;
+    actualizacion[campo] = datos[campo];
   });
 
   const negocioActual = await Business.findById(businessId).select(`onboardingCompleted ${CAMPOS_ONBOARDING.join(' ')}`);

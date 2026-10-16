@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const slugify = require('slugify');
 const { TRIAL_DAYS } = require('../../config/constants');
+const { monedaPorPais } = require('./currencyByCountry');
 
 // Identidad del negocio — redes sociales (12/sep/2026): validación básica de
 // URL para facebookUrl/instagramUrl/tiktokUrl, sin exigir que sea
@@ -177,11 +178,15 @@ const businessSchema = new mongoose.Schema(
       trim: true,
       default: 'PE',
     },
+    // Moneda por defecto DERIVADA del país (currencyByCountry.js): antes era 'MXN' fijo desde el primer commit
+    // (28/jun/2026) y todo negocio nuevo —con país 'PE'— nacía en pesos mexicanos sin que nadie lo eligiera. `country`
+    // está definido ANTES que este campo para que `this.country` ya tenga su valor al calcular el default. Solo aplica
+    // al crear; no toca los documentos existentes.
     currency: {
       type: String,
       trim: true,
       uppercase: true,
-      default: 'MXN',
+      default: function monedaPorDefecto() { return monedaPorPais(this.country); },
     },
     phone: {
       type: String,

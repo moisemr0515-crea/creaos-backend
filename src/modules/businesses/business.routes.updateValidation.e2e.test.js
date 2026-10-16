@@ -104,3 +104,55 @@ describe('PUT /api/v1/businesses/current — website/whatsappNumber vacíos', ()
     expect(service.actualizarNegocio).toHaveBeenCalledWith('business-1', expect.objectContaining({ whatsappNumber: '+51987654321' }));
   });
 });
+
+describe('PUT /api/v1/businesses/current — name y currency vacíos o inválidos', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  test('name:"" y currency:"" ya NO tiran abajo el PUT: el resto del bloque llega al servicio', async () => {
+    service.actualizarNegocio.mockResolvedValue({ _id: 'business-1' });
+
+    const res = await request(app)
+      .put('/api/v1/businesses/current')
+      .send({ name: '', currency: '', agentName: 'Marina', averageTicket: 150, aiInstructions: 'Sé amable' });
+
+    expect(res.status).toBe(200);
+    expect(service.actualizarNegocio).toHaveBeenCalledWith(
+      'business-1',
+      expect.objectContaining({ agentName: 'Marina', averageTicket: 150, aiInstructions: 'Sé amable' })
+    );
+  });
+
+  test.each([['PEN'], ['pen'], ['MXN']])('currency "%s" es válida', async (currency) => {
+    service.actualizarNegocio.mockResolvedValue({ _id: 'business-1', currency });
+    const res = await request(app).put('/api/v1/businesses/current').send({ currency });
+    expect(res.status).toBe(200);
+    expect(service.actualizarNegocio).toHaveBeenCalledWith('business-1', expect.objectContaining({ currency }));
+  });
+
+  test.each([['AB'], ['ABCD'], ['12A'], ['P N']])('currency "%s" mal formada => 422 con mensaje claro por campo', async (currency) => {
+    const res = await request(app).put('/api/v1/businesses/current').send({ currency, agentName: 'Marina' });
+    expect(res.status).toBe(422);
+    expect(JSON.stringify(res.body)).toMatch(/Moneda inválida/);
+    expect(service.actualizarNegocio).not.toHaveBeenCalled();
+  });
+
+  test('name:null y currency:null no dan 422: el resto del bloque llega al servicio (que ignora los null)', async () => {
+    service.actualizarNegocio.mockResolvedValue({ _id: 'business-1' });
+    const res = await request(app).put('/api/v1/businesses/current').send({ name: null, currency: null, agentName: 'Marina' });
+    expect(res.status).toBe(200);
+    expect(service.actualizarNegocio).toHaveBeenCalledWith('business-1', expect.objectContaining({ agentName: 'Marina' }));
+  });
+
+  test('name y currency con solo espacios tampoco tumban el PUT (se tratan como vacíos)', async () => {
+    service.actualizarNegocio.mockResolvedValue({ _id: 'business-1' });
+    const res = await request(app).put('/api/v1/businesses/current').send({ name: '   ', currency: '  ', agentName: 'Marina' });
+    expect(res.status).toBe(200);
+    expect(service.actualizarNegocio).toHaveBeenCalledWith('business-1', expect.objectContaining({ agentName: 'Marina' }));
+  });
+
+  test('un name real pero demasiado corto sigue dando 422 claro (no se ignora)', async () => {
+    const res = await request(app).put('/api/v1/businesses/current').send({ name: 'A' });
+    expect(res.status).toBe(422);
+    expect(JSON.stringify(res.body)).toMatch(/Nombre inválido/);
+  });
+});
