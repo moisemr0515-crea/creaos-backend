@@ -172,7 +172,7 @@ describe.each(TENANTS)('Fase 3 — diagnóstico ($nombre)', ({ nombre, from, e16
       expect(conv.messages.filter((m) => m.role === 'assistant')).toHaveLength(0);
     });
 
-    test('CARACTERIZACIÓN: el PDF informativo NO es enviable (send_media solo conoce logo, presentation_video y brochure)', async () => {
+    test('CARACTERIZACIÓN: el PDF informativo NO es enviable (send_media solo conoce logo, business_photos, presentation_video y brochure)', async () => {
       const lead = await Lead.create({ business: business._id, name: 'Lead', phone: e164 });
       const conv = await Conversation.create({ business: business._id, lead: lead._id, channel: 'whatsapp', whatsappChannel: channel._id, lastInboundMessageAt: new Date() });
       const r = await executeToolCall(
@@ -180,7 +180,7 @@ describe.each(TENANTS)('Fase 3 — diagnóstico ($nombre)', ({ nombre, from, e16
         { conversation: conv, business, lead }
       );
       expect(r.success).toBe(false);
-      expect(r.error).toMatch(/Recurso desconocido.*logo, presentation_video, brochure/);
+      expect(r.error).toMatch(/Recurso desconocido.*logo, business_photos, presentation_video, brochure/); // Etapa C: se sumó business_photos
     });
 
     test('CARACTERIZACIÓN: sin foto cargada en el producto, send_product_photos responde asset_missing; las fotos del negocio (Business.photos) no cuentan', async () => {
@@ -261,7 +261,7 @@ describe.each(TENANTS)('Fase 3 — diagnóstico ($nombre)', ({ nombre, from, e16
   });
 
   describe('A) Conocimiento (PDF)', () => {
-    test('CARACTERIZACIÓN: si el índice vectorial del PDF no existe, search_business_knowledge FALLA ENTERA (también pierde políticas y FAQ) y el modelo solo recibe un error', async () => {
+    test('ETAPA C (antes fallaba entera): si el índice vectorial del PDF no existe, search_business_knowledge DEGRADA — sigue devolviendo políticas/FAQ y avisa documentStatus', async () => {
       const lead = await Lead.create({ business: business._id, name: 'Lead', phone: e164 });
       const conv = await Conversation.create({ business: business._id, lead: lead._id, channel: 'whatsapp', whatsappChannel: channel._id });
       await Promise.all([require('../../business-knowledge/faq.model').syncIndexes(), require('../../business-knowledge/policy.model').syncIndexes()]);
@@ -270,10 +270,11 @@ describe.each(TENANTS)('Fase 3 — diagnóstico ($nombre)', ({ nombre, from, e16
         { id: 'c3', function: { name: 'search_business_knowledge', arguments: JSON.stringify({ query: '¿Qué productos venden?' }) } },
         { conversation: conv, business, lead }
       );
-      expect(r.success).toBe(false);
-      expect(r.error).toMatch(/indice vectorial requerido chunk_vector_index no esta disponible/);
-      expect(r.policies).toBeUndefined();
-      expect(r.faqs).toBeUndefined();
+      expect(r.success).toBe(true); // antes: false + «indice vectorial requerido chunk_vector_index no esta disponible»
+      expect(r.policies).toEqual([]);
+      expect(r.faqs).toEqual([]);
+      expect(r.documentChunks).toEqual([]);
+      expect(r.documentStatus).toBe('indice_no_disponible');
     });
 
     test('CARACTERIZACIÓN: la barrera descarta un fragmento del PDF que menciona «disponible»/precio si el catálogo tiene un producto parecido', async () => {
@@ -292,7 +293,7 @@ describe.each(TENANTS)('Fase 3 — diagnóstico ($nombre)', ({ nombre, from, e16
       expect(await descartarClaimsDePrecioStockDesactualizados(chunks, business._id)).toHaveLength(1);
     });
 
-    test('CARACTERIZACIÓN: el prompt siempre inyecta el resumen del PDF (≤800) y manda usar los fragmentos solo para información general, nunca precio/stock', async () => {
+    test('ETAPA C: el prompt siempre inyecta el resumen del PDF (≤800); los fragmentos valen para información general y productos fuera del catálogo, nunca para precio/stock de un producto que SÍ existe', async () => {
       await Business.updateOne({ _id: business._id }, { $set: { pdfSummary: 'Resumen del PDF del negocio.' } });
       createSpy.mockResolvedValueOnce(completionTexto('ok'));
       const lead = await Lead.create({ business: business._id, name: 'Lead', phone: e164 });
@@ -300,8 +301,8 @@ describe.each(TENANTS)('Fase 3 — diagnóstico ($nombre)', ({ nombre, from, e16
       await aiService.generateReply(conv._id, await Business.findById(business._id), lead);
       const prompt = createSpy.mock.calls[0][0].messages[0].content;
       expect(prompt).toContain('Información adicional del negocio (de su documento):\nResumen del PDF del negocio.');
-      expect(prompt).toMatch(/documentChunks son fragmentos del PDF del negocio — úsalos SOLO para información general/);
-      expect(prompt).toMatch(/NUNCA para precio o stock/);
+      expect(prompt).toMatch(/documentChunks son fragmentos del PDF del negocio — úsalos para información general/);
+      expect(prompt).toMatch(/NUNCA para precio o stock de un producto que SÍ existe en el catálogo/);
       expect(prompt).not.toMatch(/markdown|negrita|enlaces? en formato/i); // C: ninguna instrucción de formato para WhatsApp
     });
   });
