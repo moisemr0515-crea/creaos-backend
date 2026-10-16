@@ -71,7 +71,9 @@ router.get('/current', checkPermission('businesses:read'), controller.getNegocio
 router.put('/current',
   checkPermission('businesses:update'),
   [
-    body('name').optional().trim().isLength({ min: 2, max: 100 }).withMessage('Nombre inválido'),
+    // checkFalsy:true en name y currency: «Mi negocio» reenvía "" cuando todavía no se cargaron; el servicio los ignora
+    // (conservan su valor) en vez de rechazar TODO el bloque de identidad con un 422.
+    body('name').optional({ checkFalsy: true }).trim().isLength({ min: 2, max: 100 }).withMessage('Nombre inválido'),
     // Nombre del agente de IA — separado de `name` (nombre del negocio).
     body('agentName').optional().trim().isLength({ max: 50 }).withMessage('Nombre del agente muy largo (máx 50 caracteres)'),
     body('email').optional().trim().isEmail().withMessage('Email inválido').normalizeEmail(),
@@ -86,7 +88,7 @@ router.put('/current',
     // que ya trataba "" como válido.
     body('website').optional({ checkFalsy: true }).trim().isURL().withMessage('URL inválida'),
     body('country').optional().trim().isLength({ min: 2, max: 3 }).withMessage('País inválido'),
-    body('currency').optional().trim().isLength({ min: 3, max: 3 }).withMessage('Moneda inválida (ISO 4217)'),
+    body('currency').optional({ checkFalsy: true }).trim().matches(/^[A-Za-z]{3}$/).withMessage('Moneda inválida (3 letras, ISO 4217)'),
     body('industry').optional().trim().isLength({ max: 100 }).withMessage('Industria muy larga'),
     // checkFalsy:true — mismo bug y mismo motivo que website (arriba):
     // saveAll() manda whatsappNumber:"" cuando el negocio todavía no
