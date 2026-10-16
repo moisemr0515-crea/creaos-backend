@@ -137,7 +137,7 @@ describe.each(TENANTS)('Fase 3 — diagnóstico ($nombre)', ({ nombre, from, e16
       expect(vacio[0].sentBy).toBe('ai'); // el default del esquema: la UI lo pinta como mensaje de la IA
     });
 
-    test.failing('la API de la conversación NO entrega al chat los mensajes internos de herramientas (hoy sí: burbuja vacía + JSON)', async () => {
+    test('ETAPA B/P2: la API de la conversación NO entrega al chat los mensajes internos de herramientas (el historial guardado sí los conserva)', async () => {
       createSpy.mockResolvedValueOnce(completionTool('send_media', { resource: 'logo' }))
         .mockResolvedValueOnce(completionTexto('Aquí tienes el logo.'));
       await entrante('¿Tienes el logo?');

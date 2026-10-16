@@ -160,6 +160,14 @@ const activeProductSchema = new mongoose.Schema(
   { _id: false }
 );
 
+/**
+ * ÚNICO predicado de «mensaje interno del agente»: lo que el modelo necesita en su historial pero un humano nunca debe
+ * ver en el chat — el resultado de una herramienta (`role:'tool'`, JSON) y el turno del asistente que solo pidió
+ * herramientas (sin texto ni adjunto, aparecería como una burbuja vacía). El historial guardado NO se toca.
+ */
+const esMensajeInterno = (m) => m?.role === 'tool'
+  || (m?.role === 'assistant' && Array.isArray(m.toolCalls) && m.toolCalls.length > 0 && !String(m.content || '').trim() && !m.mediaUrl);
+
 const conversationSchema = new mongoose.Schema(
   {
     business:   { type: mongoose.Schema.Types.ObjectId, ref: 'Business', required: true, index: true },
@@ -220,7 +228,17 @@ const conversationSchema = new mongoose.Schema(
     // de verdad, dando una falsa sensación de cumplimiento.
     lastInboundMessageAt: { type: Date, default: null },
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+    // Todo lo que la API serializa (detalle, alta, escalado, activar IA…) pasa por aquí: un solo punto, sin filtros por
+    // endpoint. Con `.select('-messages')` o `.lean()` no hay `messages` o no se aplica, y no cambia nada.
+    toJSON: {
+      transform(doc, ret) {
+        if (Array.isArray(ret.messages)) ret.messages = ret.messages.filter((m) => !esMensajeInterno(m));
+        return ret;
+      },
+    },
+  }
 );
 
 conversationSchema.index({ business: 1, lead: 1 });
@@ -244,4 +262,5 @@ conversationSchema.methods.getWindowState = function () {
 
 module.exports = mongoose.model('Conversation', conversationSchema);
 module.exports.WINDOW_DURATION_MS = WINDOW_DURATION_MS;
+module.exports.esMensajeInterno = esMensajeInterno;
 module.exports.PSYCHOLOGICAL_STATES = PSYCHOLOGICAL_STATES;
