@@ -8,6 +8,7 @@
 // 2 tenants y 2 teléfonos (con y sin "+"): nada es específico de un lead, teléfono o negocio.
 jest.mock('../queues/outbound.queue', () => ({ enqueueOutbound: jest.fn(), getOutboundQueue: jest.fn() }));
 jest.mock('../../businesses/businessAssetAccess.service');
+jest.mock('../../../utils/embeddings', () => ({ generarEmbedding: jest.fn().mockResolvedValue(new Array(1536).fill(0.01)), generarEmbeddings: jest.fn() }));
 
 const mongoose = require('mongoose');
 const Business = require('../../businesses/business.model');
@@ -260,6 +261,21 @@ describe.each(TENANTS)('Fase 3 — diagnóstico ($nombre)', ({ nombre, from, e16
   });
 
   describe('A) Conocimiento (PDF)', () => {
+    test('CARACTERIZACIÓN: si el índice vectorial del PDF no existe, search_business_knowledge FALLA ENTERA (también pierde políticas y FAQ) y el modelo solo recibe un error', async () => {
+      const lead = await Lead.create({ business: business._id, name: 'Lead', phone: e164 });
+      const conv = await Conversation.create({ business: business._id, lead: lead._id, channel: 'whatsapp', whatsappChannel: channel._id });
+      await Promise.all([require('../../business-knowledge/faq.model').syncIndexes(), require('../../business-knowledge/policy.model').syncIndexes()]);
+      // La base local no es Atlas: `$vectorSearch` no existe, igual que un índice `chunk_vector_index` no creado.
+      const r = await executeToolCall(
+        { id: 'c3', function: { name: 'search_business_knowledge', arguments: JSON.stringify({ query: '¿Qué productos venden?' }) } },
+        { conversation: conv, business, lead }
+      );
+      expect(r.success).toBe(false);
+      expect(r.error).toMatch(/indice vectorial requerido chunk_vector_index no esta disponible/);
+      expect(r.policies).toBeUndefined();
+      expect(r.faqs).toBeUndefined();
+    });
+
     test('CARACTERIZACIÓN: la barrera descarta un fragmento del PDF que menciona «disponible»/precio si el catálogo tiene un producto parecido', async () => {
       await Product.syncIndexes(); // el índice de texto de `buscarProductos` debe existir en la base de prueba
       await Product.create({ business: business._id, name: 'Proteína vegetal', sku: 'SKU-PRUEBA-2', description: 'Proteína vegetal en polvo', price: 80, stock: 3, active: true });
