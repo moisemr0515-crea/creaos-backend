@@ -18,7 +18,7 @@ const Lead = require('./lead.model');
 const leadService = require('./lead.service');
 const { executeAction } = require('../automations/automation.engine');
 const { ensureLeadAndConversation } = require('../channels/workers/inbound.worker');
-const { processGupshupMessage, processWhatsAppMessage, processTikTokLead } = require('../webhooks/webhook.service');
+const { processGupshupMessage, processWhatsAppMessage } = require('../webhooks/webhook.service');
 
 const MONGO_URI = 'mongodb://localhost:27017/creaos_test_lead_probabilidad_por_etapa';
 const actor = { _id: new mongoose.Types.ObjectId(), name: 'Actor de prueba' };
@@ -80,8 +80,9 @@ describe('probabilidad de cierre por etapa en leads NUEVOS', () => {
       expect(await probabilidad({ phone: '+51900000003' })).toBe(5);
     });
 
-    // Meta y TikTok crean el lead con esta misma forma (webhook.service.js:149 y :246): sin `pipeline`, con la etapa de
-    // `config.defaults.pipelineStage`. Se prueba esa forma directamente porque las funciones reales hoy NO llegan a crearlo (ver abajo).
+    // Meta y TikTok crean el lead con esta misma forma (webhook.service.js): sin `pipeline`, con la etapa de
+    // `config.defaults.pipelineStage`. Las funciones reales (processMetaLead/processTikTokLead) se prueban en
+    // webhooks/webhook.service.metaTiktok.test.js.
     test.each([['Meta'], ['TikTok']])('%s — lead creado con la forma de processMetaLead/processTikTokLead y la etapa configurada', async (origen) => {
       const lead = await Lead.create({
         business: negocio._id, name: `Lead ${origen}`, source: origen === 'Meta' ? 'facebook' : 'tiktok',
@@ -93,15 +94,6 @@ describe('probabilidad de cierre por etapa en leads NUEVOS', () => {
     test('Meta (formularios): el lead sin etapa configurada nace en «new» → 5 %', async () => {
       const lead = await Lead.create({ business: negocio._id, name: 'Dani', source: 'facebook', pipelineStage: 'new', temperature: 'warm' });
       expect(lead.closeProbability).toBe(5);
-    });
-
-    // DEFECTO PREVIO, ajeno a este cambio: processMetaLead() y processTikTokLead() lanzan "ReferenceError: business is not defined"
-    // (webhook.service.js:158 y :255, el `business._id` de assertActiveUserInBusiness) y NUNCA llegan a crear el lead. Cuando se
-    // arregle, este test pasará a fallar: entonces hay que convertirlo en un test normal con probabilidad 5 / 60.
-    test.failing('Meta/TikTok — las funciones reales hoy fallan antes de crear el lead (ReferenceError: business is not defined)', async () => {
-      const config = { _id: new mongoose.Types.ObjectId(), business: negocio._id, defaults: { pipelineStage: 'negotiating' } };
-      await processTikTokLead({ lead_id: 'tt-1', ad_id: 'a', campaign_id: 'c', fields: [{ name: 'FULL_NAME', value: 'Carla' }] }, config);
-      expect(await probabilidad({ name: 'Carla' })).toBe(60);
     });
 
     test('automatización — create_lead (lead hijo en otra etapa)', async () => {

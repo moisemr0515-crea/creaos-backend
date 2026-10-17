@@ -28,9 +28,8 @@ Con el pipeline por defecto: new 5 % · contacted 20 % · negotiating 60 % · wo
 - **Control negativo:** sin el gancho fallan 15 de las pruebas.
 - Suite completa del backend (`--maxWorkers=2`): 212 suites y 2210 pruebas en verde. `git diff --check` limpio.
 
-## HALLAZGO PREVIO, ajeno a este cambio (no se tocó)
-`processMetaLead()` y `processTikTokLead()` ([webhook.service.js:158 y :255](../../../src/modules/webhooks/webhook.service.js)) lanzan **`ReferenceError: business is not defined`**: usan `business._id` en `assertActiveUserInBusiness(config.defaults?.assignedTo, business._id)` y esa variable no existe en esas funciones. Hay que usar `config.business`. **Mientras no se arregle, ningún lead de Meta Ads ni de TikTok se crea.** Entró con el commit `2cd5075` (14/sep/2026, «harden multi-tenant delivery…»).
-Por eso las pruebas de Meta/TikTok comprueban la forma de creación del lead (los mismos campos), y un `test.failing` deja documentado el defecto: cuando se arregle, ese test empezará a fallar y habrá que convertirlo en una prueba normal.
+## Hallazgo previo, ya corregido aparte
+`processMetaLead()` y `processTikTokLead()` lanzaban `ReferenceError: business is not defined` y nunca creaban el lead (desde el commit `2cd5075`, 14/sep/2026). Se corrigió en la rama `fix/leads-meta-tiktok` (informe 45), con pruebas de esas dos funciones; con ambas ramas combinadas, un lead de Meta o TikTok nace con la probabilidad de su etapa (5 % en «new», 20 % en «contacted», 60 % en «negotiating»). Por eso aquí ya no hay ningún `test.failing`: las pruebas de Meta/TikTok de este archivo comprueban la forma de creación del lead y las funciones reales se prueban en `webhook.service.metaTiktok.test.js`.
 
 ## Límites y riesgos
 - Un lead de WhatsApp en un pipeline propio cuya primera etapa no se llama «new» sigue naciendo con la etapa «new» (que no existe ahí) y por tanto con 0 %: es el comportamiento previo de esos creadores, no de este gancho.
