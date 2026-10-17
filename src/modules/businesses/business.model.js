@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const slugify = require('slugify');
 const { TRIAL_DAYS } = require('../../config/constants');
 const { monedaPorPais } = require('./currencyByCountry');
+const { zonaHorariaPorPais } = require('./timezoneByCountry');
 
 // Identidad del negocio — redes sociales (12/sep/2026): validación básica de
 // URL para facebookUrl/instagramUrl/tiktokUrl, sin exigir que sea
@@ -311,7 +312,8 @@ const businessSchema = new mongoose.Schema(
       },
     },
     settings: {
-      timezone: { type: String, default: 'America/Mexico_City' },
+      // Derivada del país al CREAR (Perú → America/Lima); país fuera de la tabla ⇒ null, sin zona inventada. No toca negocios existentes.
+      timezone: { type: String, default: function zonaPorDefecto() { return zonaHorariaPorPais(this.country); } },
       language: { type: String, default: 'es' },
       notifications: {
         email: { type: Boolean, default: true },

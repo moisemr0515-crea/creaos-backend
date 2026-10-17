@@ -26,6 +26,7 @@ const subscriptionRoutes = require('./modules/subscriptions/subscription.routes'
 const adminRoutes        = require('./modules/admin/admin.routes');
 const whatsappRoutes     = require('./modules/whatsapp/whatsapp.routes');
 const missionRoutes      = require('./modules/missions/mission.routes');
+const statsRoutes        = require('./modules/stats/stats.routes');
 const pushRoutes         = require('./modules/push/push.routes');
 const channelRoutes      = require('./modules/channels/channel.routes');
 const appUpdateRoutes    = require('./modules/appUpdates/appUpdate.routes');
@@ -121,6 +122,7 @@ app.use('/api/v1/subscriptions',      subscriptionRoutes);
 app.use('/api/v1/admin',              adminRoutes);
 app.use('/api/v1/whatsapp',           whatsappRoutes);
 app.use('/api/v1/missions',           missionRoutes);
+app.use('/api/v1/stats',              statsRoutes);
 app.use('/api/v1/push',               pushRoutes);
 app.use('/api/v1/channels',           channelRoutes);
 app.use('/api/v1/app-updates',        appUpdateRoutes);
