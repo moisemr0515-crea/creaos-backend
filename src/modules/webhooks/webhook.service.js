@@ -155,7 +155,7 @@ async function processMetaLead(entry, config) {
       source:        config.defaults?.source || 'facebook',
       pipelineStage: config.defaults?.pipelineStage || 'new',
       temperature:   config.defaults?.temperature || 'warm',
-      assignedTo:    (await require('../users/userScope.service').assertActiveUserInBusiness(config.defaults?.assignedTo, business._id))?._id || undefined,
+      assignedTo:    (await require('../users/userScope.service').assertActiveUserInBusiness(config.defaults?.assignedTo, config.business))?._id || undefined,
       tags:          config.defaults?.tags || [],
       adSource: {
         platform:     'meta',
@@ -252,7 +252,7 @@ async function processTikTokLead(payload, config) {
       source:        config.defaults?.source || 'tiktok',
       pipelineStage: config.defaults?.pipelineStage || 'new',
       temperature:   config.defaults?.temperature || 'warm',
-      assignedTo:    (await require('../users/userScope.service').assertActiveUserInBusiness(config.defaults?.assignedTo, business._id))?._id || undefined,
+      assignedTo:    (await require('../users/userScope.service').assertActiveUserInBusiness(config.defaults?.assignedTo, config.business))?._id || undefined,
       tags:          config.defaults?.tags || [],
       adSource: {
         platform:    'tiktok',
