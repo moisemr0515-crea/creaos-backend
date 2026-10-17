@@ -18,7 +18,7 @@ const whatsappConsentService = require('../whatsappConsent/whatsappConsent.servi
 // sin tocar el módulo real.
 const cloudinaryUtil = require('../../utils/cloudinary');
 const logger = require('../../utils/logger');
-const { TOOL_SCHEMAS, executeToolCall } = require('./tools');
+const { construirToolSchemas, executeToolCall } = require('./tools');
 const { aWhatsApp } = require('../../utils/whatsappFormat');
 const { formatearImporte } = require('../../utils/money');
 // C.3 — Architecture & Agent Runtime V1, Etapa C3.1 (Runtime Contract) —
@@ -813,6 +813,9 @@ const generateReply = async (conversationId, business, lead) => {
 
   let totalTokensUsed = 0;
 
+  // Una sola vez por turno: update_lead_stage con las etapas reales del pipeline de este lead (no las "típicas").
+  const toolSchemas = await construirToolSchemas({ business, lead });
+
   // C.3 — Etapa C3.1 (Runtime Contract). generateReply() YA sabía, durante
   // el loop, qué tools se ejecutaron y qué conocimiento real sustentó la
   // respuesta — simplemente nunca se lo devolvía a quien la llama. Acá se
@@ -837,7 +840,7 @@ const generateReply = async (conversationId, business, lead) => {
       messages: apiMessages,
       max_tokens: AI_MAX_TOKENS,
       temperature: AI_TEMPERATURE,
-      tools: TOOL_SCHEMAS,
+      tools: toolSchemas,
     });
 
     const promptTokens = completion.usage?.prompt_tokens || 0;
