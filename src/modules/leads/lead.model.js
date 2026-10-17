@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { normalizeToE164 } = require('../../utils/phone');
+const Pipeline = require('../pipeline/pipeline.model');
 
 const TEMPERATURES = ['cold', 'warm', 'hot'];
 const SOURCES = ['manual', 'facebook', 'instagram', 'tiktok', 'whatsapp', 'referral', 'website', 'csv_import', 'other'];
@@ -189,6 +190,32 @@ leadSchema.pre('save', function (next) {
     this.phone = normalizeToE164(this.phone);
   }
   next();
+});
+
+// Todo lead NUEVO nace con la probabilidad de cierre de SU etapa, sin importar el camino por el que se creó (manual, WhatsApp,
+// Meta/TikTok, automatización, importación): antes solo crearLead() la copiaba y el resto nacía en 0 %, lo que dejaba el "valor
+// esperado" en 0 aunque el lead tuviera valor. Un único gancho, en vez de repetir esto en cada creador.
+//   - Pipeline: el del lead si es de ESTE negocio y está activo; si no, el pipeline por defecto del negocio; si el negocio no
+//     tiene ninguno, las etapas por defecto (sin crearlo: es una lectura). Siempre respeta las etapas propias de cada negocio.
+//   - Una probabilidad EXPLÍCITA (incluido 0) se respeta: solo actúa si closeProbability sigue en su valor por defecto.
+//   - Solo leads nuevos (isNew): guardar de nuevo un lead existente nunca la toca.
+//   - Etapa que no existe en el pipeline, o cualquier fallo al leerlo: queda como estaba (0); nunca bloquea la creación de un lead
+//     (un WhatsApp entrante no se puede perder por esto).
+// pre('validate') y no pre('save'): también corre con insertMany() (importación), que no ejecuta pre('save').
+// shortcut: una consulta de pipeline por lead nuevo; si las importaciones masivas lo notan, cachear por pipeline dentro de la carga.
+leadSchema.pre('validate', async function aplicarProbabilidadDeLaEtapa() {
+  if (!this.isNew || !this.$isDefault('closeProbability')) return;
+  try {
+    const campos = 'stages.key stages.defaultProbability';
+    const propio = this.pipeline
+      ? await Pipeline.findOne({ _id: this.pipeline, business: this.business, isActive: true }, campos).lean()
+      : null;
+    const pipeline = propio || await Pipeline.findOne({ business: this.business, isDefault: true, isActive: true }, campos).lean();
+    const etapa = (pipeline ? pipeline.stages : Pipeline.DEFAULT_STAGES).find((e) => e.key === this.pipelineStage);
+    if (etapa && typeof etapa.defaultProbability === 'number') this.closeProbability = etapa.defaultProbability;
+  } catch {
+    // fail-soft: se queda la probabilidad por defecto
+  }
 });
 
 leadSchema.virtual('stageLabel').get(function () {
