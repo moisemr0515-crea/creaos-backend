@@ -9,6 +9,7 @@ const Notification = require('../admin/notification.model');
 const notificationService = require('../admin/notification.service');
 const subscriptionService = require('../subscriptions/subscription.service');
 const productInventoryService = require('../products/productInventory.service');
+const { crearVenta, descartarVenta } = require('../sales/sale.service');
 const { AppError } = require('../../middleware/error.middleware');
 const { triggerAutomations } = require('../automations/automation.engine');
 const { normalizeToE164 } = require('../../utils/phone');
@@ -322,6 +323,29 @@ const cambiarEtapa = async (businessId, leadId, actor, stage, reason, { triggerA
 };
 
 /**
+ * Deshace el findOneAndUpdate de cerrarVenta() cuando no hay transacción (Mongo standalone): devuelve al lead los valores que
+ * tenía (`antes`) y quita la actividad que se agregó. Solo actúa si el lead sigue con el `saleClosedAt` que puso el cierre.
+ */
+const deshacerCierre = async (businessId, antes, cerrado) => {
+  const CAMPOS = ['pipelineStage', 'stageChangedAt', 'closeProbability', 'lastContactedAt', 'actualValue'];
+  const $set = { saleClosedAt: null };
+  const $unset = {};
+  for (const campo of CAMPOS) {
+    if (antes[campo] === undefined || antes[campo] === null) $unset[campo] = '';
+    else $set[campo] = antes[campo];
+  }
+  const actividadNueva = cerrado.activity[cerrado.activity.length - 1];
+  await Lead.updateOne(
+    { _id: antes._id, business: businessId, saleClosedAt: cerrado.saleClosedAt },
+    {
+      $set,
+      ...(Object.keys($unset).length ? { $unset } : {}),
+      ...(actividadNueva ? { $pull: { activity: { _id: actividadNueva._id } } } : {}),
+    }
+  );
+};
+
+/**
  * Cierre de venta con productos — Bloque 4 de la auditoría Business Brain
  * (§59-60, 20/sep/2026), ampliación consciente de alcance respecto al
  * documento maestro original (§42, V1.5). Reemplaza el flujo previo de
@@ -351,6 +375,21 @@ const cambiarEtapa = async (businessId, leadId, actor, stage, reason, { triggerA
  * funciones de stock reciben la MISMA `session` de acá (nunca abren la
  * suya propia: Mongo no soporta transacciones anidadas en sesiones
  * distintas).
+ *
+ * REGISTRO DE VENTAS: justo después del `findOneAndUpdate` que garantiza la
+ * idempotencia, y en la misma transacción, se crea la venta en `sales`
+ * (origin 'manual', status 'confirmed'). El lead sigue guardando
+ * `actualValue` y `saleClosedAt` (lo leen pantallas y reportes existentes).
+ * Si crear la venta falla, el lead no queda cerrado: la transacción se
+ * revierte y, en el fallback sin transacción (Mongo standalone), se
+ * deshace el cierre a mano.
+ *
+ * LEAD QUE YA ESTÁ EN UNA ETAPA GANADA (cerrado antes de que existiera el
+ * registro, p. ej. por la IA o arrastrando la tarjeta): esto solo REGISTRA
+ * EL MONTO. No se toca `stageChangedAt` (si no, "este mes" se movería a
+ * hoy), la etapa no cambia, la venta nace con `closedAt` = el cierre
+ * original (`stageChangedAt`, o `updatedAt` si falta), el historial anota
+ * "monto registrado" y NO se descuenta stock (por eso `items` debe ir vacío).
  */
 const cerrarVenta = async (businessId, leadId, actor, { actualValue, items = [] } = {}) => {
   const leadActual = await Lead.findOne({ _id: leadId, business: businessId, isDeleted: false });
@@ -367,28 +406,44 @@ const cerrarVenta = async (businessId, leadId, actor, { actualValue, items = [] 
     throw new AppError("Este negocio no tiene una etapa 'ganado' configurada en su Pipeline", 400);
   }
 
+  // ¿Ya está en una etapa ganada de SU pipeline? Entonces solo se registra el monto (ver el comentario de arriba).
+  const etapaActual = pipeline.stages.find((s) => s.key === leadActual.pipelineStage);
+  const yaGanado = Boolean(etapaActual?.isWon);
+  const etapaDestino = yaGanado ? etapaActual : stageGanado;
+  if (yaGanado && items.length > 0) {
+    throw new AppError('Este lead ya estaba ganado: al registrar su monto no se descuenta stock, envía items vacío', 400);
+  }
+
   const ejecutar = async (session) => {
     const opts = session ? { session } : {};
+    const ahora = new Date();
 
     const cerrado = await Lead.findOneAndUpdate(
       { _id: leadId, business: businessId, saleClosedAt: null },
       {
         $set: {
           actualValue,
-          pipelineStage: stageGanado.key,
-          stageChangedAt: new Date(),
-          closeProbability: stageGanado.defaultProbability,
-          saleClosedAt: new Date(),
-          lastContactedAt: new Date(),
+          pipelineStage: etapaDestino.key,
+          closeProbability: etapaDestino.defaultProbability,
+          saleClosedAt: ahora,
+          ...(yaGanado ? {} : { stageChangedAt: ahora, lastContactedAt: ahora }),
         },
         $push: {
-          activity: {
-            type: 'stage_changed',
-            description: `Venta cerrada por ${actor.name}`,
-            performedBy: actor._id,
-            performedByName: actor.name,
-            meta: { from: leadActual.pipelineStage, to: stageGanado.key, actualValue },
-          },
+          activity: yaGanado
+            ? {
+              type: 'updated',
+              description: `Monto registrado por ${actor.name}`,
+              performedBy: actor._id,
+              performedByName: actor.name,
+              meta: { actualValue, stage: etapaDestino.key },
+            }
+            : {
+              type: 'stage_changed',
+              description: `Venta cerrada por ${actor.name}`,
+              performedBy: actor._id,
+              performedByName: actor.name,
+              meta: { from: leadActual.pipelineStage, to: etapaDestino.key, actualValue },
+            },
         },
       },
       { new: true, ...opts }
@@ -397,16 +452,39 @@ const cerrarVenta = async (businessId, leadId, actor, { actualValue, items = [] 
     if (!cerrado) {
       // Otro request ganó la carrera entre la lectura de arriba y este
       // punto — mismo criterio idempotente: devolver el estado ya cerrado,
-      // nunca un error ni un segundo descuento de stock.
+      // nunca un error, un segundo descuento de stock ni una segunda venta.
       return Lead.findOne({ _id: leadId, business: businessId }, null, opts);
     }
 
-    for (const item of items) {
-      if (item.reservationId) {
-        await productInventoryService.confirmarReserva(businessId, item.reservationId, opts);
-      } else {
-        await productInventoryService.descontarStockDirecto(businessId, item, opts);
+    let venta = null;
+    try {
+      venta = await crearVenta(
+        businessId,
+        {
+          leadId,
+          amount: actualValue,
+          origin: 'manual',
+          status: 'confirmed',
+          closedAt: yaGanado ? (leadActual.stageChangedAt || leadActual.updatedAt || ahora) : ahora,
+        },
+        { session }
+      );
+
+      for (const item of items) {
+        if (item.reservationId) {
+          await productInventoryService.confirmarReserva(businessId, item.reservationId, opts);
+        } else {
+          await productInventoryService.descontarStockDirecto(businessId, item, opts);
+        }
       }
+    } catch (error) {
+      // Con transacción, Mongo revierte todo solo. Sin ella (Mongo standalone) el lead ya quedó cerrado: se deshace a mano
+      // para que "si falla la venta, el lead no queda cerrado" valga también ahí.
+      if (!session) {
+        if (venta) await descartarVenta(businessId, venta._id);
+        await deshacerCierre(businessId, leadActual, cerrado);
+      }
+      throw error;
     }
 
     return cerrado;
