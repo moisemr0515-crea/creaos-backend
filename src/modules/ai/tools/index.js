@@ -285,18 +285,38 @@ const updateLeadStage = async (args, { conversation }) => {
   };
 };
 
+// Un id de Mongo son exactamente 24 hex. NO se usa mongoose.isValidObjectId: acepta cualquier texto de 12 caracteres.
+const ES_OBJECT_ID = /^[0-9a-fA-F]{24}$/;
+const esObjectId = (valor) => typeof valor === 'string' && ES_OBJECT_ID.test(valor.trim());
+
+// El modelo a veces inventa un id a partir del nombre del producto (p. ej. "aceite_de_moringa_qhali_kausay"); se corta
+// aquí, antes de Mongo, para que nunca llegue un CastError al modelo ni al log.
+const AVISO_NO_INVENTAR = 'No inventes ni estimes precio ni stock: si no puedes confirmarlo, dile al lead con naturalidad que lo verificarás.';
+const errorProductIdInvalido = (enviado) => ({
+  success: false,
+  error: `El productId "${String(enviado).slice(0, 60)}" no es válido: debe ser el id exacto (24 caracteres) que devolvió search_products. `
+    + `Llama a search_products con el nombre del producto y usa el productId de ese resultado. ${AVISO_NO_INVENTAR}`,
+});
+
 /**
- * Resuelve qué productId usar en check_stock/get_price: el que mandó el
- * modelo en `args` si vino, o si no, el de `conversation.activeProduct`
- * (documento maestro §21) — el que dejó el último search_products exitoso
- * de esta misma conversación. Devuelve '' si ninguno de los dos existe, para
- * que el caller decida el mensaje de error sin repetir esta lógica.
+ * Resuelve qué productId usar en check_stock/get_price/send_product_photos:
+ * el que mandó el modelo en `args` si es un id real, o si no (vacío o
+ * inventado), el de `conversation.activeProduct` (documento maestro §21) — el
+ * que dejó el último search_products exitoso de esta misma conversación.
+ * Devuelve `{ productId }` o `{ error }` (listo para devolver como resultado de
+ * la tool), para que los callers no repitan esta lógica ni su mensaje.
  */
 const resolverProductId = (args, conversation) => {
-  const productId = typeof args?.productId === 'string' ? args.productId.trim() : '';
-  if (productId) return productId;
-  return conversation.activeProduct?.productId ? conversation.activeProduct.productId.toString() : '';
+  const enviado = typeof args?.productId === 'string' ? args.productId.trim() : '';
+  if (esObjectId(enviado)) return { productId: enviado };
+  if (conversation.activeProduct?.productId) return { productId: conversation.activeProduct.productId.toString() };
+  if (enviado) return { error: errorProductIdInvalido(enviado) };
+  return { error: { success: false, error: 'Falta el productId y no hay ningún producto identificado antes en esta conversación. Usa search_products primero.' } };
 };
+
+// Un variantId inventado se trata como "no enviado": para un producto con variantes la tool devuelve la lista
+// (needsVariantSelection) y para uno sin variantes se ignora, igual que ya se hacía con un variantId ausente.
+const resolverVariantId = (args) => (esObjectId(args?.variantId) ? args.variantId.trim() : undefined);
 
 /**
  * search_products() — documento maestro §13/§15. Reusa tal cual
@@ -354,16 +374,14 @@ const searchProducts = async (args, { conversation, business }) => {
  * de inventar un stock, sin duplicar el manejo de errores acá.
  */
 const checkStock = async (args, { conversation, business }) => {
-  const productId = resolverProductId(args, conversation);
-  if (!productId) {
-    return { success: false, error: 'Falta el productId y no hay ningún producto identificado antes en esta conversación. Usa search_products primero.' };
-  }
+  const { productId, error } = resolverProductId(args, conversation);
+  if (error) return error;
 
   // Bloque 4 (§61, 20/sep/2026) — opcional: solo hace falta si
   // search_products devolvió hasVariants:true para este producto (ver su
   // description más abajo). Si el producto no tiene variantes, se ignora
   // sin error (product.service.js#consultarStock() ni siquiera la mira).
-  const variantId = typeof args?.variantId === 'string' ? args.variantId.trim() || undefined : undefined;
+  const variantId = resolverVariantId(args);
 
   const stock = await productService.consultarStock(business._id, productId, variantId);
   return { success: true, ...stock };
@@ -376,13 +394,11 @@ const checkStock = async (args, { conversation, business }) => {
  * executeToolCall().
  */
 const getPrice = async (args, { conversation, business }) => {
-  const productId = resolverProductId(args, conversation);
-  if (!productId) {
-    return { success: false, error: 'Falta el productId y no hay ningún producto identificado antes en esta conversación. Usa search_products primero.' };
-  }
+  const { productId, error } = resolverProductId(args, conversation);
+  if (error) return error;
 
   // Bloque 4 (§61) — mismo criterio opcional que checkStock().
-  const variantId = typeof args?.variantId === 'string' ? args.variantId.trim() || undefined : undefined;
+  const variantId = resolverVariantId(args);
 
   const precio = await productService.consultarPrecio(business._id, productId, variantId);
   return { success: true, ...precio };
@@ -415,8 +431,10 @@ const searchBusinessKnowledge = async (args, { conversation, business }) => {
     return { success: false, error: 'Falta el parámetro "query" (obligatorio).' };
   }
 
-  const productIds = Array.isArray(args?.productIds) && args.productIds.length
-    ? args.productIds.filter((id) => typeof id === 'string' && id.trim()).map((id) => id.trim())
+  // Ids inventados por el modelo se descartan (no llegan a la consulta); si no queda ninguno, se usa el producto activo.
+  const idsEnviados = Array.isArray(args?.productIds) ? args.productIds.filter(esObjectId).map((id) => id.trim()) : [];
+  const productIds = idsEnviados.length
+    ? idsEnviados
     : (conversation.activeProduct?.productId ? [conversation.activeProduct.productId.toString()] : []);
 
   const channelId = conversation.whatsappChannel ? conversation.whatsappChannel.toString() : undefined;
@@ -697,10 +715,8 @@ const sendMedia = async (args, { conversation, business, lead, toolCallId }) => 
  * el mismo comentario en check_stock/get_price).
  */
 const sendProductPhotos = async (args, { conversation, business, lead, toolCallId }) => {
-  const productId = resolverProductId(args, conversation);
-  if (!productId) {
-    return { success: false, error: 'Falta el productId y no hay ningún producto identificado antes en esta conversación. Usa search_products primero.' };
-  }
+  const { productId, error } = resolverProductId(args, conversation);
+  if (error) return error;
 
   const producto = await productService.obtenerProductoActivo(business._id, productId);
 

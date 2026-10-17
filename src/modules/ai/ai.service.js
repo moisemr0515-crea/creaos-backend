@@ -536,7 +536,7 @@ Cuando el lead pida el sitio web, una red social, "las redes" o el contacto digi
   // de las conversaciones (ninguna búsqueda de producto todavía, o negocio
   // sin catálogo) — bloque vacío en ese caso, no un error.
   const bloqueProductoActivo = activeProduct?.productId
-    ? `\nCONTEXTO DE PRODUCTO EN ESTA CONVERSACIÓN:\n- Último producto identificado: "${activeProduct.name}" (búsqueda: "${activeProduct.lastSearchQuery}"). Si el lead sigue preguntando sobre "eso"/precio/stock sin nombrarlo de nuevo, asumí que se refiere a este.\n`
+    ? `\nCONTEXTO DE PRODUCTO EN ESTA CONVERSACIÓN:\n- Último producto identificado: "${activeProduct.name}" (productId: ${activeProduct.productId}; búsqueda: "${activeProduct.lastSearchQuery}"). Para check_stock/get_price/send_product_photos usa ESE productId exacto, nunca uno armado a partir del nombre. Si el lead sigue preguntando sobre "eso"/precio/stock sin nombrarlo de nuevo, asumí que se refiere a este.\n`
     : '';
 
   return `${identidadAgente}
