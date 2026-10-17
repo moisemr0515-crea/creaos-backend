@@ -6,6 +6,7 @@ const Lead = require('../../leads/lead.model');
 // de "referencia viva" que el resto del repo (ver cloudinaryUtil en
 // ai.service.js, gupshup.client.js, etc.).
 const leadService = require('../../leads/lead.service');
+const pipelineService = require('../../pipeline/pipeline.service');
 const notificationService = require('../../admin/notification.service');
 const pushService = require('../../push/push.service');
 // CREA Product Intelligence™ V1.0, Etapa 6/10 — mismo criterio que
@@ -285,18 +286,44 @@ const updateLeadStage = async (args, { conversation }) => {
   };
 };
 
+// Un id de Mongo son exactamente 24 hex. NO se usa mongoose.isValidObjectId: acepta cualquier texto de 12 caracteres.
+const ES_OBJECT_ID = /^[0-9a-fA-F]{24}$/;
+const esObjectId = (valor) => typeof valor === 'string' && ES_OBJECT_ID.test(valor.trim());
+
+// Va dentro del resultado de una tool que falló (executeToolCall cuando lanza, y el id inválido de abajo): el modelo lo lee
+// junto al error, justo cuando la tentación de "rellenar" con un dato inventado es mayor.
+const AVISO_TOOL_FALLIDA = 'La herramienta falló: no inventes ni afirmes como confirmado ningún dato que ella no devolvió '
+  + '(precio, stock, etapa del lead, envío de archivos). Si el lead necesita ese dato, dile con naturalidad que lo verificarás; '
+  + 'si el error indica cómo corregir la llamada (ids o etapas válidas), reintenta con eso.';
+
+// El modelo a veces inventa un id a partir del nombre del producto (p. ej. "aceite_de_moringa_qhali_kausay"); se corta
+// aquí, antes de Mongo, para que nunca llegue un CastError al modelo ni al log.
+const errorProductIdInvalido = (enviado) => ({
+  success: false,
+  error: `El productId "${String(enviado).slice(0, 60)}" no es válido: debe ser el id exacto (24 caracteres) que devolvió search_products. `
+    + 'Llama a search_products con el nombre del producto y usa el productId de ese resultado.',
+  aviso: AVISO_TOOL_FALLIDA,
+});
+
 /**
- * Resuelve qué productId usar en check_stock/get_price: el que mandó el
- * modelo en `args` si vino, o si no, el de `conversation.activeProduct`
- * (documento maestro §21) — el que dejó el último search_products exitoso
- * de esta misma conversación. Devuelve '' si ninguno de los dos existe, para
- * que el caller decida el mensaje de error sin repetir esta lógica.
+ * Resuelve qué productId usar en check_stock/get_price/send_product_photos:
+ * el que mandó el modelo en `args` si es un id real, o si no (vacío o
+ * inventado), el de `conversation.activeProduct` (documento maestro §21) — el
+ * que dejó el último search_products exitoso de esta misma conversación.
+ * Devuelve `{ productId }` o `{ error }` (listo para devolver como resultado de
+ * la tool), para que los callers no repitan esta lógica ni su mensaje.
  */
 const resolverProductId = (args, conversation) => {
-  const productId = typeof args?.productId === 'string' ? args.productId.trim() : '';
-  if (productId) return productId;
-  return conversation.activeProduct?.productId ? conversation.activeProduct.productId.toString() : '';
+  const enviado = typeof args?.productId === 'string' ? args.productId.trim() : '';
+  if (esObjectId(enviado)) return { productId: enviado };
+  if (conversation.activeProduct?.productId) return { productId: conversation.activeProduct.productId.toString() };
+  if (enviado) return { error: errorProductIdInvalido(enviado) };
+  return { error: { success: false, error: 'Falta el productId y no hay ningún producto identificado antes en esta conversación. Usa search_products primero.' } };
 };
+
+// Un variantId inventado se trata como "no enviado": para un producto con variantes la tool devuelve la lista
+// (needsVariantSelection) y para uno sin variantes se ignora, igual que ya se hacía con un variantId ausente.
+const resolverVariantId = (args) => (esObjectId(args?.variantId) ? args.variantId.trim() : undefined);
 
 /**
  * search_products() — documento maestro §13/§15. Reusa tal cual
@@ -354,16 +381,14 @@ const searchProducts = async (args, { conversation, business }) => {
  * de inventar un stock, sin duplicar el manejo de errores acá.
  */
 const checkStock = async (args, { conversation, business }) => {
-  const productId = resolverProductId(args, conversation);
-  if (!productId) {
-    return { success: false, error: 'Falta el productId y no hay ningún producto identificado antes en esta conversación. Usa search_products primero.' };
-  }
+  const { productId, error } = resolverProductId(args, conversation);
+  if (error) return error;
 
   // Bloque 4 (§61, 20/sep/2026) — opcional: solo hace falta si
   // search_products devolvió hasVariants:true para este producto (ver su
   // description más abajo). Si el producto no tiene variantes, se ignora
   // sin error (product.service.js#consultarStock() ni siquiera la mira).
-  const variantId = typeof args?.variantId === 'string' ? args.variantId.trim() || undefined : undefined;
+  const variantId = resolverVariantId(args);
 
   const stock = await productService.consultarStock(business._id, productId, variantId);
   return { success: true, ...stock };
@@ -376,13 +401,11 @@ const checkStock = async (args, { conversation, business }) => {
  * executeToolCall().
  */
 const getPrice = async (args, { conversation, business }) => {
-  const productId = resolverProductId(args, conversation);
-  if (!productId) {
-    return { success: false, error: 'Falta el productId y no hay ningún producto identificado antes en esta conversación. Usa search_products primero.' };
-  }
+  const { productId, error } = resolverProductId(args, conversation);
+  if (error) return error;
 
   // Bloque 4 (§61) — mismo criterio opcional que checkStock().
-  const variantId = typeof args?.variantId === 'string' ? args.variantId.trim() || undefined : undefined;
+  const variantId = resolverVariantId(args);
 
   const precio = await productService.consultarPrecio(business._id, productId, variantId);
   return { success: true, ...precio };
@@ -415,8 +438,10 @@ const searchBusinessKnowledge = async (args, { conversation, business }) => {
     return { success: false, error: 'Falta el parámetro "query" (obligatorio).' };
   }
 
-  const productIds = Array.isArray(args?.productIds) && args.productIds.length
-    ? args.productIds.filter((id) => typeof id === 'string' && id.trim()).map((id) => id.trim())
+  // Ids inventados por el modelo se descartan (no llegan a la consulta); si no queda ninguno, se usa el producto activo.
+  const idsEnviados = Array.isArray(args?.productIds) ? args.productIds.filter(esObjectId).map((id) => id.trim()) : [];
+  const productIds = idsEnviados.length
+    ? idsEnviados
     : (conversation.activeProduct?.productId ? [conversation.activeProduct.productId.toString()] : []);
 
   const channelId = conversation.whatsappChannel ? conversation.whatsappChannel.toString() : undefined;
@@ -697,10 +722,8 @@ const sendMedia = async (args, { conversation, business, lead, toolCallId }) => 
  * el mismo comentario en check_stock/get_price).
  */
 const sendProductPhotos = async (args, { conversation, business, lead, toolCallId }) => {
-  const productId = resolverProductId(args, conversation);
-  if (!productId) {
-    return { success: false, error: 'Falta el productId y no hay ningún producto identificado antes en esta conversación. Usa search_products primero.' };
-  }
+  const { productId, error } = resolverProductId(args, conversation);
+  if (error) return error;
 
   const producto = await productService.obtenerProductoActivo(business._id, productId);
 
@@ -746,6 +769,21 @@ const sendProductPhotos = async (args, { conversation, business, lead, toolCallI
 // pasar a tener la suya propia sin tocar el resto del registro.
 const siempreAutorizada = () => true;
 
+// update_lead_stage: la descripción se arma con una frase del medio que cambia según se conozcan o no las etapas reales
+// del negocio (ver construirToolSchemas). Con ETAPAS_GENERICAS queda byte a byte la descripción de siempre.
+const ETAPAS_GENERICAS =
+  'Etapas típicas: new, contacted, interested, proposal, negotiation, won, lost — pero cada negocio puede tener las ' +
+  'suyas propias; si usas una etapa que no existe para este negocio, el sistema te devuelve la lista de etapas ' +
+  'válidas para que reintentes con la correcta.';
+const descripcionUpdateLeadStage = (frase) =>
+  'Actualiza la etapa del lead en el pipeline de ventas del negocio. Úsala cuando la conversación deja ' +
+  'claro que el lead avanzó a una etapa distinta del proceso comercial (ej. pasó de "interesado" a pedir ' +
+  `una propuesta formal, a negociar condiciones, o decidió no continuar). ${frase} No la uses solo porque el lead hizo una ` +
+  'pregunta — solo ante una señal real de cambio de etapa.';
+const DESCRIPCION_STAGE_GENERICA =
+  'Clave (key) de la etapa destino. Usa la que corresponda al pipeline real de este negocio si la conoces por el ' +
+  'contexto; si no, usa una etapa típica (new, contacted, interested, proposal, negotiation, won, lost).';
+
 /**
  * TOOL_REGISTRY — C.3, Etapa C3.2. Única fuente de verdad de las tools
  * reales (ver el comentario largo al inicio del archivo). `inputSchema` es
@@ -779,20 +817,13 @@ const TOOL_REGISTRY = [
   },
   {
     name: 'update_lead_stage',
-    description:
-      'Actualiza la etapa del lead en el pipeline de ventas del negocio. Úsala cuando la conversación deja ' +
-      'claro que el lead avanzó a una etapa distinta del proceso comercial (ej. pasó de "interesado" a pedir ' +
-      'una propuesta formal, a negociar condiciones, o decidió no continuar). Etapas típicas: new, contacted, ' +
-      'interested, proposal, negotiation, won, lost — pero cada negocio puede tener las suyas propias; si usas ' +
-      'una etapa que no existe para este negocio, el sistema te devuelve la lista de etapas válidas para que ' +
-      'reintentes con la correcta. No la uses solo porque el lead hizo una pregunta — solo ante una señal real ' +
-      'de cambio de etapa.',
+    description: descripcionUpdateLeadStage(ETAPAS_GENERICAS),
     inputSchema: {
       type: 'object',
       properties: {
         stage: {
           type: 'string',
-          description: 'Clave (key) de la etapa destino. Usa la que corresponda al pipeline real de este negocio si la conoces por el contexto; si no, usa una etapa típica (new, contacted, interested, proposal, negotiation, won, lost).',
+          description: DESCRIPCION_STAGE_GENERICA,
         },
         reason: {
           type: 'string',
@@ -1003,6 +1034,51 @@ const TOOL_SCHEMAS = TOOL_REGISTRY.map((tool) => ({
 const TOOL_EXECUTORS = Object.fromEntries(TOOL_REGISTRY.map((tool) => [tool.name, tool.execute]));
 
 /**
+ * Los TOOL_SCHEMAS que se mandan a OpenAI en un turno concreto. Son los de siempre salvo `update_lead_stage`, cuya `stage`
+ * pasa a ser un enum con las etapas REALES del pipeline de este lead (mismo pipeline que valida cambiarEtapa()), para que el
+ * modelo no tenga que adivinarlas ni equivocarse con las "típicas". Fail-soft: si no se pueden leer, quedan los genéricos.
+ */
+const construirToolSchemas = async ({ business, lead }) => {
+  let etapas;
+  try {
+    const pipeline = await pipelineService.obtenerPipelineEfectivo(business._id, lead?.pipeline);
+    etapas = pipeline.stages;
+  } catch (error) {
+    logger.warn(`construirToolSchemas(): no se pudo leer el pipeline, se usan las etapas genéricas: ${error.message}`);
+    return TOOL_SCHEMAS;
+  }
+  if (!etapas?.length) return TOOL_SCHEMAS;
+
+  const claves = etapas.map((e) => e.key);
+  const detalle = etapas.map((e) => (e.name && e.name !== e.key ? `${e.key} (${e.name})` : e.key)).join(', ');
+  return TOOL_SCHEMAS.map((schema) => {
+    if (schema.function.name !== 'update_lead_stage') return schema;
+    const { stage, ...resto } = schema.function.parameters.properties;
+    return {
+      ...schema,
+      function: {
+        ...schema.function,
+        description: descripcionUpdateLeadStage(`Etapas válidas de ESTE negocio (usa SOLO una de estas claves, tal cual): ${detalle}.`),
+        parameters: {
+          ...schema.function.parameters,
+          properties: {
+            stage: { type: 'string', enum: claves, description: 'Clave (key) de la etapa destino: exactamente una de las etapas válidas de este negocio.' },
+            ...resto,
+          },
+        },
+      },
+    };
+  });
+};
+
+// Solo parámetros que el modelo arma él mismo (ids, etapa, recurso): sirven para diagnosticar un fallo y nunca llevan
+// texto del cliente (query, reason). Recortados para que un valor enorme no infle el log.
+const ARGS_LOGUEABLES = ['stage', 'productId', 'variantId', 'resource', 'photo'];
+const argumentosParaLog = (args) => JSON.stringify(
+  Object.fromEntries(ARGS_LOGUEABLES.filter((k) => args?.[k] !== undefined).map((k) => [k, String(args[k]).slice(0, 80)]))
+);
+
+/**
  * Punto de entrada único que usa generateReply() para correr una tool call
  * que pidió el modelo. Nunca lanza — cualquier error (JSON de argumentos
  * inválido, tool desconocida, no autorizada, excepción del executor) se
@@ -1048,9 +1124,9 @@ const executeToolCall = async (toolCall, context) => {
   try {
     return await tool.execute(args, { ...context, toolCallId: toolCall.id });
   } catch (error) {
-    logger.error(`generateReply(): error ejecutando tool ${name}: ${error.message}`);
-    return { success: false, error: `Error ejecutando ${name}: ${error.message}` };
+    logger.error(`generateReply(): error ejecutando tool ${name}: ${error.message} | args: ${argumentosParaLog(args)}`);
+    return { success: false, error: `Error ejecutando ${name}: ${error.message}`, aviso: AVISO_TOOL_FALLIDA };
   }
 };
 
-module.exports = { TOOL_REGISTRY, TOOL_SCHEMAS, TOOL_EXECUTORS, executeToolCall };
+module.exports = { TOOL_REGISTRY, TOOL_SCHEMAS, TOOL_EXECUTORS, construirToolSchemas, executeToolCall };
