@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const Business = require('../businesses/business.model');
 const Lead = require('../leads/lead.model');
 const Pipeline = require('../pipeline/pipeline.model');
+const Sale = require('../sales/sale.model');
 const { obtenerResumen } = require('./stats.service');
 
 const MONGO_URI = 'mongodb://localhost:27017/creaos_test_stats_contadores';
@@ -21,12 +22,12 @@ describe('stats.service — contadores', () => {
   });
 
   afterAll(async () => {
-    await Promise.all([Lead.deleteMany({}), Pipeline.deleteMany({}), Business.deleteMany({})]);
+    await Promise.all([Lead.deleteMany({}), Pipeline.deleteMany({}), Sale.deleteMany({}), Business.deleteMany({})]);
     await mongoose.disconnect();
   });
 
   beforeEach(async () => {
-    await Promise.all([Lead.deleteMany({}), Pipeline.deleteMany({}), Business.deleteMany({})]);
+    await Promise.all([Lead.deleteMany({}), Pipeline.deleteMany({}), Sale.deleteMany({}), Business.deleteMany({})]);
     negocio = await Business.create({ name: 'Negocio Lima', country: 'PE' });
     pipeline = await Pipeline.createDefault(negocio._id, actor);
   });
@@ -42,6 +43,10 @@ describe('stats.service — contadores', () => {
     const { insertedId } = await Lead.collection.insertOne({ ...base, ...extra });
     return insertedId;
   };
+  // Venta de un lead (se inserta directo para controlar closedAt y status sin pasar por el modelo).
+  const venta = (leadId, extra = {}, negocioId = negocio._id) => Sale.collection.insertOne({
+    business: negocioId, lead: leadId, amount: 100, currency: 'PEN', origin: 'manual', status: 'confirmed', closedAt: D('2026-09-11T12:00:00Z'), createdAt: new Date(), ...extra,
+  });
   const contadores = async (query = {}, negocioId = negocio._id) => (await obtenerResumen(negocioId, query, { ahora: AHORA })).contadores;
 
   describe('negocio sin datos', () => {
@@ -117,7 +122,7 @@ describe('stats.service — contadores', () => {
     });
   });
 
-  describe('cierre promedio: días entre la creación y el cierre (stageChangedAt) de los leads ganados', () => {
+  describe('cierre promedio: días entre la creación y el cierre de los leads ganados', () => {
     test('promedio de los ganados con fecha de cierre', async () => {
       await lead({ pipelineStage: 'won', createdAt: D('2026-09-01T12:00:00Z'), stageChangedAt: D('2026-09-11T12:00:00Z') }); // 10 días
       await lead({ pipelineStage: 'won', createdAt: D('2026-09-01T12:00:00Z'), stageChangedAt: D('2026-09-21T12:00:00Z') }); // 20 días
@@ -149,6 +154,75 @@ describe('stats.service — contadores', () => {
       await lead({ pipelineStage: 'won', createdAt: D('2026-09-10T12:00:00Z'), stageChangedAt: D('2026-09-01T12:00:00Z') });
       await lead({ pipelineStage: 'won', createdAt: D('2026-09-01T12:00:00Z'), stageChangedAt: D('2026-09-11T12:00:00Z') }); // 10
       expect((await contadores()).cierrePromedioDias).toBe(5); // (0 + 10) / 2
+    });
+
+    describe('la fecha de cierre es la de su PRIMERA venta confirmada; si no tiene, el último cambio de etapa', () => {
+      const ganado = (extra = {}) => lead({ pipelineStage: 'won', createdAt: D('2026-09-01T12:00:00Z'), stageChangedAt: D('2026-09-30T12:00:00Z'), ...extra });
+
+      test('con venta confirmada manda la venta, no el cambio de etapa (10 días y no 29)', async () => {
+        const id = await ganado();
+        await venta(id, { closedAt: D('2026-09-11T12:00:00Z') });
+        expect((await contadores()).cierrePromedioDias).toBe(10);
+      });
+
+      test('con varias ventas confirmadas, la PRIMERA (la más antigua)', async () => {
+        const id = await ganado();
+        await venta(id, { closedAt: D('2026-09-21T12:00:00Z') });
+        await venta(id, { closedAt: D('2026-09-06T12:00:00Z') }); // la primera: 5 días
+        await venta(id, { closedAt: D('2026-09-16T12:00:00Z') });
+        expect((await contadores()).cierrePromedioDias).toBe(5);
+      });
+
+      test('una venta confirmada con monto 0 también es la fecha de cierre', async () => {
+        const id = await ganado();
+        await venta(id, { amount: 0, closedAt: D('2026-09-04T12:00:00Z') });
+        expect((await contadores()).cierrePromedioDias).toBe(3);
+      });
+
+      test('una venta POR CONFIRMAR no cuenta: se usa el cambio de etapa (también si un dato corrupto le puso fecha)', async () => {
+        const id = await ganado();
+        await venta(id, { status: 'pending', closedAt: null });
+        await venta(id, { status: 'pending', closedAt: D('2026-09-03T12:00:00Z') }); // el modelo no lo permite; se prueba que el estado se filtra
+        expect((await contadores()).cierrePromedioDias).toBe(29);
+      });
+
+      test('sin venta: el último cambio de etapa a ganado (29 días)', async () => {
+        await ganado();
+        expect((await contadores()).cierrePromedioDias).toBe(29);
+      });
+
+      test('mezcla: unos con venta y otros solo con cambio de etapa se promedian juntos', async () => {
+        const conVenta = await ganado();
+        await venta(conVenta, { closedAt: D('2026-09-11T12:00:00Z') }); // 10
+        await ganado(); // 29
+        await ganado({ stageChangedAt: D('2026-09-21T12:00:00Z') }); // 20
+        expect((await contadores()).cierrePromedioDias).toBeCloseTo((10 + 29 + 20) / 3, 10);
+      });
+
+      test('un ganado con venta pero SIN cambio de etapa sí entra (la venta basta)', async () => {
+        const id = await lead({ pipelineStage: 'won', createdAt: D('2026-09-01T12:00:00Z') });
+        await venta(id, { closedAt: D('2026-09-08T12:00:00Z') });
+        expect((await contadores()).cierrePromedioDias).toBe(7);
+      });
+
+      test('una venta anterior a la creación cuenta 0 (nunca negativo)', async () => {
+        const id = await ganado({ createdAt: D('2026-09-20T12:00:00Z') });
+        await venta(id, { closedAt: D('2026-09-01T12:00:00Z') });
+        expect((await contadores()).cierrePromedioDias).toBe(0);
+      });
+
+      test('las ventas de OTRO negocio nunca cuentan (se usa el cambio de etapa)', async () => {
+        const otro = await Business.create({ name: 'Otro negocio', country: 'MX' });
+        const id = await ganado();
+        await venta(id, { closedAt: D('2026-09-03T12:00:00Z') }, otro._id); // mismo lead, venta de otro negocio (dato inválido)
+        expect((await contadores()).cierrePromedioDias).toBe(29);
+      });
+
+      test('la venta de un lead ABIERTO no entra al promedio (solo ganados)', async () => {
+        const abierto = await lead({ pipelineStage: 'contacted', createdAt: D('2026-09-01T12:00:00Z') });
+        await venta(abierto, { closedAt: D('2026-09-02T12:00:00Z') });
+        expect((await contadores()).cierrePromedioDias).toBeNull();
+      });
     });
 
     test('sin ningún ganado con fecha: null (no 0)', async () => {

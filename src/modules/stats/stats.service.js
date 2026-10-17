@@ -56,7 +56,8 @@ const ventasPorMoneda = async (negocioOid, filtro) => {
  *   sinMonto         pendiente de registrar monto, de cualquier fecha: ganados sin ninguna venta confirmada + ventas confirmadas en 0.
  *   enConversaciones leads abiertos (estimado, en la moneda del negocio): total potencial, valor esperado, listos para cerrar y top 5.
  *   contadores       Leads, Calientes, Cerrados, tasa de cierre y cierre promedio, de TODO el historial (no del periodo), con las
- *                    mismas definiciones que la pantalla calculaba con los 20 leads más recientes (ver `contadores` más abajo).
+ *                    mismas definiciones que la pantalla calculaba con los 20 leads más recientes, salvo el cierre promedio (fecha de
+ *                    cierre = su primera venta confirmada, o el último cambio a ganado; ver la consulta de `contadores`).
  */
 const obtenerResumen = async (businessId, query = {}, { ahora = new Date() } = {}) => {
   const negocio = await Business.findById(businessId, 'currency settings.timezone').lean();
@@ -112,11 +113,26 @@ const obtenerResumen = async (businessId, query = {}, { ahora = new Date() } = {
       },
     ]),
     Lead.countDocuments(baseActivos),
-    // Cerrados = leads en una etapa ganada de SU pipeline. Cierre promedio = días entre la creación y el último cambio de etapa
-    // (`stageChangedAt`, el momento en que llegaron a «ganado»), solo de los que tienen esa fecha; un negativo cuenta como 0.
-    // $avg ignora los null: un lead ganado sin stageChangedAt cuenta como cerrado pero no entra al promedio.
+    // Cerrados = leads en una etapa ganada de SU pipeline.
+    // Cierre promedio = días desde la creación del lead hasta su CIERRE. Fecha de cierre = la de su PRIMERA venta confirmada
+    // (`sales.closedAt`, la fecha real y la que se conserva) si existe; si no, el último cambio de etapa a ganado
+    // (`stageChangedAt`). Un cierre anterior a la creación cuenta 0 (nunca negativo). $avg ignora los null: un ganado sin ninguna
+    // de las dos fechas cuenta como cerrado pero no entra al promedio (no se inventa una fecha).
     Lead.aggregate([
       { $match: { ...baseActivos, ...condGanado } },
+      {
+        $lookup: {
+          from: Sale.collection.name,
+          localField: '_id',
+          foreignField: 'lead',
+          pipeline: [
+            { $match: { business: negocioOid, status: 'confirmed' } },
+            { $group: { _id: null, primera: { $min: '$closedAt' } } },
+          ],
+          as: 'ventas',
+        },
+      },
+      { $addFields: { _cierre: { $ifNull: [{ $arrayElemAt: ['$ventas.primera', 0] }, '$stageChangedAt'] } } },
       {
         $group: {
           _id: null,
@@ -124,8 +140,8 @@ const obtenerResumen = async (businessId, query = {}, { ahora = new Date() } = {
           diasPromedio: {
             $avg: {
               $cond: [
-                { $and: [{ $ifNull: ['$stageChangedAt', false] }, { $ifNull: ['$createdAt', false] }] },
-                { $max: [0, { $divide: [{ $subtract: ['$stageChangedAt', '$createdAt'] }, DIA_MS] }] },
+                { $and: [{ $ifNull: ['$_cierre', false] }, { $ifNull: ['$createdAt', false] }] },
+                { $max: [0, { $divide: [{ $subtract: ['$_cierre', '$createdAt'] }, DIA_MS] }] },
                 null,
               ],
             },
@@ -188,7 +204,7 @@ const obtenerResumen = async (businessId, query = {}, { ahora = new Date() } = {
       calientes: resumenAbiertos?.listosParaCerrar ?? 0,
       cerrados: cerradosYCierre[0]?.cerrados ?? 0,
       tasaDeCierre: totalActivos > 0 ? Math.round(((cerradosYCierre[0]?.cerrados ?? 0) / totalActivos) * 100) : 0,
-      // null = no hay ningún lead ganado con fecha de cierre; sin redondear (la pantalla decide cómo mostrarlo).
+      // null = no hay ningún lead ganado con fecha de cierre (ni venta confirmada ni cambio de etapa); sin redondear.
       cierrePromedioDias: cerradosYCierre[0]?.diasPromedio ?? null,
     },
   };
