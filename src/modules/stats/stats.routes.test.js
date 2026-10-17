@@ -71,6 +71,7 @@ describe('GET /api/v1/stats/summary', () => {
       expect(res.status).toBe(403);
       expect(res.body.data).toBeUndefined();
       expect(JSON.stringify(res.body)).not.toMatch(/111|PEN/);
+      expect(JSON.stringify(res.body)).not.toContain('contadores'); // los contadores van con el mismo permiso: Sales y Support no los reciben
     });
 
     test('un rol desconocido sin permisos: 403', async () => {
@@ -87,6 +88,8 @@ describe('GET /api/v1/stats/summary', () => {
       expect(a.enConversaciones.totalPotencial).toBe(100);
       expect(b.vendido.porMoneda).toEqual([expect.objectContaining({ currency: 'MXN', total: 999 })]);
       expect(b.enConversaciones.totalPotencial).toBe(5000);
+      expect(a.contadores.leads).toBe(1); // un lead en cada negocio
+      expect(b.contadores.leads).toBe(1);
     });
 
     test('un businessId / tenantId en la query o cabeceras NO cambia de negocio', async () => {
@@ -127,7 +130,8 @@ describe('GET /api/v1/stats/summary', () => {
 
   test('la respuesta trae la forma que usará la pantalla', async () => {
     const r = (await get(negocioA, 'owner')).body.data.resumen;
-    expect(Object.keys(r).sort()).toEqual(['businessCurrency', 'enConversaciones', 'period', 'porConfirmar', 'sinMonto', 'vendido']);
+    expect(Object.keys(r).sort()).toEqual(['businessCurrency', 'contadores', 'enConversaciones', 'period', 'porConfirmar', 'sinMonto', 'vendido']);
+    expect(Object.keys(r.contadores).sort()).toEqual(['calientes', 'cerrados', 'cierrePromedioDias', 'leads', 'tasaDeCierre']);
     expect(r.businessCurrency).toBe('PEN');
     expect(Object.keys(r.enConversaciones).sort()).toEqual(['count', 'listosParaCerrar', 'top', 'totalPotencial', 'valorEsperado']);
   });
