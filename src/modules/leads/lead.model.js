@@ -100,7 +100,10 @@ const leadSchema = new mongoose.Schema(
     // para esos leads. Ver el comentario de cerrarVenta() para el filtro
     // atómico que usa este campo.
     saleClosedAt: { type: Date, default: null },
-    currency: { type: String, default: 'USD', uppercase: true },
+    // DEPRECADO como fuente de verdad: toda cantidad de dinero se lee en la moneda del NEGOCIO (Business.currency). Los leads
+    // antiguos guardan 'USD' por el default que tenía este campo y NO se migraron: por eso nadie debe leer este campo para
+    // mostrar un importe. El default pasa a null para no seguir generando valores falsos en los leads nuevos.
+    currency: { type: String, default: null, uppercase: true },
     closeProbability: { type: Number, min: 0, max: 100, default: 0 },
     assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     assignedToName: String,

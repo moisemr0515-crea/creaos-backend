@@ -5,6 +5,7 @@ const Lead = require('../leads/lead.model');
 const Pipeline = require('../pipeline/pipeline.model');
 const { AppError } = require('../../middleware/error.middleware');
 const logger = require('../../utils/logger');
+const { formatearImporte } = require('../../utils/money');
 const { OPENAI_API_KEY, OPENAI_MODEL } = require('../../config/env');
 
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
@@ -141,6 +142,7 @@ const formatearListaLeads = (items, extra) =>
     .join('\n') || '(ninguno)';
 
 const construirPromptDatos = (business, datos) => {
+  // Criterio único: los importes están en la moneda del NEGOCIO (Lead.currency ya no es fuente de verdad).
   const infoNegocio = [
     business.productDescription && `- Qué vende: ${business.productDescription}`,
     business.industry && `- Rubro: ${business.industry}`,
@@ -160,7 +162,7 @@ LEADS ESTANCADOS (más de ${UMBRAL_DIAS_ESTANCADO} días en la misma etapa del p
 ${formatearListaLeads(datos.estancados, (lead, dias) => `${dias} días en "${lead.pipelineStage}"`)}
 
 OPORTUNIDADES CERCA DE CERRAR (probabilidad de cierre ≥ ${UMBRAL_PROBABILIDAD_CERCA_DE_CERRAR}%):
-${formatearListaLeads(datos.cercaDeCerrar, (lead) => `${lead.closeProbability}% de probabilidad${lead.potentialValue ? `, $${lead.potentialValue} ${lead.currency || 'USD'}` : ''}`)}`;
+${formatearListaLeads(datos.cercaDeCerrar, (lead) => `${lead.closeProbability}% de probabilidad${lead.potentialValue ? `, ${formatearImporte(lead.potentialValue, business.currency)}` : ''}`)}`;
 };
 
 const SYSTEM_PROMPT = `Eres un coach de ventas experto que genera la "Misión del Día" para el dueño de un pequeño negocio dentro de un CRM. Tu trabajo es proponer exactamente 3 misiones ACCIONABLES y ESPECÍFICAS para hoy, basadas ÚNICAMENTE en los datos reales de leads que se te dan — nunca des consejos genéricos de industria ("mejora tu marketing", "haz seguimiento a tus clientes") si hay datos concretos disponibles para ser específico (nombres de leads, días de inactividad, etapas, probabilidades).
@@ -290,4 +292,6 @@ module.exports = {
   obtenerFechaDeHoy,
   recopilarDatosDeLeads,
   generarMisiones,
+  // Exportado para tests (la moneda del prompt de la misión).
+  construirPromptDatos,
 };

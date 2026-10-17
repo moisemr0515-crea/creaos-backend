@@ -20,6 +20,7 @@ const cloudinaryUtil = require('../../utils/cloudinary');
 const logger = require('../../utils/logger');
 const { TOOL_SCHEMAS, executeToolCall } = require('./tools');
 const { aWhatsApp } = require('../../utils/whatsappFormat');
+const { formatearImporte } = require('../../utils/money');
 // C.3 — Architecture & Agent Runtime V1, Etapa C3.1 (Runtime Contract) —
 // mismo paquete que ya usa webhook.controller.js para generar
 // correlationId, ver runAgent() más abajo.
@@ -511,7 +512,7 @@ Cuando el lead pida el sitio web, una red social, "las redes" o el contacto digi
     // su línea. No es un bug de transporte, era una omisión: la línea de
     // interpolación nunca se escribió.
     business.averageTicket &&
-      `- Ticket promedio: ${business.averageTicket} ${business.currency || ''}`.trim(),
+      `- Ticket promedio: ${formatearImporte(business.averageTicket, business.currency)}`,
     // Se usa el resumen (barato en tokens) en vez del texto completo del PDF;
     // pdfExtractedText queda como fallback para PDFs subidos antes de tener resumen
     (business.pdfSummary || business.pdfExtractedText) &&
@@ -549,7 +550,7 @@ INFORMACIÓN DEL LEAD:
 - Empresa: ${lead.company || 'No especificada'}
 - Temperatura actual: ${lead.temperature || 'cold'}
 - Etapa del pipeline: ${lead.pipelineStage || 'new'}
-- Valor potencial: ${lead.potentialValue ? `$${lead.potentialValue} ${lead.currency || 'USD'}` : 'No definido'}
+- Valor potencial: ${lead.potentialValue ? formatearImporte(lead.potentialValue, business.currency) : 'No definido'}
 ${bloqueProductoActivo}
 INSTRUCCIONES:
 1. Responde siempre en el mismo idioma que el usuario
