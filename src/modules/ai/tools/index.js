@@ -290,13 +290,19 @@ const updateLeadStage = async (args, { conversation }) => {
 const ES_OBJECT_ID = /^[0-9a-fA-F]{24}$/;
 const esObjectId = (valor) => typeof valor === 'string' && ES_OBJECT_ID.test(valor.trim());
 
+// Va dentro del resultado de una tool que falló (executeToolCall cuando lanza, y el id inválido de abajo): el modelo lo lee
+// junto al error, justo cuando la tentación de "rellenar" con un dato inventado es mayor.
+const AVISO_TOOL_FALLIDA = 'La herramienta falló: no inventes ni afirmes como confirmado ningún dato que ella no devolvió '
+  + '(precio, stock, etapa del lead, envío de archivos). Si el lead necesita ese dato, dile con naturalidad que lo verificarás; '
+  + 'si el error indica cómo corregir la llamada (ids o etapas válidas), reintenta con eso.';
+
 // El modelo a veces inventa un id a partir del nombre del producto (p. ej. "aceite_de_moringa_qhali_kausay"); se corta
 // aquí, antes de Mongo, para que nunca llegue un CastError al modelo ni al log.
-const AVISO_NO_INVENTAR = 'No inventes ni estimes precio ni stock: si no puedes confirmarlo, dile al lead con naturalidad que lo verificarás.';
 const errorProductIdInvalido = (enviado) => ({
   success: false,
   error: `El productId "${String(enviado).slice(0, 60)}" no es válido: debe ser el id exacto (24 caracteres) que devolvió search_products. `
-    + `Llama a search_products con el nombre del producto y usa el productId de ese resultado. ${AVISO_NO_INVENTAR}`,
+    + 'Llama a search_products con el nombre del producto y usa el productId de ese resultado.',
+  aviso: AVISO_TOOL_FALLIDA,
 });
 
 /**
@@ -1119,7 +1125,7 @@ const executeToolCall = async (toolCall, context) => {
     return await tool.execute(args, { ...context, toolCallId: toolCall.id });
   } catch (error) {
     logger.error(`generateReply(): error ejecutando tool ${name}: ${error.message} | args: ${argumentosParaLog(args)}`);
-    return { success: false, error: `Error ejecutando ${name}: ${error.message}` };
+    return { success: false, error: `Error ejecutando ${name}: ${error.message}`, aviso: AVISO_TOOL_FALLIDA };
   }
 };
 
