@@ -178,7 +178,7 @@ const businessSchema = new mongoose.Schema(
       trim: true,
       default: 'PE',
     },
-    // Moneda por defecto DERIVADA del país (currencyByCountry.js): antes era 'MXN' fijo desde el primer commit
+    // Moneda por defecto DERIVADA del país del negocio (currencyByCountry.js; país sin tabla ⇒ null, nunca USD/MXN): antes era 'MXN' fijo desde el primer commit
     // (28/jun/2026) y todo negocio nuevo —con país 'PE'— nacía en pesos mexicanos sin que nadie lo eligiera. `country`
     // está definido ANTES que este campo para que `this.country` ya tenga su valor al calcular el default. Solo aplica
     // al crear; no toca los documentos existentes.

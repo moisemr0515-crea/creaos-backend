@@ -1,8 +1,16 @@
 const mongoose = require('mongoose');
 const Lead         = require('../leads/lead.model');
 const Conversation = require('../ai/conversation.model');
+const Business     = require('../businesses/business.model');
+const { normalizarMoneda } = require('../../utils/money');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+// Moneda del NEGOCIO (única fuente de verdad); Lead.currency se ignora. Sin moneda ⇒ '' (no se inventa ninguna).
+const monedaDelNegocio = async (businessId) => {
+  const negocio = await Business.findById(businessId).select('currency').lean();
+  return normalizarMoneda(negocio?.currency);
+};
 
 const buildDateFilter = (startDate, endDate) => {
   const filter = {};
@@ -48,7 +56,7 @@ const getLeadsReport = async (businessId, { startDate, endDate, source, stage, p
       .skip(skip)
       .limit(lim)
       .populate('assignedTo', 'name')
-      .select('name email phone company source pipelineStage temperature tags potentialValue currency assignedTo createdAt'),
+      .select('name email phone company source pipelineStage temperature tags potentialValue assignedTo createdAt'),
     Lead.countDocuments(match),
     Lead.aggregate([
       { $match: match },
@@ -66,8 +74,10 @@ const getLeadsReport = async (businessId, { startDate, endDate, source, stage, p
 
   const toMap = (arr) => arr.reduce((acc, { _id, count }) => ({ ...acc, [_id || 'unknown']: count }), {});
 
+  const moneda = await monedaDelNegocio(id);
+
   return {
-    leads,
+    leads: leads.map((l) => ({ ...l.toObject(), currency: moneda })),
     summary: {
       total,
       bySource:      toMap(bySource),
@@ -224,7 +234,9 @@ const exportLeadsCSV = async (businessId, { startDate, endDate, source, stage } 
     .sort({ createdAt: -1 })
     .limit(10000)
     .populate('assignedTo', 'name')
-    .select('name email phone company source pipelineStage temperature tags potentialValue currency assignedTo createdAt');
+    .select('name email phone company source pipelineStage temperature tags potentialValue assignedTo createdAt');
+
+  const moneda = await monedaDelNegocio(id);
 
   const rows = leads.map((l) => ({
     name:          l.name,
@@ -236,7 +248,7 @@ const exportLeadsCSV = async (businessId, { startDate, endDate, source, stage } 
     temperature:   l.temperature,
     tags:          (l.tags || []).join('; '),
     potentialValue: l.potentialValue || 0,
-    currency:      l.currency,
+    currency:      moneda,
     assignedTo:    l.assignedTo?.name || '',
     createdAt:     l.createdAt ? l.createdAt.toISOString().slice(0, 10) : '',
   }));

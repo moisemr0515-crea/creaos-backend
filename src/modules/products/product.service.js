@@ -21,7 +21,7 @@ const { destroyAssetOrRecordPending } = require('./assetCleanup.service');
 
 /**
  * Resuelve la moneda a mostrar: la propia del producto si está seteada, o
- * si no, la del negocio (`business.currency`, default 'MXN' — nunca un
+ * si no, la del negocio (`business.currency`, que por defecto sale del país del negocio — nunca un
  * literal hardcodeado acá). Documento maestro §5.1: "currency por default
  * desde la config del tenant".
  */
