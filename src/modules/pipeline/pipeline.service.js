@@ -210,6 +210,8 @@ const obtenerTablero = async (businessId, pipelineId, search) => {
 };
 
 module.exports = {
+  // Fórmula de probabilidad de cierre (closeProbability, o por temperatura si falta): la reusa Estadísticas.
+  EXPR_PROBABILIDAD,
   obtenerOCrearDefault,
   obtenerPipelineEfectivo,
   validarStageEnPipeline,
