@@ -36,3 +36,9 @@ El campo se conserva en el esquema y los validadores (compatibilidad), pero ning
 - El formato es `500 PEN` (código ISO tras el número), pensado para texto que lee la IA o un reporte; la pantalla del frontend usa su propio formateador (rama `fix/moneda-universal-frontend`).
 - No cubierto aquí: precios de planes/suscripción (`subscription.service.js`: conversión `price*1000` a ARS cuando falta `price_ars`) — dominio distinto, queda como pendiente.
 - **No pude verificar:** el comportamiento con la IA real (los tests comprueban el texto del prompt, no la respuesta del modelo) ni datos reales de Atlas (cuántos leads/negocios hay con cada moneda).
+
+## Actualización (16-oct-2026): sin valores ocultos
+Confirmado por el dueño: los únicos negocios reales son **CREA OS** y **NUTRIVA**; el resto son cuentas de prueba. Criterio reforzado: **la moneda sale de la configuración de cada negocio, sin valores predeterminados ocultos como USD o MXN.**
+- `monedaPorPais(país)` ya **no** devuelve `'USD'` para un país fuera de la tabla: devuelve `null`. Un negocio de un país sin tabla queda **sin moneda** hasta que la configure (el agente y los reportes omiten la moneda; la interfaz muestra «—»). `MONEDA_DE_REFERENCIA` se eliminó.
+- La tabla PE→PEN, MX→MXN, CO→COP, AR→ARS, US/EC/PA/SV→USD sigue siendo un valor derivado del **país configurado del negocio** (no un valor oculto), y solo se aplica al crear un negocio nuevo.
+- Los datos existentes no se tocan. Qué moneda tienen hoy CREA OS y NUTRIVA **no se pudo verificar desde aquí** (este equipo solo apunta a una base local): ver el procedimiento de solo lectura en el informe de integración.

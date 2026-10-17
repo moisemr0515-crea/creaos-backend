@@ -1,5 +1,5 @@
 // Moneda por defecto derivada del país: función pura, universal y sin casos por tenant.
-const { monedaPorPais, MONEDA_POR_PAIS, MONEDA_DE_REFERENCIA } = require('./currencyByCountry');
+const { monedaPorPais, MONEDA_POR_PAIS } = require('./currencyByCountry');
 const Business = require('./business.model');
 
 describe('monedaPorPais (pura)', () => {
@@ -8,13 +8,13 @@ describe('monedaPorPais (pura)', () => {
     ['pe', 'PEN'], [' mx ', 'MXN'],
   ])('%s → %s', (pais, moneda) => expect(monedaPorPais(pais)).toBe(moneda));
 
-  test.each([[undefined], [null], [''], ['  '], ['ZZ'], ['CL'], [123], [{}]])('país no reconocido (%p) → moneda de referencia', (pais) => {
-    expect(monedaPorPais(pais)).toBe(MONEDA_DE_REFERENCIA);
+  test.each([[undefined], [null], [''], ['  '], ['ZZ'], ['CL'], [123], [{}]])('país no reconocido (%p) → null (sin moneda inventada)', (pais) => {
+    expect(monedaPorPais(pais)).toBeNull();
   });
 
   test('solo devuelve monedas que el selector de «Mi negocio» sabe mostrar', () => {
     const selector = ['PEN', 'USD', 'MXN', 'ARS', 'COP'];
-    Object.values(MONEDA_POR_PAIS).concat(MONEDA_DE_REFERENCIA).forEach((m) => expect(selector).toContain(m));
+    Object.values(MONEDA_POR_PAIS).forEach((m) => expect(selector).toContain(m));
   });
 });
 
@@ -31,8 +31,8 @@ describe('Business.currency — default derivado del país (sin base de datos)',
     expect(new Business({ name: 'Negocio US', country: 'US' }).currency).toBe('USD');
   });
 
-  test('país fuera de la tabla ⇒ moneda de referencia', () => {
-    expect(new Business({ name: 'Negocio CL', country: 'CL' }).currency).toBe('USD');
+  test('país fuera de la tabla ⇒ sin moneda (null): no se inventa USD ni MXN', () => {
+    expect(new Business({ name: 'Negocio CL', country: 'CL' }).currency).toBeNull();
   });
 
   test('una moneda explícita siempre se respeta (y se normaliza a mayúsculas)', () => {
