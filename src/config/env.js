@@ -330,6 +330,9 @@ module.exports = {
   // (la mensajería existente no depende de esto).
   GUPSHUP_PARTNER_EMAIL:  process.env.GUPSHUP_PARTNER_EMAIL || '',
   GUPSHUP_PARTNER_SECRET: process.env.GUPSHUP_PARTNER_SECRET || '',
+  // Diagnóstico (informe 57): registra solo los 5 indicadores no secretos del login de socio al renovar el token.
+  // Interruptor: "false" lo apaga sin tocar la autenticación (se apaga una vez capturados los valores).
+  GUPSHUP_INDICADORES_SOCIO_LOG_ENABLED: process.env.GUPSHUP_INDICADORES_SOCIO_LOG_ENABLED !== 'false',
 
   // Incidente del 04/sep/2026 (docs/implementation/known-issues.md, Bug 3):
   // secreto PROPIO y SEPARADO de GUPSHUP_WEBHOOK_TOKEN (arriba), exclusivo

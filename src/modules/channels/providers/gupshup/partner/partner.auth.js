@@ -14,7 +14,58 @@ const { mapPartnerError } = require('./partner.errors');
 const { getRedis } = require('../../../../../config/redis');
 const logger = require('../../../../../utils/logger');
 const { AppError } = require('../../../../../middleware/error.middleware');
-const { GUPSHUP_PARTNER_EMAIL, GUPSHUP_PARTNER_SECRET } = require('../../../../../config/env');
+const {
+  GUPSHUP_PARTNER_EMAIL, GUPSHUP_PARTNER_SECRET, GUPSHUP_INDICADORES_SOCIO_LOG_ENABLED,
+} = require('../../../../../config/env');
+
+// Diagnóstico de elegibilidad (informe 57): registra ÚNICAMENTE estos cinco indicadores no secretos del socio,
+// en la renovación natural del token. Nunca el JWT, credenciales ni la respuesta completa. Se apaga con
+// GUPSHUP_INDICADORES_SOCIO_LOG_ENABLED=false sin afectar la autenticación.
+const INDICADORES_SOCIO = ['isTpp', 'onboardEnabled', 'enableAppOnboarding', 'enableWallet', 'billingType'];
+const BILLING_TYPES_RECONOCIDOS = ['PREPAID', 'POSTPAID']; // lista cerrada: cualquier otro valor se registra como 'inesperado'
+const NOMBRE_SEGURO = /^[A-Za-z_]{1,20}$/;
+
+// La documentación los muestra en la raíz de la respuesta, pero no se asume: se busca en la raíz y, si no
+// está, UN solo nivel dentro de objetos hijos (nunca más profundo, nunca en arreglos).
+function localizarIndicador(raw, clave) {
+  if (!raw || typeof raw !== 'object') return { valor: undefined, ubicacion: null };
+  if (Object.prototype.hasOwnProperty.call(raw, clave)) return { valor: raw[clave], ubicacion: 'raiz' };
+  for (const [contenedor, hijo] of Object.entries(raw)) {
+    if (hijo && typeof hijo === 'object' && !Array.isArray(hijo) && Object.prototype.hasOwnProperty.call(hijo, clave)) {
+      return { valor: hijo[clave], ubicacion: NOMBRE_SEGURO.test(contenedor) ? contenedor : 'otro' };
+    }
+  }
+  return { valor: undefined, ubicacion: null };
+}
+
+// Solo salen valores de un conjunto cerrado (booleano, o un tipo de facturación reconocido). Todo lo demás
+// se sustituye por una marca fija: jamás se copia un valor arbitrario.
+function valorSeguro(clave, valor) {
+  if (valor === undefined || valor === null) return 'ausente';
+  if (clave === 'billingType') {
+    const canonico = typeof valor === 'string' ? valor.toUpperCase() : null;
+    return BILLING_TYPES_RECONOCIDOS.includes(canonico) ? canonico : 'inesperado';
+  }
+  return typeof valor === 'boolean' ? valor : 'inesperado';
+}
+
+function registrarIndicadoresSocio(raw) {
+  try {
+    if (!GUPSHUP_INDICADORES_SOCIO_LOG_ENABLED) return;
+    const salida = {};
+    const fueraDeLaRaiz = {};
+    for (const clave of INDICADORES_SOCIO) {
+      const { valor, ubicacion } = localizarIndicador(raw, clave);
+      salida[clave] = valorSeguro(clave, valor);
+      if (ubicacion && ubicacion !== 'raiz') fueraDeLaRaiz[clave] = ubicacion;
+    }
+    // Solo aparece si algún indicador NO vino en la raíz (para corregir la lectura); es el nombre del contenedor, no un dato.
+    if (Object.keys(fueraDeLaRaiz).length) salida.ubicacionNoRaiz = fueraDeLaRaiz;
+    logger.info('[partner.auth] indicadores del socio (solo 5 campos)', salida);
+  } catch {
+    // El registro de diagnóstico nunca debe afectar al inicio de sesión.
+  }
+}
 
 const REDIS_KEY = 'partner:gupshup:auth';
 const TOKEN_TTL_SECONDS = 23 * 60 * 60; // 23h — expiry real documentado: 24h
@@ -78,7 +129,8 @@ async function getValidToken() {
     throw new AppError('GUPSHUP_PARTNER_EMAIL/GUPSHUP_PARTNER_SECRET no configurados', 500);
   }
 
-  const { token } = await login(GUPSHUP_PARTNER_EMAIL, GUPSHUP_PARTNER_SECRET);
+  const { token, raw } = await login(GUPSHUP_PARTNER_EMAIL, GUPSHUP_PARTNER_SECRET);
+  registrarIndicadoresSocio(raw);
 
   try {
     const redis = getRedis();
