@@ -3,6 +3,14 @@ const channelService = require('../channels/channel.service');
 const Conversation = require('../ai/conversation.model');
 const Business = require('../businesses/business.model');
 const { AppError } = require('../../middleware/error.middleware');
+const { obtenerMetricasDeWhatsapp } = require('./whatsapp.metrics.service');
+
+// Misma regla que lead.controller.js#soloVePropios: leads:own restringe a los leads propios (Ventas). Sin usuario ⇒ restringido.
+const soloVePropios = (user) => {
+  if (!user) return true;
+  const perms = user.role?.permissions || [];
+  return user.role?.slug !== 'superadmin' && perms.includes('leads:own');
+};
 
 // ─── GET /api/v1/whatsapp/status ──────────────────────────────────────────────
 // Fase 1.1 (Provider Abstraction): reemplaza la llamada directa a
@@ -23,15 +31,17 @@ const getStatus = async (req, res, next) => {
     if (!channel) {
       return respuestaExito(res, {
         message: 'Estado del canal de WhatsApp obtenido',
-        data: { connected: false, provider: 'gupshup', phoneNumber: null },
+        data: { connected: false, provider: 'gupshup', phoneNumber: null, connectedAt: null, leadsReceived: null, lastActivityAt: null },
       });
     }
 
     const status = await channelService.getChannelStatus(channel._id, req.businessId);
+    // Métricas de TODO el negocio solo para quien no está restringido a sus propios leads (leads:own); sin usuario, restringido.
+    const metricas = await obtenerMetricasDeWhatsapp(req.businessId, channel, { negocioCompleto: !soloVePropios(req.user) });
 
     return respuestaExito(res, {
       message: 'Estado del canal de WhatsApp obtenido',
-      data: status,
+      data: { ...status, ...metricas },
     });
   } catch (err) {
     next(err);
