@@ -40,6 +40,17 @@ function nombreAppUnico(tenantId, sessionId) {
   return `${APP_NAME_PREFIX}${tenantId}x${String(sessionId).slice(-8)}`;
 }
 
+// Número que esta conexión debe terminar teniendo. Flujo clásico: el que Meta devolvió en la ventana de CREA OS.
+// Modo enlace único: el que declaró el cliente. En sesiones clásicas `declaredPhone` no existe, así que el
+// comportamiento es idéntico al de antes.
+function telefonoEsperado(session) {
+  return session?.meta?.phoneNumber || session?.declaredPhone || null;
+}
+
+function esModoEnlace(session) {
+  return session?.mode === 'gupshup_link';
+}
+
 function normalizarTelefono(value) {
   return String(value ?? '').replace(/\D/g, '');
 }
@@ -65,7 +76,7 @@ function esAppNoLive(err) {
  * @returns {Promise<{ seguro: boolean, motivo?: string }>}
  */
 async function evaluarAppLocal({ appId, session, tenantId }) {
-  const telefono = session.meta?.phoneNumber;
+  const telefono = telefonoEsperado(session);
 
   const [canalAjeno, sesionAjena] = await Promise.all([
     WhatsAppChannel.exists({ providerAppId: appId, tenantId: { $ne: tenantId } }),
@@ -83,8 +94,8 @@ async function evaluarAppLocal({ appId, session, tenantId }) {
     _id: { $ne: session._id },
     'gupshup.appId': appId,
     status: { $in: ['gupshup_registering', 'completing'] },
-  }).select('meta.phoneNumber').lean();
-  if (enVuelo.some((s) => s.meta?.phoneNumber && !telefonosCoinciden(s.meta.phoneNumber, telefono))) {
+  }).select('meta.phoneNumber declaredPhone').lean();
+  if (enVuelo.some((s) => telefonoEsperado(s) && !telefonosCoinciden(telefonoEsperado(s), telefono))) {
     return { seguro: false, motivo: 'app_reservada_por_sesion_en_curso_de_otro_numero' };
   }
 
@@ -103,7 +114,7 @@ async function evaluarAppRemota({ appId, session, token }) {
   try {
     const info = await partnerApps.getWabaInfo(appId, apikey);
     if (!info || !info.phone) return { seguro: true, live: false };
-    if (telefonosCoinciden(info.phone, session.meta?.phoneNumber)) return { seguro: true, live: true };
+    if (telefonosCoinciden(info.phone, telefonoEsperado(session))) return { seguro: true, live: true };
     return {
       seguro: false,
       live: true,
@@ -233,6 +244,8 @@ async function seleccionarOCrearApp({ session, tenantId, token }) {
 }
 
 module.exports = {
+  telefonoEsperado,
+  esModoEnlace,
   nombreAppGupshup,
   nombreAppUnico,
   normalizarTelefono,

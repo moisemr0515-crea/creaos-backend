@@ -40,6 +40,7 @@ const STATUSES = [
 ];
 
 const PROVIDERS = ['gupshup'];
+const MODES = ['meta_then_link', 'gupshup_link'];
 
 const EXPIRACION_MS = 30 * 60 * 1000; // 30 minutos — ventana esperada para completar el popup de Meta
 
@@ -105,6 +106,16 @@ const channelOnboardingSessionSchema = new mongoose.Schema(
       required: true,
       default: () => crypto.randomBytes(24).toString('hex'),
     },
+
+    // Cómo se autoriza esta conexión. Ausente = 'meta_then_link' (flujo clásico: ventana de Meta de CREA OS y
+    // después el enlace de Gupshup). 'gupshup_link' (informes 68/69): UNA sola ventana, la del enlace firmado de
+    // Gupshup; CREA OS no conoce el número hasta que la app queda Live, por eso se guarda el que declaró el cliente
+    // (`declaredPhone`, E.164) y la conciliación solo activa si Gupshup confirma ESE mismo número.
+    mode: { type: String, enum: MODES },
+    declaredPhone: { type: String, default: null },
+    // Arrendamiento de POST /embedded-signup/start: evita que dos solicitudes simultáneas ejecuten los pasos de
+    // Gupshup (app, suscripciones, enlace) a la vez sobre la misma sesión.
+    startLeaseUntil: { type: Date, default: null },
 
     // Se puebla recién cuando el WhatsAppChannel real existe (Decisión 7)
     // — ausente (undefined) durante todo el tramo initiated →
@@ -215,5 +226,6 @@ channelOnboardingSessionSchema.index({ channel: 1 }, { unique: true, sparse: tru
 module.exports = mongoose.model('ChannelOnboardingSession', channelOnboardingSessionSchema);
 module.exports.STATUSES = STATUSES;
 module.exports.PROVIDERS = PROVIDERS;
+module.exports.MODES = MODES;
 module.exports.GUPSHUP_PHASE_WINDOW_MS = GUPSHUP_PHASE_WINDOW_MS;
 module.exports.RECONCILE_INITIAL_STATE = RECONCILE_INITIAL_STATE;

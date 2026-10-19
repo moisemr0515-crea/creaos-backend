@@ -334,6 +334,14 @@ module.exports = {
   // Interruptor: "false" lo apaga sin tocar la autenticación (se apaga una vez capturados los valores).
   GUPSHUP_INDICADORES_SOCIO_LOG_ENABLED: process.env.GUPSHUP_INDICADORES_SOCIO_LOG_ENABLED !== 'false',
 
+  // Onboarding de WhatsApp en «modo enlace único» (informes 68/69): el cliente se autoriza UNA sola vez, en el
+  // enlace firmado de Gupshup, sin la ventana previa de Meta de CREA OS. DESACTIVADO por defecto: solo con
+  // ONBOARDING_LINK_MODE_ENABLED=true. ONBOARDING_LINK_MODE_TENANTS (ids separados por coma) limita el modo a
+  // esos negocios; vacío = todos los negocios (solo cuando el interruptor está activo).
+  ONBOARDING_LINK_MODE_ENABLED: process.env.ONBOARDING_LINK_MODE_ENABLED === 'true',
+  ONBOARDING_LINK_MODE_TENANTS: (process.env.ONBOARDING_LINK_MODE_TENANTS || '')
+    .split(',').map((id) => id.trim()).filter(Boolean),
+
   // Incidente del 04/sep/2026 (docs/implementation/known-issues.md, Bug 3):
   // secreto PROPIO y SEPARADO de GUPSHUP_WEBHOOK_TOKEN (arriba), exclusivo
   // de la ruta nueva /api/v1/webhooks/gupshup/onboarding/:appId

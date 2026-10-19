@@ -37,7 +37,11 @@ const ACCIONES = Object.freeze({
 
 const STATUS_META_INCOMPLETA = ['initiated', 'exchanging_code', 'meta_authorized', 'resolving_number'];
 
-const tieneAutorizacionMeta = (s) => Boolean(s.meta?.wabaId && s.meta?.phoneNumberId && s.meta?.phoneNumber && s.meta?.accessTokenCipher);
+// Modo enlace único: no hay autorización de Meta propia; la base de la conexión es el número declarado.
+const esModoEnlace = (s) => s.mode === 'gupshup_link';
+const tieneAutorizacionMeta = (s) => (esModoEnlace(s)
+  ? Boolean(s.declaredPhone)
+  : Boolean(s.meta?.wabaId && s.meta?.phoneNumberId && s.meta?.phoneNumber && s.meta?.accessTokenCipher));
 
 // Condiciones de seguridad en las que el barrido se detuvo -> qué le toca hacer al cliente.
 const RAZONES_DETENCION = {
@@ -49,7 +53,10 @@ const RAZONES_DETENCION = {
 };
 
 function clasificar(s, ahora) {
-  const base = { sessionId: String(s._id), status: s.status, phoneNumber: s.meta?.phoneNumber || null, expiresAt: s.expiresAt || null };
+  const base = {
+    sessionId: String(s._id), status: s.status, phoneNumber: s.meta?.phoneNumber || s.declaredPhone || null, expiresAt: s.expiresAt || null,
+    mode: esModoEnlace(s) ? 'gupshup_link' : 'meta_then_link',
+  };
 
   if (s.status === 'completed') return null; // conectado: lo informa /whatsapp/status, no hay nada en curso
 
