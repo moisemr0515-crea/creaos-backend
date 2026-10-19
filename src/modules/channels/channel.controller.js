@@ -876,11 +876,11 @@ const getCurrentEmbeddedSignup = async (req, res, next) => {
 };
 
 // ─── GET /api/v1/channels/whatsapp/embedded-signup/mode ──────────────────────
-// Modo de onboarding disponible para este negocio: 'gupshup_link' (una sola ventana, el enlace de Gupshup) solo si el
-// interruptor ONBOARDING_LINK_MODE_ENABLED está activo para él; si no, 'meta_then_link' (flujo clásico). Sin base de datos.
-const getOnboardingMode = (req, res, next) => {
+// Modo de onboarding de este negocio: 'gupshup_link' (una sola ventana, el enlace de Gupshup) si el interruptor global
+// está activo y el negocio es nuevo (o está en la lista); si no, 'meta_then_link' (flujo clásico). El negocio sale del token.
+const getOnboardingMode = async (req, res, next) => {
   try {
-    const mode = channelOnboardingLink.modoEnlaceHabilitado(req.businessId) ? 'gupshup_link' : 'meta_then_link';
+    const mode = (await channelOnboardingLink.modoEnlaceHabilitado(req.businessId)) ? 'gupshup_link' : 'meta_then_link';
     return respuestaExito(res, { statusCode: 200, message: 'Modo de onboarding de WhatsApp', data: { mode } });
   } catch (err) {
     next(err);

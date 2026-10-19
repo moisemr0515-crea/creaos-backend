@@ -39,7 +39,7 @@ describe('channelOnboardingLink — modo enlace único', () => {
   let tenantA;
   let tenantB;
   let secuenciaApps;
-  const envOriginal = { enabled: env.ONBOARDING_LINK_MODE_ENABLED, tenants: env.ONBOARDING_LINK_MODE_TENANTS, url: env.BACKEND_PUBLIC_URL, t1: env.GUPSHUP_ONBOARDING_WEBHOOK_TOKEN, t2: env.GUPSHUP_WEBHOOK_TOKEN };
+  const envOriginal = { enabled: env.ONBOARDING_LINK_MODE_ENABLED, tenants: env.ONBOARDING_LINK_MODE_TENANTS, from: env.ONBOARDING_LINK_MODE_NEW_TENANTS_FROM, url: env.BACKEND_PUBLIC_URL, t1: env.GUPSHUP_ONBOARDING_WEBHOOK_TOKEN, t2: env.GUPSHUP_WEBHOOK_TOKEN };
 
   const limpiar = async () => {
     await ChannelOnboardingSession.deleteMany({});
@@ -52,15 +52,17 @@ describe('channelOnboardingLink — modo enlace único', () => {
   afterAll(async () => {
     await limpiar();
     await mongoose.disconnect();
-    Object.assign(env, { ONBOARDING_LINK_MODE_ENABLED: envOriginal.enabled, ONBOARDING_LINK_MODE_TENANTS: envOriginal.tenants, BACKEND_PUBLIC_URL: envOriginal.url, GUPSHUP_ONBOARDING_WEBHOOK_TOKEN: envOriginal.t1, GUPSHUP_WEBHOOK_TOKEN: envOriginal.t2 });
+    Object.assign(env, { ONBOARDING_LINK_MODE_ENABLED: envOriginal.enabled, ONBOARDING_LINK_MODE_TENANTS: envOriginal.tenants, ONBOARDING_LINK_MODE_NEW_TENANTS_FROM: envOriginal.from, BACKEND_PUBLIC_URL: envOriginal.url, GUPSHUP_ONBOARDING_WEBHOOK_TOKEN: envOriginal.t1, GUPSHUP_WEBHOOK_TOKEN: envOriginal.t2 });
   });
 
   beforeEach(async () => {
     await limpiar();
     jest.clearAllMocks();
-    Object.assign(env, { ONBOARDING_LINK_MODE_ENABLED: true, ONBOARDING_LINK_MODE_TENANTS: [], BACKEND_PUBLIC_URL: 'https://api.creaos.test', GUPSHUP_ONBOARDING_WEBHOOK_TOKEN: 'tok-onboarding', GUPSHUP_WEBHOOK_TOKEN: 'tok-mensajes' });
+    Object.assign(env, { ONBOARDING_LINK_MODE_ENABLED: true, ONBOARDING_LINK_MODE_TENANTS: [], ONBOARDING_LINK_MODE_NEW_TENANTS_FROM: null, BACKEND_PUBLIC_URL: 'https://api.creaos.test', GUPSHUP_ONBOARDING_WEBHOOK_TOKEN: 'tok-onboarding', GUPSHUP_WEBHOOK_TOKEN: 'tok-mensajes' });
     tenantA = await Business.create({ name: 'Negocio A' });
     tenantB = await Business.create({ name: 'Negocio B' });
+    // Estos tests habilitan el modo para A y B por la lista explícita (la habilitación por negocio nuevo tiene sus propias pruebas).
+    env.ONBOARDING_LINK_MODE_TENANTS = [String(tenantA._id), String(tenantB._id)];
     secuenciaApps = 0;
     partnerAuth.getValidToken.mockResolvedValue('partner-token');
     partnerApps.createApp.mockImplementation(async () => ({ appId: `app-${++secuenciaApps}` }));
@@ -85,7 +87,7 @@ describe('channelOnboardingLink — modo enlace único', () => {
   describe('interruptor: apagado por defecto y por negocio', () => {
     test('apagado: 404, no crea sesión y no llama a Gupshup', async () => {
       env.ONBOARDING_LINK_MODE_ENABLED = false;
-      expect(modoEnlaceHabilitado(tenantA._id)).toBe(false);
+      expect(await modoEnlaceHabilitado(tenantA._id)).toBe(false);
       await expect(conectar(tenantA)).rejects.toMatchObject({ statusCode: 404 });
       expect(await sesiones(tenantA)).toHaveLength(0);
       sinLlamadasAGupshup();
@@ -100,10 +102,10 @@ describe('channelOnboardingLink — modo enlace único', () => {
       });
     });
 
-    test('con lista de negocios: solo los de la lista; el resto 404 sin tocar nada', async () => {
+    test('con lista de negocios (y sin fecha de negocios nuevos): solo los de la lista; el resto 404 sin tocar nada', async () => {
       env.ONBOARDING_LINK_MODE_TENANTS = [String(tenantA._id)];
-      expect(modoEnlaceHabilitado(tenantA._id)).toBe(true);
-      expect(modoEnlaceHabilitado(tenantB._id)).toBe(false);
+      expect(await modoEnlaceHabilitado(tenantA._id)).toBe(true);
+      expect(await modoEnlaceHabilitado(tenantB._id)).toBe(false);
       await expect(conectar(tenantB)).rejects.toMatchObject({ statusCode: 404 });
       expect(await sesiones(tenantB)).toHaveLength(0);
       sinLlamadasAGupshup();
