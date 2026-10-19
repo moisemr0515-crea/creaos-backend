@@ -335,10 +335,21 @@ module.exports = {
   GUPSHUP_INDICADORES_SOCIO_LOG_ENABLED: process.env.GUPSHUP_INDICADORES_SOCIO_LOG_ENABLED !== 'false',
 
   // Onboarding de WhatsApp en «modo enlace único» (informes 68/69): el cliente se autoriza UNA sola vez, en el
-  // enlace firmado de Gupshup, sin la ventana previa de Meta de CREA OS. DESACTIVADO por defecto: solo con
-  // ONBOARDING_LINK_MODE_ENABLED=true. ONBOARDING_LINK_MODE_TENANTS (ids separados por coma) limita el modo a
-  // esos negocios; vacío = todos los negocios (solo cuando el interruptor está activo).
+  // enlace firmado de Gupshup, sin la ventana previa de Meta de CREA OS. DESACTIVADO por defecto.
+  //  - ONBOARDING_LINK_MODE_ENABLED: interruptor GLOBAL y de emergencia. Solo `true` lo activa; en cualquier otro valor
+  //    (o si falta) NINGÚN negocio usa el modo, ni siquiera los de la lista o los nuevos.
+  //  - ONBOARDING_LINK_MODE_NEW_TENANTS_FROM: fecha ISO (ej. 2026-10-20T00:00:00Z). Con el interruptor activo, TODO negocio
+  //    cuyo registro sea igual o posterior a esa fecha usa el modo automáticamente, sin configurar nada por cliente. Los
+  //    negocios anteriores conservan el flujo clásico. Un valor vacío o inválido = ningún negocio por antigüedad.
+  //  - ONBOARDING_LINK_MODE_TENANTS: ids de negocio separados por coma que usan el modo aunque sean anteriores a la fecha
+  //    (excepción explícita, p. ej. un negocio de prueba). Vacío NO significa «todos».
   ONBOARDING_LINK_MODE_ENABLED: process.env.ONBOARDING_LINK_MODE_ENABLED === 'true',
+  ONBOARDING_LINK_MODE_NEW_TENANTS_FROM: (() => {
+    const crudo = (process.env.ONBOARDING_LINK_MODE_NEW_TENANTS_FROM || '').trim();
+    if (!crudo) return null;
+    const fecha = new Date(crudo);
+    return Number.isNaN(fecha.getTime()) ? null : fecha;
+  })(),
   ONBOARDING_LINK_MODE_TENANTS: (process.env.ONBOARDING_LINK_MODE_TENANTS || '')
     .split(',').map((id) => id.trim()).filter(Boolean),
 

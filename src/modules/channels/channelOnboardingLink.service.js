@@ -16,6 +16,7 @@
 // app se guarda en la sesión ANTES de seguir, así un reintento nunca crea otra; no escribe nada en canales existentes.
 const ChannelOnboardingSession = require('./channelOnboardingSession.model');
 const WhatsAppChannel = require('./whatsappChannel.model');
+const Business = require('../businesses/business.model');
 const partnerAuth = require('./providers/gupshup/partner/partner.auth');
 const partnerApps = require('./providers/gupshup/partner/partner.apps');
 const partnerSubscriptions = require('./providers/gupshup/partner/partner.subscriptions');
@@ -38,11 +39,22 @@ const LEASE_MS = 90 * 1000; // un POST /start no debería tardar más; si el pro
 const ENLACE_MARGEN_MS = 60 * 60 * 1000; // se pide un enlace nuevo si al actual le queda menos de 1 h
 const REUTILIZABLES = ['gupshup_registering', 'failed'];
 
-/** ¿Está activo el modo enlace único para este negocio? Apagado por defecto. */
-function modoEnlaceHabilitado(tenantId) {
+/**
+ * ¿Usa el modo enlace único este negocio? Apagado por defecto.
+ *  1. Interruptor global (ONBOARDING_LINK_MODE_ENABLED) apagado → NO, para todos (parada de emergencia).
+ *  2. Negocio en la lista explícita (ONBOARDING_LINK_MODE_TENANTS) → SÍ.
+ *  3. Negocio registrado en o después de ONBOARDING_LINK_MODE_NEW_TENANTS_FROM → SÍ, automáticamente.
+ *  4. Cualquier otro (negocios existentes) → NO: conservan el flujo clásico.
+ * La fecha de registro se lee SIEMPRE del negocio del token (nunca de la solicitud), así que un cliente no puede elegir
+ * el modo de otro ni el suyo.
+ */
+async function modoEnlaceHabilitado(tenantId) {
   if (!env.ONBOARDING_LINK_MODE_ENABLED) return false;
-  const permitidos = env.ONBOARDING_LINK_MODE_TENANTS || [];
-  return permitidos.length === 0 || permitidos.includes(String(tenantId));
+  if ((env.ONBOARDING_LINK_MODE_TENANTS || []).includes(String(tenantId))) return true;
+  const desde = env.ONBOARDING_LINK_MODE_NEW_TENANTS_FROM;
+  if (!desde) return false;
+  const negocio = await Business.findById(tenantId).select('createdAt').lean();
+  return Boolean(negocio?.createdAt && negocio.createdAt.getTime() >= desde.getTime());
 }
 
 /**
@@ -273,7 +285,7 @@ async function prepararAppYEnlace({ session, user, token, now }) {
  * @returns {Promise<{ sessionId: string, embedSignupUrl: string|null, onboarding: object|null, inProgress: boolean, created: boolean }>}
  */
 async function startLinkOnboarding({ tenantId, user, phoneNumber, displayName, now = new Date() }) {
-  if (!modoEnlaceHabilitado(tenantId)) throw new AppError('Recurso no disponible', 404);
+  if (!(await modoEnlaceHabilitado(tenantId))) throw new AppError('Recurso no disponible', 404);
 
   const declaredPhone = normalizarTelefonoDeclarado(phoneNumber);
   await asegurarNumeroDisponible({ tenantId, declaredPhone });

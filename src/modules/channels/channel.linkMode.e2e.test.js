@@ -71,7 +71,7 @@ describe('E2E modo enlace único — Conectar WhatsApp → una autorización →
   let vivas;
   const usuario = { email: 'cliente@creaos.test', name: 'Cliente Nuevo' };
   const reqDe = (t, body = {}) => ({ businessId: t._id, user: usuario, body });
-  const entorno = { enabled: env.ONBOARDING_LINK_MODE_ENABLED, tenants: env.ONBOARDING_LINK_MODE_TENANTS };
+  const entorno = { enabled: env.ONBOARDING_LINK_MODE_ENABLED, tenants: env.ONBOARDING_LINK_MODE_TENANTS, from: env.ONBOARDING_LINK_MODE_NEW_TENANTS_FROM };
   const actual = async (t = tenant) => (await llamar(ctrl.getCurrentEmbeddedSignup, reqDe(t))).body.data.onboarding;
   const verificar = (sessionId, t = tenant) => llamar(ctrl.reconcileEmbeddedSignup, reqDe(t, { sessionId }));
   const ponerLive = (appId, num = NUM, over = {}) => { vivas[appId] = { phone: num.raw, phoneId: num.pnid, wabaId: num.waba, accountStatus: 'ACTIVE', ...over }; };
@@ -92,16 +92,17 @@ describe('E2E modo enlace único — Conectar WhatsApp → una autorización →
   afterAll(async () => {
     for (const m of MODELOS) await m.deleteMany({});
     await mongoose.disconnect();
-    Object.assign(env, { ONBOARDING_LINK_MODE_ENABLED: entorno.enabled, ONBOARDING_LINK_MODE_TENANTS: entorno.tenants });
+    Object.assign(env, { ONBOARDING_LINK_MODE_ENABLED: entorno.enabled, ONBOARDING_LINK_MODE_TENANTS: entorno.tenants, ONBOARDING_LINK_MODE_NEW_TENANTS_FROM: entorno.from });
   });
 
   beforeEach(async () => {
     jest.clearAllMocks();
     jest.restoreAllMocks();
     for (const m of MODELOS) await m.deleteMany({});
-    Object.assign(env, { ONBOARDING_LINK_MODE_ENABLED: true, ONBOARDING_LINK_MODE_TENANTS: [] });
+    Object.assign(env, { ONBOARDING_LINK_MODE_ENABLED: true, ONBOARDING_LINK_MODE_TENANTS: [], ONBOARDING_LINK_MODE_NEW_TENANTS_FROM: null });
     tenant = await Business.create({ name: 'Cuenta Nueva' });
     otroTenant = await Business.create({ name: 'Otro Cliente' });
+    env.ONBOARDING_LINK_MODE_TENANTS = [String(tenant._id), String(otroTenant._id)]; // la habilitación automática de negocios nuevos se prueba en channel.linkMode.newTenants.e2e.test.js
     vivas = {};
     partnerAuth.getValidToken.mockResolvedValue('partner-token');
     partnerApps.createApp.mockImplementation(async ({ name }) => ({ appId: `app-${name}` }));
