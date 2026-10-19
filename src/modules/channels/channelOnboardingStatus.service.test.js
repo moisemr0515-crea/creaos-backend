@@ -178,7 +178,7 @@ describe('channelOnboardingStatus — fase y acción siguiente de la conexión e
       await sesion(tenantA);
       const r = await actual();
       expect(Object.keys(r).sort()).toEqual(
-        ['embedSignupUrl', 'expiresAt', 'lastCheckAt', 'linkExpiresAt', 'nextAction', 'phase', 'phoneNumber', 'reason', 'sessionId', 'status'].sort()
+        ['embedSignupUrl', 'expiresAt', 'lastCheckAt', 'linkExpiresAt', 'mode', 'nextAction', 'phase', 'phoneNumber', 'reason', 'sessionId', 'status'].sort()
       );
       expect(JSON.stringify(r)).not.toMatch(/accessTokenCipher|app-propia|wabaId|phoneNumberId|apikey|webhookReference/i);
     });

@@ -88,9 +88,11 @@ function filtroVencidas(ahora) {
       $gte: new Date(ahora.getTime() - GUPSHUP_PHASE_WINDOW_MS),
       $lte: new Date(ahora.getTime() - FIRST_POLL_DELAY_MS),
     },
-    'meta.wabaId': { $ne: null },
-    'meta.phoneNumberId': { $ne: null },
-    'meta.phoneNumber': { $ne: null },
+    // Flujo clásico: autorización de Meta completa. Modo enlace único: el número declarado (no hay datos de Meta).
+    $or: [
+      { 'meta.wabaId': { $ne: null }, 'meta.phoneNumberId': { $ne: null }, 'meta.phoneNumber': { $ne: null } },
+      { mode: 'gupshup_link', declaredPhone: { $ne: null } },
+    ],
     'reconcile.stoppedAt': null,
   };
 }

@@ -20,6 +20,7 @@ const channelOnboardingApp = require('./channelOnboardingApp.service');
 const completionService = require('./channelOnboardingCompletion.service');
 const channelOnboardingStatus = require('./channelOnboardingStatus.service');
 const channelOnboardingRecovery = require('./channelOnboardingRecovery.service');
+const channelOnboardingLink = require('./channelOnboardingLink.service');
 const { GUPSHUP_PHASE_WINDOW_MS, RECONCILE_INITIAL_STATE } = ChannelOnboardingSession;
 const { META_APP_ID, META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID, BACKEND_PUBLIC_URL, GUPSHUP_ONBOARDING_WEBHOOK_TOKEN, GUPSHUP_WEBHOOK_HEADER, GUPSHUP_WEBHOOK_TOKEN } = require('../../config/env');
 // Constante compartida vía un archivo sin dependencias propias — NO se
@@ -874,6 +875,41 @@ const getCurrentEmbeddedSignup = async (req, res, next) => {
   }
 };
 
+// ─── GET /api/v1/channels/whatsapp/embedded-signup/mode ──────────────────────
+// Modo de onboarding disponible para este negocio: 'gupshup_link' (una sola ventana, el enlace de Gupshup) solo si el
+// interruptor ONBOARDING_LINK_MODE_ENABLED está activo para él; si no, 'meta_then_link' (flujo clásico). Sin base de datos.
+const getOnboardingMode = (req, res, next) => {
+  try {
+    const mode = channelOnboardingLink.modoEnlaceHabilitado(req.businessId) ? 'gupshup_link' : 'meta_then_link';
+    return respuestaExito(res, { statusCode: 200, message: 'Modo de onboarding de WhatsApp', data: { mode } });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─── POST /api/v1/channels/whatsapp/embedded-signup/start ────────────────────
+// Modo enlace único (informes 68/69): el cliente declara su número y CREA OS deja todo listo en Gupshup (app,
+// callbacks, enlace firmado). Idempotente: repetir la solicitud devuelve la misma sesión/enlace. 404 si el modo no está
+// activo para el negocio.
+const startLinkOnboarding = async (req, res, next) => {
+  try {
+    const { phoneNumber, displayName } = req.body || {};
+    const result = await channelOnboardingLink.startLinkOnboarding({
+      tenantId: req.businessId,
+      user: req.user,
+      phoneNumber,
+      displayName: normalizarDisplayName(displayName),
+    });
+    return respuestaExito(res, {
+      statusCode: 200,
+      message: result.inProgress ? 'La conexión se está preparando' : 'Enlace de conexión de WhatsApp listo',
+      data: result,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 // ─── POST /api/v1/channels/whatsapp/embedded-signup/recover ──────────────────
 // Reabre una sesión vencida o con la app insegura SIN repetir el popup de Meta (conserva
 // la autorización ya otorgada). No llama a Meta ni a Gupshup: después el frontend vuelve
@@ -896,6 +932,8 @@ const recoverEmbeddedSignup = async (req, res, next) => {
 };
 
 module.exports = {
+  getOnboardingMode,
+  startLinkOnboarding,
   getCurrentEmbeddedSignup,
   recoverEmbeddedSignup,
   initEmbeddedSignup,

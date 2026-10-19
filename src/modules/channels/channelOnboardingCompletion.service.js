@@ -33,6 +33,8 @@ const {
   normalizarTelefono,
   esAppNoLive,
   evaluarAppLocal,
+  telefonoEsperado,
+  esModoEnlace,
 } = require('./channelOnboardingApp.service');
 const logger = require('../../utils/logger');
 const standardTemplateService = require('./standardTemplate.service');
@@ -97,7 +99,9 @@ async function markFailed(session, message) {
  * @returns {Promise<{ outcome: 'completed', channelId: object }|{ outcome: 'mismatch', expected: string, found: string }>}
  */
 async function finalizarSesionReclamada(session, { via, token: tokenPrevio, apikey: apikeyPrevio, wabaInfo: wabaInfoPrevio } = {}) {
-  if (!session.meta?.phoneNumber || !session.meta?.phoneNumberId) {
+  // Modo enlace único: no hay datos de Meta de CREA OS; la identidad esperada es el número declarado.
+  const datosIncompletos = esModoEnlace(session) ? !session.declaredPhone : (!session.meta?.phoneNumber || !session.meta?.phoneNumberId);
+  if (datosIncompletos) {
     // No debería pasar nunca en este estado — callbackEmbeddedSignup() (PR-04)
     // ya los deja seteados antes de avanzar a gupshup_registering. Fail-loud:
     // es un estado inconsistente real, no algo que un retry vaya a arreglar solo.
@@ -125,7 +129,7 @@ async function finalizarSesionReclamada(session, { via, token: tokenPrevio, apik
     // autorizó para esta sesión. Si no coincide (típicamente: la app sigue Live
     // con el número anterior), activar el canal sería reconectar en silencio un
     // número que el cliente no pidió.
-    if (!telefonosCoinciden(wabaInfo?.phone, session.meta.phoneNumber)) {
+    if (!telefonosCoinciden(wabaInfo?.phone, telefonoEsperado(session))) {
       await ChannelOnboardingSession.updateOne(
         { _id: session._id, status: 'completing' },
         { $set: { status: 'gupshup_registering' } }
@@ -135,11 +139,11 @@ async function finalizarSesionReclamada(session, { via, token: tokenPrevio, apik
         tenantId: String(session.tenantId),
         sessionId: String(session._id),
         appId: session.gupshup.appId,
-        expected: session.meta.phoneNumber,
+        expected: telefonoEsperado(session),
         found,
         via,
       });
-      return { outcome: 'mismatch', expected: session.meta.phoneNumber, found };
+      return { outcome: 'mismatch', expected: telefonoEsperado(session), found };
     }
 
     let channel = await WhatsAppChannel.findOne({ provider: 'gupshup', phoneNumberId: wabaInfo.phoneId });
@@ -385,7 +389,7 @@ async function reconcileOnboardingSession({ sessionId, tenantId }) {
   if (!reconciliable) return { outcome: 'invalid_state', status: session.status };
 
   if (!session.gupshup?.appId) return { outcome: 'not_ready', reason: 'sin_app_de_gupshup' };
-  if (!session.meta?.phoneNumber) return { outcome: 'not_ready', reason: 'sin_telefono_autorizado_en_meta' };
+  if (!telefonoEsperado(session)) return { outcome: 'not_ready', reason: 'sin_telefono_autorizado_en_meta' };
 
   const referencia = session.gupshup.embedSignupUrlGeneratedAt || session.updatedAt;
   if (referencia && Date.now() - new Date(referencia).getTime() > RECONCILE_MAX_AGE_MS) {
@@ -429,12 +433,12 @@ async function reconcileOnboardingSession({ sessionId, tenantId }) {
   // Sin los IDs definitivos de Gupshup no hay con qué crear un canal enrutable.
   if (!wabaInfo.wabaId || !wabaInfo.phoneId) return { outcome: 'pending', reason: 'informacion_insuficiente' };
 
-  if (!telefonosCoinciden(wabaInfo.phone, session.meta.phoneNumber)) {
+  if (!telefonosCoinciden(wabaInfo.phone, telefonoEsperado(session))) {
     logger.warn('[channelOnboardingCompletion] Conciliación: la app está Live con un número distinto al autorizado — no se activa ningún canal', {
       tenantId: String(tenantId), sessionId: String(session._id), appId: session.gupshup.appId,
-      expected: session.meta.phoneNumber, found: `+${normalizarTelefono(wabaInfo.phone)}`,
+      expected: telefonoEsperado(session), found: `+${normalizarTelefono(wabaInfo.phone)}`,
     });
-    return { outcome: 'mismatch', expected: session.meta.phoneNumber, found: `+${normalizarTelefono(wabaInfo.phone)}` };
+    return { outcome: 'mismatch', expected: telefonoEsperado(session), found: `+${normalizarTelefono(wabaInfo.phone)}` };
   }
 
   // Identidad entre tenants: ni la WABA ni el número verificados pueden figurar en
