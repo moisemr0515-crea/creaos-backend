@@ -364,14 +364,14 @@ async function handleGupshupAccountVerified(gsAppId) {
  *  - No aplica la expiración perezosa de 30 min del popup de Meta: una app que
  *    quedó Live con el número correcto se completa aunque esa ventana haya vencido.
  *
- * @param {{ sessionId: string, tenantId: import('mongoose').Types.ObjectId|string }} params
+ * @param {{ sessionId: string, tenantId: import('mongoose').Types.ObjectId|string, confirmedPhone?: string|null }} params
  * @returns {Promise<{ outcome: string, [key: string]: any }>} outcome ∈ completed,
  *   already_completed, in_progress, pending, mismatch, identity_conflict, not_ready,
  *   invalid_state, stale, app_unsafe, not_found, error
  *   (`in_progress` también cuando la sesión está 'completing' por un webhook concurrente)
  *   (solo `completed` activa un canal; `pending`/`error`/`in_progress` son esperas)
  */
-async function reconcileOnboardingSession({ sessionId, tenantId }) {
+async function reconcileOnboardingSession({ sessionId, tenantId, confirmedPhone = null }) {
   const session = await ChannelOnboardingSession.findOne({ _id: sessionId, tenantId });
   if (!session) return { outcome: 'not_found' };
 
@@ -391,6 +391,15 @@ async function reconcileOnboardingSession({ sessionId, tenantId }) {
   if (!session.gupshup?.appId) return { outcome: 'not_ready', reason: 'sin_app_de_gupshup' };
   if (!telefonoEsperado(session)) return { outcome: 'not_ready', reason: 'sin_telefono_autorizado_en_meta' };
 
+  const corrigeNumero = Boolean(confirmedPhone)
+    && !telefonosCoinciden(confirmedPhone, session.declaredPhone);
+  if (corrigeNumero && (!esModoEnlace(session) || session.reconcile?.stoppedReason !== 'mismatch')) {
+    return { outcome: 'invalid_state', status: session.status };
+  }
+  // El número confirmado todavía NO se persiste. Primero debe coincidir con la
+  // app real de Gupshup y superar todos los controles de propiedad/tenant.
+  const telefonoAValidar = corrigeNumero ? confirmedPhone : telefonoEsperado(session);
+
   const referencia = session.gupshup.embedSignupUrlGeneratedAt || session.updatedAt;
   if (referencia && Date.now() - new Date(referencia).getTime() > RECONCILE_MAX_AGE_MS) {
     return { outcome: 'stale' };
@@ -398,7 +407,12 @@ async function reconcileOnboardingSession({ sessionId, tenantId }) {
 
   // Aislamiento: si la app figura en un canal/sesión de otro tenant o está ligada a
   // otro número del mismo tenant, esta sesión NO puede completarse con ella.
-  const local = await evaluarAppLocal({ appId: session.gupshup.appId, session, tenantId });
+  const local = await evaluarAppLocal({
+    appId: session.gupshup.appId,
+    session,
+    tenantId,
+    expectedPhone: telefonoAValidar,
+  });
   if (!local.seguro) return { outcome: 'app_unsafe', reason: local.motivo };
 
   let token;
@@ -433,21 +447,26 @@ async function reconcileOnboardingSession({ sessionId, tenantId }) {
   // Sin los IDs definitivos de Gupshup no hay con qué crear un canal enrutable.
   if (!wabaInfo.wabaId || !wabaInfo.phoneId) return { outcome: 'pending', reason: 'informacion_insuficiente' };
 
-  if (!telefonosCoinciden(wabaInfo.phone, telefonoEsperado(session))) {
+  if (!telefonosCoinciden(wabaInfo.phone, telefonoAValidar)) {
     logger.warn('[channelOnboardingCompletion] Conciliación: la app está Live con un número distinto al autorizado — no se activa ningún canal', {
       tenantId: String(tenantId), sessionId: String(session._id), appId: session.gupshup.appId,
-      expected: telefonoEsperado(session), found: `+${normalizarTelefono(wabaInfo.phone)}`,
+      expected: telefonoAValidar, found: `+${normalizarTelefono(wabaInfo.phone)}`,
     });
-    return { outcome: 'mismatch', expected: telefonoEsperado(session), found: `+${normalizarTelefono(wabaInfo.phone)}` };
+    return { outcome: 'mismatch', expected: telefonoAValidar, found: `+${normalizarTelefono(wabaInfo.phone)}` };
   }
 
   // Identidad entre tenants: ni la WABA ni el número verificados pueden figurar en
   // un canal de OTRO tenant. Se corta ANTES de reclamar la sesión, así no queda
   // mutada ni 'failed' — queda pendiente para que alguien la revise.
+  const telefonoVerificado = `+${normalizarTelefono(wabaInfo.phone)}`;
   const ajeno = await WhatsAppChannel.exists({
     provider: 'gupshup',
     tenantId: { $ne: tenantId },
-    $or: [{ phoneNumberId: wabaInfo.phoneId }, { wabaId: wabaInfo.wabaId }],
+    $or: [
+      { phoneNumberId: wabaInfo.phoneId },
+      { wabaId: wabaInfo.wabaId },
+      { phoneNumber: { $in: [telefonoVerificado, telefonoVerificado.slice(1)] } },
+    ],
   });
   if (ajeno) {
     logger.warn('[channelOnboardingCompletion] Conciliación: la WABA o el número verificados ya pertenecen a otro tenant — no se activa ningún canal', {
@@ -465,16 +484,30 @@ async function reconcileOnboardingSession({ sessionId, tenantId }) {
     });
   }
 
-  const reclamada = await ChannelOnboardingSession.findOneAndUpdate(
-    {
+  const filtroReclamo = {
       _id: session._id,
       tenantId,
       $or: [
         { status: 'gupshup_registering' },
         { status: 'failed', 'error.step': 'channel_creation' },
       ],
-    },
-    { $set: { status: 'completing' } },
+    };
+  const cambiosReclamo = { status: 'completing' };
+  if (corrigeNumero) {
+    // CAS de seguridad: solo la misma sesión gupshup_link detenida por el mismo
+    // mismatch puede aceptar el número que Gupshup acaba de verificar.
+    Object.assign(filtroReclamo, {
+      mode: 'gupshup_link',
+      declaredPhone: session.declaredPhone,
+      'gupshup.appId': session.gupshup.appId,
+      'reconcile.stoppedReason': 'mismatch',
+    });
+    cambiosReclamo.declaredPhone = confirmedPhone;
+  }
+
+  const reclamada = await ChannelOnboardingSession.findOneAndUpdate(
+    filtroReclamo,
+    { $set: cambiosReclamo },
     { new: true }
   );
   if (!reclamada) return { outcome: 'in_progress' };

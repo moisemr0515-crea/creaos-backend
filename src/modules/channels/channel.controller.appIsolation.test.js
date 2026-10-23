@@ -322,6 +322,50 @@ describe('channel.controller — app independiente por conexión (incidente Nutr
       expect(partnerApps.getWabaInfo).not.toHaveBeenCalled();
     });
 
+    test('gupshup_link con mismatch acepta el número confirmado, reutiliza la misma app y completa por reconcile', async () => {
+      const sesion = await ChannelOnboardingSession.create({
+        tenantId: tenant._id,
+        mode: 'gupshup_link',
+        declaredPhone: '+51999999999',
+        status: 'gupshup_registering',
+        meta: { wabaId: null, phoneNumberId: null, phoneNumber: null, accessTokenCipher: null },
+        gupshup: {
+          appId: 'app-existente-mismatch',
+          appName: 'creaosappactual',
+          webhookReference: 'gupshup:account-subscribed',
+          messagesWebhookReference: 'gupshup:messages-subscribed',
+          embedSignupUrl: 'https://embed.gupshup.io/existente',
+          embedSignupUrlGeneratedAt: new Date(),
+        },
+        reconcile: { stoppedAt: new Date(), stoppedReason: 'mismatch', lastOutcome: 'mismatch' },
+        expiresAt: new Date(Date.now() + DIA_MS),
+      });
+      partnerApps.getWabaInfo.mockResolvedValue({
+        phone: '51900000101', phoneId: 'pnid-recuperado', wabaId: 'waba-recuperada', accountStatus: 'ACTIVE',
+      });
+
+      const { res, next } = await reconciliar({ sessionId: String(sesion._id), phoneNumber: '+51 900 000 101' });
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.json.mock.calls[0][0].data.outcome).toBe('completed');
+      expect(partnerApps.getAppAccessToken).toHaveBeenCalledWith('app-existente-mismatch', 'partner-token');
+      expect(partnerApps.createApp).not.toHaveBeenCalled();
+      const actual = await ChannelOnboardingSession.findById(sesion._id);
+      expect(actual.declaredPhone).toBe('+51900000101');
+      expect(actual.status).toBe('completed');
+      expect((await WhatsAppChannel.findOne({ phoneNumber: '+51900000101' })).tenantId.toString()).toBe(tenant._id.toString());
+    });
+
+    test('número corregido inválido: 400 antes de consultar Gupshup o tocar la sesión', async () => {
+      const sesion = await sesionNutriva();
+
+      const { next } = await reconciliar({ sessionId: String(sesion._id), phoneNumber: '991046854' });
+
+      expect(next).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 400 }));
+      expect(partnerApps.getWabaInfo).not.toHaveBeenCalled();
+      expect((await ChannelOnboardingSession.findById(sesion._id)).status).toBe('gupshup_registering');
+    });
+
     test('sesión de OTRO tenant o inexistente: 404 y nada se consulta', async () => {
       const ajena = await ChannelOnboardingSession.create({
         tenantId: otroTenant._id, status: 'gupshup_registering',

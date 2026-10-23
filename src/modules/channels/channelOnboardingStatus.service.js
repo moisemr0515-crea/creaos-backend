@@ -104,7 +104,13 @@ function clasificar(s, ahora) {
     }
     const detenida = s.reconcile?.stoppedReason && RAZONES_DETENCION[s.reconcile.stoppedReason];
     if (detenida) {
-      return { ...base, phase: FASES.NEEDS_ATTENTION, nextAction: detenida.accion, reason: detenida.razon };
+      // En modo enlace la app ya existe y Gupshup es la fuente de verdad del
+      // número. Un mismatch puede recuperarse verificando el número correcto
+      // contra ESA misma app; no hay que reiniciar ni crear otra aplicación.
+      const accion = esModoEnlace(s) && s.reconcile.stoppedReason === 'mismatch'
+        ? ACCIONES.VERIFY
+        : detenida.accion;
+      return { ...base, phase: FASES.NEEDS_ATTENTION, nextAction: accion, reason: detenida.razon };
     }
     const linkExpiresAt = generadoEn ? new Date(new Date(generadoEn).getTime() + GUPSHUP_PHASE_WINDOW_MS) : s.expiresAt;
     return {

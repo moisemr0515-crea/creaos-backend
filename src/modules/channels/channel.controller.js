@@ -841,11 +841,18 @@ const MENSAJES_RECONCILE = {
 
 const reconcileEmbeddedSignup = async (req, res, next) => {
   try {
-    const { sessionId } = req.body || {};
+    const { sessionId, phoneNumber } = req.body || {};
     if (!sessionId || typeof sessionId !== 'string') throw new AppError('sessionId es requerido', 400);
     if (!mongoose.isValidObjectId(sessionId)) throw new AppError('sessionId inválido', 400);
+    const confirmedPhone = phoneNumber === undefined
+      ? null
+      : channelOnboardingLink.normalizarTelefonoDeclarado(phoneNumber);
 
-    const result = await completionService.reconcileOnboardingSession({ sessionId, tenantId: req.businessId });
+    const result = await completionService.reconcileOnboardingSession({
+      sessionId,
+      tenantId: req.businessId,
+      confirmedPhone,
+    });
     if (result.outcome === 'not_found') throw new AppError('Sesión de onboarding no encontrada', 404);
 
     return respuestaExito(res, {

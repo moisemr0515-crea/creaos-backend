@@ -101,6 +101,23 @@ describe('channelOnboardingStatus — fase y acción siguiente de la conexión e
       expect(r).toMatchObject({ phase: FASES.NEEDS_ATTENTION, nextAction, reason });
       expect(r.embedSignupUrl).toBeUndefined();
     });
+
+    test('gupshup_link detenido por mismatch ofrece verificar el número existente, no reiniciar el onboarding', async () => {
+      await sesion(tenantA, {
+        mode: 'gupshup_link',
+        declaredPhone: TEL,
+        meta: { wabaId: null, phoneNumberId: null, phoneNumber: null, accessTokenCipher: null },
+        reconcile: { stoppedAt: new Date(), stoppedReason: 'mismatch' },
+      });
+
+      expect(await actual()).toMatchObject({
+        mode: 'gupshup_link',
+        phase: FASES.NEEDS_ATTENTION,
+        nextAction: ACCIONES.VERIFY,
+        reason: 'number_mismatch',
+        phoneNumber: TEL,
+      });
+    });
   });
 
   describe('otros estados', () => {

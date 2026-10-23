@@ -75,8 +75,11 @@ function esAppNoLive(err) {
  *
  * @returns {Promise<{ seguro: boolean, motivo?: string }>}
  */
-async function evaluarAppLocal({ appId, session, tenantId }) {
-  const telefono = telefonoEsperado(session);
+async function evaluarAppLocal({ appId, session, tenantId, expectedPhone = null }) {
+  // `expectedPhone` solo se usa en la recuperación explícita de un mismatch del
+  // modo enlace: permite validar el número corregido ANTES de persistirlo. Los
+  // demás callers conservan exactamente la identidad de la sesión.
+  const telefono = expectedPhone || telefonoEsperado(session);
 
   const [canalAjeno, sesionAjena] = await Promise.all([
     WhatsAppChannel.exists({ providerAppId: appId, tenantId: { $ne: tenantId } }),

@@ -264,6 +264,115 @@ describe('channelOnboardingCompletion — conciliación y finalización comparti
     });
   });
 
+  describe('recuperación autoservicio de number_mismatch en gupshup_link', () => {
+    const sesionLinkMismatch = (tenant, declaredPhone = TEL_VIEJO) => sesionLista(tenant, {
+      mode: 'gupshup_link',
+      declaredPhone,
+      meta: { wabaId: null, phoneNumberId: null, phoneNumber: null, accessTokenCipher: null },
+      reconcile: { stoppedAt: new Date(), stoppedReason: 'mismatch', lastOutcome: 'mismatch' },
+    });
+
+    test('verifica la misma app y persiste el número corregido solo al reclamar/completar la sesión', async () => {
+      const sesion = await sesionLinkMismatch(tenantA);
+
+      const res = await reconcileOnboardingSession({
+        sessionId: sesion._id,
+        tenantId: tenantA._id,
+        confirmedPhone: TEL_NUEVO,
+      });
+
+      expect(res.outcome).toBe('completed');
+      expect(partnerApps.getAppAccessToken).toHaveBeenCalledWith('app-nueva', 'partner-token');
+      expect(partnerApps.getWabaInfo).toHaveBeenCalledTimes(1);
+      const actual = await ChannelOnboardingSession.findById(sesion._id);
+      expect(actual.declaredPhone).toBe(TEL_NUEVO);
+      expect(actual.status).toBe('completed');
+      expect(actual.completedVia).toBe('reconcile');
+      expect(await ChannelOnboardingSession.countDocuments({ tenantId: tenantA._id })).toBe(1);
+      expect(await WhatsAppChannel.countDocuments({ tenantId: tenantA._id })).toBe(1);
+      expect((await WhatsAppChannel.findOne({ tenantId: tenantA._id })).providerAppId).toBe('app-nueva');
+    });
+
+    test('un número confirmado que no coincide con Gupshup no cambia la sesión ni crea canal', async () => {
+      const sesion = await sesionLinkMismatch(tenantA);
+      const antes = (await ChannelOnboardingSession.findById(sesion._id)).toObject();
+
+      const res = await reconcileOnboardingSession({
+        sessionId: sesion._id,
+        tenantId: tenantA._id,
+        confirmedPhone: '+51933333333',
+      });
+
+      expect(res).toMatchObject({ outcome: 'mismatch', expected: '+51933333333', found: TEL_NUEVO });
+      const actual = (await ChannelOnboardingSession.findById(sesion._id)).toObject();
+      expect(actual.declaredPhone).toBe(antes.declaredPhone);
+      expect(actual.status).toBe(antes.status);
+      expect(await WhatsAppChannel.countDocuments({})).toBe(0);
+
+      const reintento = await reconcileOnboardingSession({
+        sessionId: sesion._id,
+        tenantId: tenantA._id,
+        confirmedPhone: TEL_NUEVO,
+      });
+      expect(reintento.outcome).toBe('completed');
+      expect(await WhatsAppChannel.countDocuments({ tenantId: tenantA._id })).toBe(1);
+    });
+
+    test('dos confirmaciones simultáneas conservan idempotencia: un solo canal y una sola credencial', async () => {
+      const sesion = await sesionLinkMismatch(tenantA);
+
+      const resultados = await Promise.all([
+        reconcileOnboardingSession({ sessionId: sesion._id, tenantId: tenantA._id, confirmedPhone: TEL_NUEVO }),
+        reconcileOnboardingSession({ sessionId: sesion._id, tenantId: tenantA._id, confirmedPhone: TEL_NUEVO }),
+      ]);
+
+      expect(resultados.map((r) => r.outcome)).toContain('completed');
+      expect(resultados.every((r) => ['completed', 'in_progress', 'already_completed'].includes(r.outcome))).toBe(true);
+      expect(await WhatsAppChannel.countDocuments({ tenantId: tenantA._id })).toBe(1);
+      expect(await ChannelCredentials.countDocuments({ tenantId: tenantA._id })).toBe(1);
+      expect((await ChannelOnboardingSession.findById(sesion._id)).declaredPhone).toBe(TEL_NUEVO);
+    });
+
+    test('no permite corregir el número de una sesión clásica ni de una sesión link no detenida por mismatch', async () => {
+      const clasica = await sesionLista(tenantA);
+      const link = await sesionLista(tenantA, {
+        mode: 'gupshup_link',
+        declaredPhone: TEL_VIEJO,
+        meta: { wabaId: null, phoneNumberId: null, phoneNumber: null, accessTokenCipher: null },
+      });
+
+      await expect(reconcileOnboardingSession({
+        sessionId: clasica._id, tenantId: tenantA._id, confirmedPhone: TEL_VIEJO,
+      })).resolves.toMatchObject({ outcome: 'invalid_state' });
+      await expect(reconcileOnboardingSession({
+        sessionId: link._id, tenantId: tenantA._id, confirmedPhone: TEL_NUEVO,
+      })).resolves.toMatchObject({ outcome: 'invalid_state' });
+      expect(partnerApps.getWabaInfo).not.toHaveBeenCalled();
+      expect(await WhatsAppChannel.countDocuments({})).toBe(0);
+    });
+
+    test('el mismo número en otro tenant bloquea la recuperación aunque sus IDs remotos sean distintos', async () => {
+      await canalExistente(tenantB, {
+        phoneNumber: TEL_NUEVO,
+        phoneNumberId: 'otro-phone-id',
+        wabaId: 'otra-waba',
+        providerAppId: 'otra-app',
+      });
+      const sesion = await sesionLinkMismatch(tenantA);
+
+      const res = await reconcileOnboardingSession({
+        sessionId: sesion._id,
+        tenantId: tenantA._id,
+        confirmedPhone: TEL_NUEVO,
+      });
+
+      expect(res.outcome).toBe('identity_conflict');
+      expect((await ChannelOnboardingSession.findById(sesion._id)).declaredPhone).toBe(TEL_VIEJO);
+      expect(await WhatsAppChannel.countDocuments({ tenantId: tenantA._id })).toBe(0);
+      expect(await WhatsAppChannel.countDocuments({ tenantId: tenantB._id })).toBe(1);
+    });
+  });
+
   describe('C. webhook ACCOUNT_VERIFIED', () => {
     test('camino feliz: completa con via "webhook" y el canal usa el nombre REAL de la app de la sesión', async () => {
       const sesion = await sesionLista(tenantA);
